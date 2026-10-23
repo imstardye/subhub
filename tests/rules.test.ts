@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import type { ProxyGroupEntry } from '../core/types';
 import {
   buildProxyGroups,
   buildRules,
@@ -296,5 +297,81 @@ ruleset=GROUP C,[]FINAL
         'GROUP',
       ),
     ).toEqual(['DOMAIN-SUFFIX,example.net,GROUP', 'GEOIP,CN,GROUP']);
+  });
+
+  it('keeps comma-containing rule content such as regexes intact', () => {
+    expect(
+      expandRuleList(
+        [
+          'DOMAIN-REGEX,^a.{0,61}$',
+          'DOMAIN-KEYWORD,example',
+          'IP-CIDR,203.0.113.0/24,no-resolve',
+        ].join('\n'),
+        'GROUP',
+      ),
+    ).toEqual([
+      'DOMAIN-REGEX,^a.{0,61}$,GROUP',
+      'DOMAIN-KEYWORD,example,GROUP',
+      'IP-CIDR,203.0.113.0/24,GROUP,no-resolve',
+    ]);
+  });
+
+  it('keeps inline rules whose content contains commas', () => {
+    const ini = parseIni(`
+[custom]
+ruleset=GROUP,[]DOMAIN-REGEX,^a.{0,61}$
+ruleset=GROUP,[]IP-CIDR,203.0.113.0/24,no-resolve
+`);
+
+    expect(ini.rulesets[0]).toMatchObject({
+      kind: 'inline',
+      inlineType: 'DOMAIN-REGEX',
+      inlineValue: ['^a.{0,61}$'],
+    });
+    expect(ini.rulesets[1]).toMatchObject({
+      kind: 'inline',
+      inlineType: 'IP-CIDR',
+      inlineValue: ['203.0.113.0/24', 'no-resolve'],
+    });
+
+    const built = buildRules(ini);
+    expect(built.rules).toEqual([
+      'DOMAIN-REGEX,^a.{0,61}$,GROUP',
+      'IP-CIDR,203.0.113.0/24,GROUP,no-resolve',
+    ]);
+  });
+
+  it('keeps whitelisted rule types when targeting legacy', () => {
+    const ini = parseIni(`
+[custom]
+ruleset=GROUP A,[]SRC-IP-CIDR,10.0.0.0/8
+ruleset=GROUP B,[]SRC-PORT,7777
+ruleset=GROUP C,[]DST-PORT,443
+ruleset=GROUP D,[]DOMAIN-REGEX,^a.{0,61}$
+`);
+    const built = buildRules(ini, { target: 'legacy' });
+
+    expect(built.rules).toEqual([
+      'SRC-IP-CIDR,10.0.0.0/8,GROUP A',
+      'SRC-PORT,7777,GROUP B',
+      'DST-PORT,443,GROUP C',
+    ]);
+    expect(built.skipped).toEqual([
+      expect.objectContaining({ group: 'GROUP D', inlineType: 'DOMAIN-REGEX' }),
+    ]);
+  });
+
+  it('refuses to compile oversized group regexes', () => {
+    const group: ProxyGroupEntry = {
+      name: 'BIG',
+      type: 'select',
+      rawOptions: [],
+      members: [{ kind: 'regex', pattern: 'a'.repeat(300) }],
+      raw: 'BIG`select`aaa',
+    };
+    const result = resolveGroupMembers(group, ['aaa']);
+
+    expect(result.proxies).toHaveLength(0);
+    expect(result.unresolved).toEqual(['a'.repeat(300)]);
   });
 });

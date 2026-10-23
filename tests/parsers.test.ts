@@ -338,6 +338,19 @@ describe('TUIC parser', () => {
       'skip-cert-verify': true,
     });
   });
+
+  it('copies only whitelisted URI fields onto the node', () => {
+    const node = parseTuic(
+      `tuic://${UUID}:fake-pass@tuic.example.com:443?token=fake-token&version=5&totally-unknown-param=evil&alpn=h3#TUIC-FIELDS`,
+    );
+
+    expect(node.token).toBe('fake-token');
+    expect(node.version).toBe(5);
+    // Unknown query parameters must not end up on the node.
+    const record = node as Record<string, unknown>;
+    expect(record['totally-unknown-param']).toBeUndefined();
+    expect(Object.keys(node)).not.toContain('totally-unknown-param');
+  });
 });
 
 describe('AnyTLS parser', () => {
@@ -356,6 +369,28 @@ describe('AnyTLS parser', () => {
       'skip-cert-verify': true,
       alpn: ['h2', 'http/1.1'],
     });
+  });
+
+  it('parses idle session tuning options', () => {
+    const node = parseAnyTLS(
+      'anytls://fake-password@anytls.example.com:443?idle-session-check-interval=30&idle-session-timeout=60#AnyTLS-Idle',
+    );
+
+    expect(node['idle-session-check-interval']).toBe(30);
+    expect(node['idle-session-timeout']).toBe(60);
+  });
+});
+
+describe('query parsing', () => {
+  it('uses a null prototype and skips dangerous keys', () => {
+    const query = parseQuery(
+      'sni=example.com&__proto__=%7B%7D&constructor=x&prototype=y&insecure=1',
+    );
+
+    expect(Object.getPrototypeOf(query)).toBeNull();
+    expect(Object.keys(query)).toEqual(['sni', 'insecure']);
+    expect(query.sni).toBe('example.com');
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 });
 
@@ -429,6 +464,15 @@ describe('Subscription parser', () => {
     expect(nodes.map((node) => node.type)).toEqual(['ss', 'vless', 'trojan']);
   });
 
+  it('decodes twice-encoded base64 subscriptions', () => {
+    const links = 'ss://YWVzLTI1Ni1nY206ZmFrZS1wYXNzd29yZA==@edge.example.com:8388#SS';
+    const nodes = parseSubscription(encodeBase64(encodeBase64(links)));
+
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].type).toBe('ss');
+    expect(nodes[0].name).toBe('SS');
+  });
+
   it('parses plain mixed subscriptions and skips comments', () => {
     const nodes = parseSubscription(`
 # comment
@@ -469,5 +513,22 @@ proxies:
     expect(() => parseUri('wireguard://example.com:51820')).toThrow(
       /Unsupported share link/,
     );
+  });
+
+  it('rejects inputs larger than the 10MB limit', () => {
+    const oversized = 'ss://not-a-real-link\n'.repeat(1024 * 1024);
+    const result = parseSubscriptionDetailed(oversized);
+
+    expect(result.nodes).toHaveLength(0);
+    expect(result.errors[0]?.message).toMatch(/10MB/);
+  });
+
+  it('refuses YAML documents with too many aliases', () => {
+    const aliases = Array.from({ length: 150 }, (_, i) => `key${i}: *anchor`).join('\n');
+    const payload = `anchor: &anchor [1]\n${aliases}\nproxies:\n  - name: yaml-ss\n    type: ss\n    server: edge.example.com\n    port: 8388\n    cipher: aes-256-gcm\n    password: fake-password`;
+    const result = parseSubscriptionDetailed(payload);
+
+    expect(result.nodes).toHaveLength(0);
+    expect(result.errors).toHaveLength(1);
   });
 });
