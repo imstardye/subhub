@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * subconverter-style INI parsing and Clash rule generation.
  *
@@ -19,6 +20,49 @@ import type {
 } from '../types';
 import { parse as parseYaml } from 'yaml';
 
+const MAX_YAML_ALIAS_COUNT = 100;
+
+/** Guard against absurdly large user-supplied group regexes. */
+const MAX_GROUP_REGEX_LENGTH = 256;
+
+/** Rule options that may trail a classical rule line. */
+const RULE_TRAILING_OPTIONS = new Set([
+  'no-resolve',
+  'src',
+  'dport',
+  'src-port',
+  'dst-port',
+  'extended-matching',
+]);
+
+const BUILTIN_RULE_TARGETS = new Set([
+  'DIRECT',
+  'REJECT',
+  'REJECT-DROP',
+  'PASS',
+]);
+
+/** Rule types a legacy Clash kernel can load. */
+const LEGACY_RULE_TYPES = new Set([
+  'DOMAIN',
+  'DOMAIN-SUFFIX',
+  'DOMAIN-KEYWORD',
+  'IP-CIDR',
+  'IP-CIDR6',
+  'GEOIP',
+  'SRC-IP-CIDR',
+  'SRC-PORT',
+  'DST-PORT',
+  'MATCH',
+]);
+
+interface ParsedRuleLine {
+  type: string;
+  content: string;
+  options: string[];
+  target?: string;
+}
+
 function unquote(value: string): string {
   const trimmed = value.trim();
   if (
@@ -37,6 +81,53 @@ function splitFirstComma(value: string): [string, string] {
   return [value.slice(0, index).trim(), value.slice(index + 1).trim()];
 }
 
+/**
+ * Split a rule line without breaking comma-containing content such as
+ * `DOMAIN-REGEX,^a.{0,61}$`. Only the type, trailing known options and an
+ * optional policy target are separated from the content.
+ */
+function parseRuleLine(line: string, target?: string): ParsedRuleLine | null {
+  const firstComma = line.indexOf(',');
+  const rawType = (firstComma === -1 ? line : line.slice(0, firstComma)).trim();
+  if (!rawType) return null;
+
+  let rest = firstComma === -1 ? '' : line.slice(firstComma + 1);
+  const options: string[] = [];
+  let sourceTarget: string | undefined;
+
+  while (rest) {
+    const lastComma = rest.lastIndexOf(',');
+    if (lastComma === -1) break;
+
+    const tail = rest.slice(lastComma + 1).trim();
+    const lower = tail.toLowerCase();
+    if (RULE_TRAILING_OPTIONS.has(lower)) {
+      options.unshift(tail);
+      rest = rest.slice(0, lastComma);
+      continue;
+    }
+
+    if (
+      !sourceTarget &&
+      ((target && tail === target) ||
+        BUILTIN_RULE_TARGETS.has(tail.toUpperCase()))
+    ) {
+      sourceTarget = tail;
+      rest = rest.slice(0, lastComma);
+      continue;
+    }
+
+    break;
+  }
+
+  return {
+    type: mapRuleType(rawType),
+    content: rest.trim(),
+    options,
+    ...(sourceTarget ? { target: sourceTarget } : {}),
+  };
+}
+
 function parseRuleset(raw: string): RulesetEntry {
   const [group, source] = splitFirstComma(raw);
   const entry: RulesetEntry = {
@@ -50,13 +141,12 @@ function parseRuleset(raw: string): RulesetEntry {
 
   if (source.startsWith('[]')) {
     const body = source.slice(2);
-    const parts = body
-      .split(',')
-      .map((part) => part.trim())
-      .filter((part, index, list) => part || index < list.length - 1);
+    const parsed = parseRuleLine(body);
     entry.kind = 'inline';
-    entry.inlineType = parts[0] ?? '';
-    entry.inlineValue = parts.slice(1);
+    entry.inlineType = parsed?.type ?? '';
+    entry.inlineValue = parsed
+      ? [...(parsed.content ? [parsed.content] : []), ...parsed.options]
+      : [];
     return entry;
   }
 
@@ -286,6 +376,10 @@ export function resolveGroupMembers(
     }
 
     const { source, flags } = compileGroupRegex(member.pattern);
+    if (source.length > MAX_GROUP_REGEX_LENGTH) {
+      unresolved.push(member.pattern);
+      continue;
+    }
     let regex: RegExp;
     try {
       regex = new RegExp(source, flags);
@@ -341,20 +435,15 @@ function inlineRuleToClash(entry: RulesetEntry, target: 'mihomo' | 'legacy'): st
   if (type === 'FINAL' || type === 'MATCH') {
     return `MATCH,${entry.group}`;
   }
-  if (target === 'legacy' && type === 'GEOSITE') {
+  if (!type) return null;
+
+  const normalizedType = mapRuleType(type);
+  if (target === 'legacy' && !LEGACY_RULE_TYPES.has(normalizedType)) {
     return null;
   }
-  if (!type) return null;
 
   const content = values[0] ?? '';
   const options = values.slice(1);
-  const normalizedType = mapRuleType(type);
-
-  if (normalizedType === 'GEOIP' || normalizedType === 'IP-CIDR' || normalizedType === 'IP-CIDR6') {
-    const parts = [normalizedType, content, entry.group, ...options].filter(Boolean);
-    return parts.join(',');
-  }
-
   const parts = [normalizedType, content, entry.group, ...options].filter(Boolean);
   return parts.join(',');
 }
@@ -363,22 +452,33 @@ function inlineRuleToClash(entry: RulesetEntry, target: 'mihomo' | 'legacy'): st
  * Parse a classical Clash rule list (plain lines or a YAML `payload:` list)
  * into rules pointing at `group`.
  */
-export function expandRuleList(content: string, group: string): string[] {
+export interface ExpandedRuleList {
+  rules: string[];
+  skipped: string[];
+}
+
+function expandRuleListDetailed(
+  content: string,
+  group: string,
+  target: 'mihomo' | 'legacy',
+): ExpandedRuleList {
   const lines: string[] = [];
   const trimmed = content.trim();
 
-  if (!trimmed) return lines;
+  if (!trimmed) return { rules: [], skipped: [] };
 
   if (/(^|\n)\s*payload\s*:/.test(trimmed)) {
     try {
-      const document = parseYaml(trimmed) as { payload?: unknown };
+      const document = parseYaml(trimmed, {
+        maxAliasCount: MAX_YAML_ALIAS_COUNT,
+      }) as { payload?: unknown };
       if (Array.isArray(document.payload)) {
         for (const item of document.payload) {
           if (typeof item === 'string') lines.push(item);
         }
       }
     } catch {
-      return [];
+      return { rules: [], skipped: [] };
     }
   } else {
     for (const line of trimmed.split(/\r?\n/)) {
@@ -388,20 +488,40 @@ export function expandRuleList(content: string, group: string): string[] {
     }
   }
 
-  const output: string[] = [];
+  const rules: string[] = [];
+  const skipped: string[] = [];
   for (const line of lines) {
-    const parts = line.split(',').map((part) => part.trim());
-    const type = mapRuleType(parts[0] ?? '');
-    if (!type) continue;
-    if (type === 'MATCH' || type === 'FINAL') {
-      output.push(`MATCH,${group}`);
+    const parsed = parseRuleLine(line, group);
+    if (!parsed) continue;
+
+    if (parsed.type === 'MATCH' || parsed.type === 'FINAL') {
+      rules.push(`MATCH,${group}`);
       continue;
     }
-    const content = parts[1] ?? '';
-    const options = parts.slice(2);
-    output.push([type, content, group, ...options].filter(Boolean).join(','));
+
+    if (target === 'legacy' && !LEGACY_RULE_TYPES.has(parsed.type)) {
+      skipped.push(line);
+      continue;
+    }
+
+    const parts = [parsed.type, parsed.content, group, ...parsed.options]
+      .filter(Boolean);
+    rules.push(parts.join(','));
   }
-  return output;
+
+  return { rules, skipped };
+}
+
+/**
+ * Parse a classical Clash rule list (plain lines or a YAML `payload:` list)
+ * into rules pointing at `group`. Comma-containing content is preserved.
+ */
+export function expandRuleList(
+  content: string,
+  group: string,
+  target: 'mihomo' | 'legacy' = 'mihomo',
+): string[] {
+  return expandRuleListDetailed(content, group, target).rules;
 }
 
 export interface BuildRulesOptions extends BuildProxyGroupsOptions {
@@ -451,10 +571,24 @@ export function buildRules(
       continue;
     }
 
+    if (target === 'legacy') {
+      // Legacy Clash cannot consume rule-providers, so ruleset contents must be
+      // expanded inline. Without a resolver there is nothing safe to emit.
+      const content = options.expandRemote?.(entry.source);
+      if (content === undefined) {
+        skipped.push(entry);
+        continue;
+      }
+      const expanded = expandRuleListDetailed(content, entry.group, 'legacy');
+      rules.push(...expanded.rules);
+      if (expanded.skipped.length > 0) skipped.push(entry);
+      continue;
+    }
+
     if (options.expandRemote) {
       const content = options.expandRemote(entry.source);
       if (content !== undefined) {
-        rules.push(...expandRuleList(content, entry.group));
+        rules.push(...expandRuleList(content, entry.group, 'mihomo'));
         continue;
       }
     }

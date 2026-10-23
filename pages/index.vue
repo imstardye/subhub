@@ -1,3 +1,4 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 const capabilities = [
   'Share-link parsers: ss / vmess / vless (reality) / trojan / hysteria2 / tuic / anytls',

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * Clash / mihomo YAML and subscription parsers.
  *
@@ -10,6 +11,9 @@ import { parse as parseYaml } from 'yaml';
 import type { ParseResult, ProxyNode } from '../types';
 import { parsePort, tryDecodeBase64 } from '../utils';
 import { isShareLink, parseUri } from './uri';
+
+export const MAX_SUBSCRIPTION_INPUT_LENGTH = 10 * 1024 * 1024;
+const MAX_YAML_ALIAS_COUNT = 100;
 
 const SUPPORTED_NODE_TYPES = new Set([
   'ss',
@@ -60,7 +64,7 @@ export function parseClashNode(raw: string): ProxyNode {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    parsed = parseYaml(raw);
+    parsed = parseYaml(raw, { maxAliasCount: MAX_YAML_ALIAS_COUNT });
   }
 
   const node = normalizeNode(parsed);
@@ -73,7 +77,12 @@ export function parseClashNode(raw: string): ProxyNode {
  * `proxies` array and a bare array of proxy objects.
  */
 export function parseClashYaml(raw: string): ProxyNode[] {
-  const document = parseYaml(raw) as unknown;
+  if (raw.length > MAX_SUBSCRIPTION_INPUT_LENGTH) {
+    throw new Error('Input exceeds the 10MB limit');
+  }
+  const document = parseYaml(raw, {
+    maxAliasCount: MAX_YAML_ALIAS_COUNT,
+  }) as unknown;
 
   if (Array.isArray(document)) {
     return document
@@ -93,22 +102,28 @@ export function parseClashYaml(raw: string): ProxyNode[] {
   return [];
 }
 
+function looksLikeSubscriptionPayload(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    trimmed.includes('://') ||
+    /(^|\n)\s*proxies\s*:/.test(trimmed) ||
+    trimmed.startsWith('[') ||
+    trimmed.startsWith('{')
+  );
+}
+
 function maybeDecodeSubscription(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return trimmed;
 
-  // Plain-text subscriptions always contain a URI separator.
-  if (trimmed.includes('://') || /(^|\n)\s*proxies\s*:/.test(trimmed)) {
-    return trimmed;
-  }
-
   let current = trimmed;
-  for (let depth = 0; depth < 2; depth += 1) {
+  // Providers sometimes wrap an already base64-encoded subscription again.
+  // Decode through a few layers until we reach a recognizable payload.
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (looksLikeSubscriptionPayload(current)) break;
     const decoded = tryDecodeBase64(current);
     if (!decoded) break;
-    if (!decoded.includes('://') && !/(^|\n)\s*proxies\s*:/.test(decoded)) break;
     current = decoded.trim();
-    if (current.includes('://') || /(^|\n)\s*proxies\s*:/.test(current)) break;
   }
   return current;
 }
@@ -123,6 +138,14 @@ function maybeDecodeSubscription(raw: string): string {
 export function parseSubscriptionDetailed(raw: string): ParseResult {
   const nodes: ProxyNode[] = [];
   const errors: ParseResult['errors'] = [];
+
+  if (raw.length > MAX_SUBSCRIPTION_INPUT_LENGTH) {
+    errors.push({
+      line: raw.slice(0, 120),
+      message: 'Input exceeds the 10MB limit',
+    });
+    return { nodes, errors };
+  }
 
   const payload = maybeDecodeSubscription(raw.replace(/^\uFEFF/, ''));
   if (!payload) return { nodes, errors };

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * Share-link proxy parsers.
  *
@@ -22,7 +23,6 @@ import {
   parsePort,
   parseQuery,
   splitFragment,
-  toKebabCase,
   tryDecodeBase64,
 } from '../utils';
 
@@ -136,7 +136,115 @@ export function parseShadowsocks(line: string): ProxyNode {
   if (pluginInfo.plugin) node.plugin = pluginInfo.plugin;
   if (pluginInfo.pluginOpts) node['plugin-opts'] = pluginInfo.pluginOpts;
 
+  const uot = query.uot ?? query['udp-over-tcp'] ?? query.udp_over_tcp;
+  if (uot != null) {
+    const normalized = String(uot).trim().toLowerCase();
+    if (normalized === 'sp.v1' || normalized === 'spv1') {
+      node['udp-over-tcp'] = true;
+      node['udp-over-tcp-version'] = 1;
+    } else if (normalized === 'sp.v2' || normalized === 'spv2') {
+      node['udp-over-tcp'] = true;
+      node['udp-over-tcp-version'] = 2;
+    } else if (isTruthyFlag(uot)) {
+      node['udp-over-tcp'] = true;
+    }
+  }
+
   return node;
+}
+
+/**
+ * Parse ShadowsocksR links: ssr://base64(server:port:protocol:cipher:obfs:password/?...).
+ */
+export function parseSsr(line: string): ProxyNode {
+  const encoded = line.slice('ssr://'.length).trim();
+  const decoded = tryDecodeBase64(encoded);
+  if (!decoded) throw new Error('Invalid SSR URI: cannot decode payload');
+
+  const queryIndex = decoded.indexOf('/?');
+  const main = (queryIndex === -1 ? decoded : decoded.slice(0, queryIndex)).replace(
+    /\/$/,
+    '',
+  );
+  const query = parseQuery(queryIndex === -1 ? undefined : decoded.slice(queryIndex + 2));
+
+  // Split from the right so bracketed IPv6 servers keep their colons.
+  const fields = main.split(':');
+  if (fields.length < 6) throw new Error('Invalid SSR URI: malformed payload');
+
+  const passwordRaw = fields.pop() ?? '';
+  const obfs = fields.pop() ?? '';
+  const cipher = fields.pop() ?? '';
+  const protocol = fields.pop() ?? '';
+  const portRaw = fields.pop() ?? '';
+  const server = fields.join(':');
+  if (!server || !cipher || !protocol || !obfs) {
+    throw new Error('Invalid SSR URI: malformed payload');
+  }
+
+  // SSR writers use the literal `(null)` for empty parameters. Sub-Store
+  // strips whitespace from the decoded protocol/obfs params but not names.
+  const decodeSsrParam = (value: string | undefined): string =>
+    value && value.trim() !== '(null)'
+      ? decodeBase64(value).replace(/\s/g, '')
+      : '';
+  const remarks =
+    query.remarks && query.remarks.trim() !== '(null)'
+      ? decodeBase64(query.remarks)
+      : '';
+  const protocolParam = decodeSsrParam(
+    query.protoparam || query.protocolparam,
+  );
+  const obfsParam = decodeSsrParam(query.obfsparam);
+
+  const node: ProxyNode = {
+    type: 'ssr',
+    name: normalizeLoopbackName(
+      remarks,
+      `SSR ${server}:${parsePort(portRaw)}`,
+    ),
+    server,
+    port: parsePort(portRaw),
+    protocol,
+    cipher,
+    obfs,
+    password: decodeBase64(passwordRaw),
+  };
+
+  if (protocolParam) node['protocol-param'] = protocolParam;
+  if (obfsParam) node['obfs-param'] = obfsParam;
+
+  return node;
+}
+
+function getInsecureFlag(params: Record<string, string>): string | undefined {
+  return params.insecure ?? params.allowInsecure ?? params.allow_insecure;
+}
+
+function extractPathEarlyData(path: string): { path: string; ed?: string } {
+  const queryIndex = path.indexOf('?');
+  if (queryIndex === -1) return { path };
+
+  const basePath = path.slice(0, queryIndex);
+  const kept: string[] = [];
+  let ed: string | undefined;
+
+  for (const part of path.slice(queryIndex + 1).split('&')) {
+    if (!part) continue;
+    const separator = part.indexOf('=');
+    const key = decodeComponent(separator === -1 ? part : part.slice(0, separator));
+    const value = decodeComponent(separator === -1 ? '' : part.slice(separator + 1));
+    if (key === 'ed') {
+      if (ed === undefined && value) ed = value;
+      continue;
+    }
+    kept.push(part);
+  }
+
+  return {
+    path: kept.length > 0 ? `${basePath}?${kept.join('&')}` : basePath,
+    ...(ed !== undefined ? { ed } : {}),
+  };
 }
 
 function applyTransport(
@@ -184,10 +292,21 @@ function applyTransport(
     }
   }
 
-  const path = params.path || options.defaultPath;
+  let path = params.path || options.defaultPath;
+  let earlyData = params.ed;
+  if (network === 'ws' && path) {
+    const extracted = extractPathEarlyData(path);
+    path = extracted.path;
+    earlyData = extracted.ed ?? earlyData;
+  }
   if (path) opts.path = path;
   if (network === 'ws' && !opts.path) opts.path = '/';
   if (network === 'grpc' && params.mode) opts['_grpc-type'] = params.mode;
+  if (network === 'ws' && earlyData && /^\d+$/.test(earlyData)) {
+    opts['max-early-data'] = Number.parseInt(earlyData, 10);
+    opts['early-data-header-name'] =
+      params.eh || 'Sec-WebSocket-Protocol';
+  }
 
   if (params.type === 'httpupgrade' || params.net === 'httpupgrade') {
     opts['v2ray-http-upgrade'] = true;
@@ -202,6 +321,7 @@ function applyReality(node: ProxyNode, params: Record<string, string>): void {
   node['reality-opts'] = {
     'public-key': params.pbk ?? '',
     ...(params.sid ? { 'short-id': params.sid } : {}),
+    ...(params.spx ? { '_spider-x': params.spx } : {}),
   };
 }
 
@@ -263,8 +383,11 @@ export function parseVmess(line: string): ProxyNode {
     const sni = (params.sni ?? params.peer ?? params.servername) as string | undefined;
     if (sni) node.sni = sni;
   }
-  if (params.allowInsecure != null) {
-    node['skip-cert-verify'] = isTruthyFlag(params.allowInsecure);
+  const insecure = getInsecureFlag(
+    params as Record<string, string>,
+  );
+  if (insecure != null) {
+    node['skip-cert-verify'] = isTruthyFlag(insecure);
   } else if (params.verify_cert != null) {
     node['skip-cert-verify'] = !isTruthyFlag(params.verify_cert);
   }
@@ -335,8 +458,9 @@ export function parseVless(line: string, protocol: 'vless' | 'vmess' = 'vless'):
   if (sni) node.sni = sni;
   if (params.fp) node['client-fingerprint'] = params.fp;
   if (params.alpn) node.alpn = parseAlpn(params.alpn);
-  if (params.allowInsecure != null) {
-    node['skip-cert-verify'] = isTruthyFlag(params.allowInsecure);
+  const insecure = getInsecureFlag(params);
+  if (insecure != null) {
+    node['skip-cert-verify'] = isTruthyFlag(insecure);
   }
   if (params.pcs) node['tls-fingerprint'] = params.pcs;
 
@@ -373,8 +497,9 @@ export function parseTrojan(line: string): ProxyNode {
   const sni = params.sni || params.peer || params.servername;
   if (sni) node.sni = sni;
   if (params.alpn) node.alpn = parseAlpn(params.alpn);
-  if (params.allowInsecure != null) {
-    node['skip-cert-verify'] = isTruthyFlag(params.allowInsecure);
+  const insecure = getInsecureFlag(params);
+  if (insecure != null) {
+    node['skip-cert-verify'] = isTruthyFlag(insecure);
   }
   if (params.fp) node['client-fingerprint'] = params.fp;
   applyReality(node, params);
@@ -430,8 +555,9 @@ export function parseHysteria2(line: string): ProxyNode {
     node.obfs = params.obfs;
     if (params['obfs-password']) node['obfs-password'] = params['obfs-password'];
   }
-  if (params.insecure != null) {
-    node['skip-cert-verify'] = isTruthyFlag(params.insecure);
+  const insecure = getInsecureFlag(params);
+  if (insecure != null) {
+    node['skip-cert-verify'] = isTruthyFlag(insecure);
   }
   if (params.fastopen != null) node.tfo = isTruthyFlag(params.fastopen);
   if (params.pinSHA256) node['tls-fingerprint'] = params.pinSHA256;
@@ -479,46 +605,62 @@ export function parseTuic(line: string): ProxyNode {
   const sni = params.sni || params.peer;
   if (sni) node.sni = sni;
   if (params.alpn) node.alpn = parseAlpn(params.alpn);
-  if (params.allow_insecure != null || params.insecure != null) {
-    node['skip-cert-verify'] = isTruthyFlag(
-      params.allow_insecure ?? params.insecure,
-    );
-  }
-  if (params.fast_open != null) node.tfo = isTruthyFlag(params.fast_open);
 
-  const congestion = params.congestion_control ?? params['congestion-control'];
+  const insecure = getInsecureFlag(params);
+  if (insecure != null) node['skip-cert-verify'] = isTruthyFlag(insecure);
+
+  const fastOpen = params.fast_open ?? params['fast-open'];
+  if (fastOpen != null) node.tfo = isTruthyFlag(fastOpen);
+
+  const congestion =
+    params.congestion_control ??
+    params['congestion-control'] ??
+    params.congestionControl;
   if (congestion) node['congestion-controller'] = congestion;
-  if (params.udp_relay_mode) node['udp-relay-mode'] = params.udp_relay_mode;
-  if (params.disable_sni != null) {
-    node['disable-sni'] = isTruthyFlag(params.disable_sni);
-  }
-  if (params.reduce_rtt != null) {
-    node['reduce-rtt'] = isTruthyFlag(params.reduce_rtt);
-  }
-  if (params.heartbeat_interval) {
-    node['heartbeat-interval'] = params.heartbeat_interval;
-  }
-  if (params['request-timeout']) node['request-timeout'] = params['request-timeout'];
 
-  // Preserve any additional URI fields using Mihomo's kebab-case naming.
-  const handled = new Set([
-    'sni',
-    'peer',
-    'alpn',
-    'allow_insecure',
-    'insecure',
-    'fast_open',
-    'congestion_control',
-    'congestion-control',
-    'udp_relay_mode',
-    'disable_sni',
-    'reduce_rtt',
-    'heartbeat_interval',
-    'request-timeout',
-  ]);
-  for (const [key, value] of Object.entries(params)) {
-    if (handled.has(key)) continue;
-    node[toKebabCase(key)] = value;
+  const relayMode =
+    params.udp_relay_mode ??
+    params['udp-relay-mode'] ??
+    params.udpRelayMode;
+  if (relayMode) node['udp-relay-mode'] = relayMode;
+
+  const disableSni = params.disable_sni ?? params['disable-sni'];
+  if (disableSni != null) node['disable-sni'] = isTruthyFlag(disableSni);
+
+  const reduceRtt = params.reduce_rtt ?? params['reduce-rtt'];
+  if (reduceRtt != null) node['reduce-rtt'] = isTruthyFlag(reduceRtt);
+
+  const heartbeat = params.heartbeat_interval ?? params['heartbeat-interval'];
+  if (heartbeat) node['heartbeat-interval'] = heartbeat;
+
+  const requestTimeout = params['request-timeout'] ?? params.request_timeout;
+  if (requestTimeout) node['request-timeout'] = requestTimeout;
+
+  const uot = params.udp_over_tcp ?? params['udp-over-tcp'];
+  if (uot != null) {
+    const normalized = String(uot).trim().toLowerCase();
+    if (normalized === 'sp.v1' || normalized === 'spv1') {
+      node['udp-over-tcp'] = true;
+      node['udp-over-tcp-version'] = 1;
+    } else if (normalized === 'sp.v2' || normalized === 'spv2') {
+      node['udp-over-tcp'] = true;
+      node['udp-over-tcp-version'] = 2;
+    } else {
+      node['udp-over-tcp'] = isTruthyFlag(uot);
+    }
+  }
+  const uotVersion =
+    params.udp_over_tcp_version ?? params['udp-over-tcp-version'];
+  if (uotVersion != null) {
+    const parsed = Number.parseInt(uotVersion, 10);
+    if (Number.isFinite(parsed)) node['udp-over-tcp-version'] = parsed;
+  }
+
+  // Only explicitly supported URI fields are copied onto the node.
+  if (params.token) node.token = params.token;
+  if (params.version != null) {
+    const parsed = Number.parseInt(params.version, 10);
+    if (Number.isFinite(parsed)) node.version = parsed;
   }
 
   return node;
@@ -548,8 +690,9 @@ export function parseAnyTLS(line: string): ProxyNode {
   const sni = params.sni || params.peer;
   if (sni) node.sni = sni;
   if (params.alpn) node.alpn = parseAlpn(params.alpn);
-  if (params.insecure != null) {
-    node['skip-cert-verify'] = isTruthyFlag(params.insecure);
+  const insecure = getInsecureFlag(params);
+  if (insecure != null) {
+    node['skip-cert-verify'] = isTruthyFlag(insecure);
   }
   if (params.udp != null) node.udp = isTruthyFlag(params.udp);
   if (params.fp) node['client-fingerprint'] = params.fp;
@@ -561,6 +704,15 @@ export function parseAnyTLS(line: string): ProxyNode {
     const value = Number.parseInt(params['idle-session-timeout'], 10);
     if (Number.isFinite(value)) node['idle-session-timeout'] = value;
   }
+  const idleSessionCheck =
+    params['idle-session-check-interval'] ??
+    params.idle_session_check_interval;
+  if (idleSessionCheck != null) {
+    const value = Number.parseInt(idleSessionCheck, 10);
+    if (Number.isFinite(value)) {
+      node['idle-session-check-interval'] = value;
+    }
+  }
 
   return node;
 }
@@ -570,6 +722,7 @@ const URI_PARSERS: Array<{
   parse: (line: string) => ProxyNode;
 }> = [
   { test: (line) => /^ss:\/\//i.test(line), parse: parseShadowsocks },
+  { test: (line) => /^ssr:\/\//i.test(line), parse: parseSsr },
   { test: (line) => /^vmess:\/\//i.test(line), parse: parseVmess },
   { test: (line) => /^vless:\/\//i.test(line), parse: (line) => parseVless(line, 'vless') },
   { test: (line) => /^trojan:\/\//i.test(line), parse: parseTrojan },

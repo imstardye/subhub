@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * Small pure-TS helpers shared by the parsers.
  *
@@ -73,8 +74,12 @@ export function splitFragment(raw: string): {
   };
 }
 
+const FORBIDDEN_QUERY_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
 export function parseQuery(query: string | undefined): Record<string, string> {
-  const result: Record<string, string> = {};
+  // A null-prototype object keeps attacker-controlled keys such as
+  // `__proto__` from changing the prototype chain.
+  const result = Object.create(null) as Record<string, string>;
   if (!query) return result;
 
   const cleaned = query.replace(/^\?/, '');
@@ -83,9 +88,10 @@ export function parseQuery(query: string | undefined): Record<string, string> {
   for (const pair of cleaned.split('&')) {
     if (!pair) continue;
     const eq = pair.indexOf('=');
-    const key = eq === -1 ? pair : pair.slice(0, eq);
-    const value = eq === -1 ? '' : pair.slice(eq + 1);
-    result[decodeComponent(key)] = decodeComponent(value);
+    const key = decodeComponent(eq === -1 ? pair : pair.slice(0, eq));
+    if (FORBIDDEN_QUERY_KEYS.has(key)) continue;
+    const value = decodeComponent(eq === -1 ? '' : pair.slice(eq + 1));
+    result[key] = value;
   }
   return result;
 }

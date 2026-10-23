@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 /**
  * Public parser entry points.
  *
@@ -10,6 +11,7 @@ export {
   parseAnyTLS,
   parseHysteria2,
   parseShadowsocks,
+  parseSsr,
   parseTrojan,
   parseTuic,
   parseUri,

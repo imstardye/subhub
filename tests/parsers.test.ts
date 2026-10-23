@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
 import {
   parseAnyTLS,
   parseClashYaml,
   parseHysteria2,
   parseShadowsocks,
+  parseSsr,
   parseSubscription,
   parseSubscriptionDetailed,
   parseTrojan,
@@ -12,7 +14,7 @@ import {
   parseVless,
   parseVmess,
 } from '../core/parsers';
-import { encodeBase64 } from '../core/utils';
+import { encodeBase64, parseQuery } from '../core/utils';
 
 const UUID = '11111111-2222-3333-4444-555555555555';
 
@@ -52,6 +54,63 @@ describe('Shadowsocks parser', () => {
       mode: 'http',
       host: 'cdn.example.com',
     });
+  });
+
+  it('parses udp-over-tcp flags and versions', () => {
+    const spv1 = parseShadowsocks(
+      'ss://YWVzLTI1Ni1nY206ZmFrZS1wYXNzd29yZA==@edge.example.com:8388?uot=sp.v1#SS-UOT1',
+    );
+    expect(spv1['udp-over-tcp']).toBe(true);
+    expect(spv1['udp-over-tcp-version']).toBe(1);
+
+    const plain = parseShadowsocks(
+      'ss://YWVzLTI1Ni1nY206ZmFrZS1wYXNzd29yZA==@edge.example.com:8388?udp-over-tcp=1#SS-UOT',
+    );
+    expect(plain['udp-over-tcp']).toBe(true);
+    expect(plain['udp-over-tcp-version']).toBeUndefined();
+  });
+});
+
+describe('SSR parser', () => {
+  it('parses protocol, obfs params and remarks', () => {
+    // ssr://base64(server:port:protocol:cipher:obfs:base64(password)/?params)
+    const main = [
+      'ssr.example.com:443:auth_aes128_md5:aes-128-cfb:http_simple:',
+      encodeBase64('fake-password'),
+    ].join('');
+    const query = [
+      `remarks=${encodeBase64('SSR 香港 01')}`,
+      `protoparam=${encodeBase64('32:fake')}`,
+      `obfsparam=${encodeBase64('cdn.example.com')}`,
+    ].join('&');
+    const node = parseSsr(`ssr://${encodeBase64(`${main}/?${query}`)}`);
+
+    expect(node).toMatchObject({
+      type: 'ssr',
+      name: 'SSR 香港 01',
+      server: 'ssr.example.com',
+      port: 443,
+      protocol: 'auth_aes128_md5',
+      cipher: 'aes-128-cfb',
+      obfs: 'http_simple',
+      password: 'fake-password',
+      'protocol-param': '32:fake',
+      'obfs-param': 'cdn.example.com',
+    });
+  });
+
+  it('keeps bracketed IPv6 servers and drops (null) params', () => {
+    const main = `[2001:db8::1]:8388:origin:aes-128-cfb:plain:${encodeBase64('fake-pw')}`;
+    const node = parseSsr(
+      `ssr://${encodeBase64(
+        `${main}/?remarks=${encodeBase64('SSR6')}&obfsparam=(null)`,
+      )}`,
+    );
+
+    expect(node.server).toBe('[2001:db8::1]');
+    expect(node.port).toBe(8388);
+    expect(node.name).toBe('SSR6');
+    expect(node['obfs-param']).toBeUndefined();
   });
 });
 
@@ -106,6 +165,30 @@ describe('VMess parser', () => {
     expect(node.network).toBe('grpc');
     expect(node['grpc-opts']).toMatchObject({ 'grpc-service-name': 'grpc-svc' });
   });
+
+  it('parses h2 transports with host lists from JSON links', () => {
+    const node = parseVmess(
+      `vmess://${encodeBase64(
+        JSON.stringify({
+          ps: 'VMess H2',
+          add: 'vm.example.com',
+          port: '443',
+          id: UUID,
+          net: 'h2',
+          host: 'a.example.com,b.example.com',
+          path: '/h2',
+          tls: 'tls',
+        }),
+      )}`,
+    );
+
+    expect(node.network).toBe('h2');
+    expect(node.tls).toBe(true);
+    expect(node['h2-opts']).toEqual({
+      host: ['a.example.com', 'b.example.com'],
+      path: '/h2',
+    });
+  });
 });
 
 describe('VLESS parser', () => {
@@ -133,6 +216,40 @@ describe('VLESS parser', () => {
       path: '/ws',
       headers: { Host: 'cdn.example.com' },
     });
+  });
+
+  it('converts ws path early data into max-early-data', () => {
+    const node = parseVless(
+      `vless://${UUID}@vless.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fws%3Fed%3D2048#VLESS-ED`,
+    );
+
+    expect(node['ws-opts']).toMatchObject({
+      path: '/ws',
+      'max-early-data': 2048,
+      'early-data-header-name': 'Sec-WebSocket-Protocol',
+    });
+  });
+
+  it('parses reality spider-x and allowInsecure aliases', () => {
+    const node = parseVless(
+      `vless://${UUID}@vless.example.com:443?security=reality&pbk=fake-public-key&sid=abcd&spx=%2F&allowInsecure=1#VLESS-SPX`,
+    );
+
+    expect(node['reality-opts']).toEqual({
+      'public-key': 'fake-public-key',
+      'short-id': 'abcd',
+      '_spider-x': '/',
+    });
+    expect(node['skip-cert-verify']).toBe(true);
+  });
+
+  it('parses bracketed IPv6 hosts', () => {
+    const node = parseVless(
+      `vless://${UUID}@[2001:db8::10]:443?security=tls#VLESS-IPV6`,
+    );
+
+    expect(node.server).toBe('[2001:db8::10]');
+    expect(node.port).toBe(443);
   });
 
   it('parses HTTP/2 host lists', () => {

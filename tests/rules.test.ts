@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -163,14 +164,57 @@ describe('Clash rule builder', () => {
     expect(built.skipped).toHaveLength(0);
   });
 
-  it('builds legacy rules without GEOSITE entries', () => {
-    const built = buildRules(legacyIni, { target: 'legacy' });
+  it('expands legacy rules and never emits rule-providers', () => {
+    const built = buildRules(legacyIni, {
+      target: 'legacy',
+      // Everything the resolver cannot answer is reported as skipped instead
+      // of becoming a RULE-SET: legacy kernels cannot load rule-providers.
+      expandRemote: () => undefined,
+    });
 
-    expect(Object.keys(built.ruleProviders)).toHaveLength(40);
-    expect(built.rules).toHaveLength(42);
-    expect(built.rules.some((rule) => rule.startsWith('GEOSITE,'))).toBe(false);
+    expect(Object.keys(built.ruleProviders)).toHaveLength(0);
+    expect(built.rules.some((rule) => rule.startsWith('RULE-SET,'))).toBe(false);
     expect(built.rules).toContain('GEOIP,CN,🎯 全球直连,no-resolve');
     expect(built.rules.at(-1)).toBe('MATCH,🐟 漏网之鱼');
+    // The legacy fixture has 40 URL rulesets, all without content here.
+    expect(built.skipped).toHaveLength(40);
+  });
+
+  it('expands legacy URL rulesets inline and drops unsupported rule types', () => {
+    const built = buildRules(
+      parseIni(`
+[custom]
+ruleset=A,https://rules.example.com/one.list
+ruleset=B,[]GEOIP,CN
+ruleset=C,[]FINAL
+`),
+      {
+        target: 'legacy',
+        expandRemote: () =>
+          [
+            'DOMAIN,ads.example.com',
+            'DOMAIN-REGEX,^a.{0,61}$', // mihomo-only rule type
+            'GEOIP,CN,no-resolve',
+            'MATCH',
+          ].join('\n'),
+      },
+    );
+
+    expect(Object.keys(built.ruleProviders)).toHaveLength(0);
+    expect(built.rules).toEqual([
+      'DOMAIN,ads.example.com,A',
+      'GEOIP,CN,A,no-resolve',
+      'MATCH,A',
+      'GEOIP,CN,B',
+      'MATCH,C',
+    ]);
+    // The DOMAIN-REGEX line was skipped inside the expanded ruleset.
+    expect(built.skipped).toEqual([
+      expect.objectContaining({
+        kind: 'url',
+        source: 'https://rules.example.com/one.list',
+      }),
+    ]);
   });
 
   it('skips inline rules unsupported by the target kernel', () => {
@@ -183,7 +227,13 @@ describe('Clash rule builder', () => {
     );
 
     expect(geositeSkips).toHaveLength(geositeRules.length);
-    expect(built.rules).toHaveLength(38 - geositeRules.length);
+
+    // Only inline rules reach `rules` here (no expandRemote for URL rulesets);
+    // the 4 GEOSITE entries are dropped, the 2 GEOIP and 1 FINAL stay.
+    expect(built.rules).toHaveLength(3);
+    expect(built.rules.some((rule) => rule.startsWith('GEOSITE,'))).toBe(false);
+    expect(built.rules).toContain('GEOIP,CN,🎯 全球直连,no-resolve');
+    expect(built.rules.at(-1)).toBe('MATCH,🐟 漏网之鱼');
   });
 
   it('deduplicates providers that share the same URL', () => {
