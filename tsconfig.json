@@ -12,6 +12,7 @@
   },
   "include": [
     "core/**/*.ts",
+    "server/**/*.ts",
     "tests/**/*.ts",
     "nuxt.config.ts",
     "vitest.config.ts"

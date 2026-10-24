@@ -42,6 +42,7 @@ core/                 纯 TypeScript，可直接被 Nuxt server 或脚本引用
   rules/              subconverter ini 解析、代理组与规则生成
   utils/              base64、URI、类型清理等小工具
   types.ts            公共类型
+server/db/            Drizzle schema、SQLite 打开与 URL 加解密
 pages/                Nuxt 页面（P1 仅占位）
 tests/                Vitest 单测
 tests/fixtures/       subconverter ini 测试样本
@@ -74,12 +75,20 @@ P1 共 187 个单测，覆盖：
 均为公开的 GitHub raw 规则地址。详见
 [`tests/fixtures/README.md`](./tests/fixtures/README.md)。
 
-## 环境变量（后续阶段使用）
+## 数据库（P2 骨架）
+
+`server/db` 使用 Drizzle ORM + better-sqlite3（11.x，兼容当前 Node 20；
+13.x 要求 Node ≥ 22）。`SUBHUB_DB_PATH` 缺省为 `.data/subhub.sqlite`，
+打开时会创建目录和表。订阅源 URL 经 `server/db/crypto.ts`（AES-256-GCM）
+加密后入库，密钥为 `SUBHUB_SECRET`；未设置且非 production 时仅使用开发用
+测试密钥，生产环境必须显式配置。
+
+## 环境变量
 
 ```bash
 SUBHUB_ADMIN_PASSWORD=change-me
 SUBHUB_SECRET=change-me-too
-SUBHUB_DB_PATH=./.data/subhub.db
+SUBHUB_DB_PATH=./.data/subhub.sqlite
 ```
 
 仓库中不会提交任何真实订阅链接、token、密码或私人域名；测试数据一律使用
