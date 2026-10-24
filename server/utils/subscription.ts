@@ -13,7 +13,12 @@ import { and, asc, eq } from 'drizzle-orm';
 import { parseSubscription, produceMihomo, produceLegacy, type ProxyNode } from '../../core';
 import type { SubhubDb } from '../db';
 import { accessLogs, sources, userSources, users } from '../db/schema';
-import { createRateLimiter, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS } from './rate-limit';
+import {
+  createRateLimiter,
+  RATE_LIMIT_MAX,
+  RATE_LIMIT_MAX_KEYS,
+  RATE_LIMIT_WINDOW_MS,
+} from './rate-limit';
 
 /** Targets accepted by /s/:token/:target (SPEC: 订阅出口). */
 export const EXPORT_TARGETS = [
@@ -57,11 +62,34 @@ export const PLACEHOLDER_USERINFO = 'upload=0; download=0; total=0; expire=0';
 /** Guard against abuse of the unauthenticated path before the token is checked. */
 const MAX_TOKEN_LENGTH = 128;
 
-const rateLimiter = createRateLimiter({ max: RATE_LIMIT_MAX, windowMs: RATE_LIMIT_WINDOW_MS });
+const rateLimiter = createRateLimiter({
+  max: RATE_LIMIT_MAX,
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  maxKeys: RATE_LIMIT_MAX_KEYS,
+});
 
-/** Replace the in-process limiter with a fresh one (tests only). */
+/**
+ * Bucket for requests whose token is unknown/disabled. Keyed by IP instead of
+ * the raw token so made-up tokens cannot create one map entry each.
+ */
+const unknownTokenLimiter = createRateLimiter({
+  max: RATE_LIMIT_MAX,
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  maxKeys: RATE_LIMIT_MAX_KEYS,
+});
+
+/** Fallback bucket key when the socket address is unavailable. */
+const UNKNOWN_IP_KEY = 'ip:unknown';
+
+/** Replace the in-process limiters with fresh ones (tests only). */
 export function resetExportRateLimiter(): void {
   rateLimiter.reset();
+  unknownTokenLimiter.reset();
+}
+
+/** Total tracked keys across both limiters (tests/diagnostics). */
+export function exportRateLimiterSize(): number {
+  return rateLimiter.size() + unknownTokenLimiter.size();
 }
 
 export interface ExportRequest {
@@ -212,9 +240,11 @@ export interface ExportDeps {
  *
  * Order of checks:
  *  1. empty / over-long token -> 404 (no lookup, no log)
- *  2. per token per minute limit -> 429 (+ access log when the user exists)
- *  3. user lookup, missing or disabled -> 404 (+ access log)
- *  4. build the subscription -> 200
+ *  2. user lookup
+ *  3. per-token limit for known users, per-IP limit for unknown/disabled
+ *     tokens (so fake tokens cannot inflate the limiter map) -> 429
+ *  4. missing or disabled user -> 404 (+ access log)
+ *  5. build the subscription -> 200
  */
 export function handleSubscriptionExport(
   request: ExportRequest,
@@ -234,7 +264,11 @@ export function handleSubscriptionExport(
     .where(and(eq(users.token, token), eq(users.enabled, true)))
     .get();
 
-  const limit = rateLimiter.consume(token);
+  // Unknown tokens share an IP bucket: one map entry per client, not per
+  // attacker-chosen token.
+  const limit = user
+    ? rateLimiter.consume(token)
+    : unknownTokenLimiter.consume(request.ip ? `ip:${request.ip}` : UNKNOWN_IP_KEY);
   if (!limit.allowed) {
     logAccess(db, {
       userId: user?.id ?? null,
@@ -311,6 +345,8 @@ export function handleSubscriptionExport(
   return {
     status: 200,
     headers: {
+      // Same hardening as the text error paths (notably `cache-control: no-store`).
+      ...TEXT_HEADERS,
       'content-type': 'text/yaml; charset=utf-8',
       'content-disposition': `attachment; filename="${fileNameFor(target, user)}"`,
       'profile-update-interval': '24',

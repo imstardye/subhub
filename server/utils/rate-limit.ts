@@ -6,9 +6,12 @@
  * shared across workers or restarts. That is intentional for now — when the
  * service runs behind multiple instances the check must move to a shared store.
  *
- * Window: one minute (aligned to the first request of the window). Tokens are
- * cheap, bounded state (at most one entry per known token), and expired entries
- * are swept lazily so the map cannot grow without bound.
+ * Window: one minute (aligned to the first request of the window). The map is
+ * hard-capped at `RATE_LIMIT_MAX_KEYS`: expired entries are swept lazily and,
+ * when the cap is reached anyway (e.g. a flood of made-up tokens), the oldest
+ * entry is evicted first so memory cannot grow without bound. The export route
+ * additionally keeps unknown tokens out of the limiter (IP bucket instead), so
+ * the cap is a backstop and not the primary defence.
  */
 
 /** Requests allowed per token per window. */
@@ -16,6 +19,9 @@ export const RATE_LIMIT_MAX = 30;
 
 /** Window length in milliseconds. */
 export const RATE_LIMIT_WINDOW_MS = 60_000;
+
+/** Hard cap on tracked keys per limiter; oldest entries are evicted first. */
+export const RATE_LIMIT_MAX_KEYS = 4096;
 
 interface WindowState {
   /** Start of the current window (epoch ms). */
@@ -31,6 +37,8 @@ export interface RateLimitOptions {
   windowMs?: number;
   /** Clock override for tests. */
   now?: () => number;
+  /** Hard cap on tracked keys, default `RATE_LIMIT_MAX_KEYS`. */
+  maxKeys?: number;
 }
 
 export interface RateLimitResult {
@@ -65,9 +73,13 @@ export function createRateLimiter(options: RateLimitOptions = {}): RateLimiter {
   const max = options.max ?? RATE_LIMIT_MAX;
   const windowMs = options.windowMs ?? RATE_LIMIT_WINDOW_MS;
   const now = options.now ?? Date.now;
+  const maxKeys = options.maxKeys ?? RATE_LIMIT_MAX_KEYS;
   if (!Number.isFinite(max) || max < 1) throw new RangeError('rate limit max must be >= 1');
   if (!Number.isFinite(windowMs) || windowMs < 1) {
     throw new RangeError('rate limit windowMs must be >= 1');
+  }
+  if (!Number.isInteger(maxKeys) || maxKeys < 1) {
+    throw new RangeError('rate limit maxKeys must be an integer >= 1');
   }
 
   const windows = new Map<string, WindowState>();
@@ -77,6 +89,18 @@ export function createRateLimiter(options: RateLimitOptions = {}): RateLimiter {
     const at = now();
     let state = windows.get(key);
     if (!state || at - state.start >= windowMs) {
+      const expired = state !== undefined;
+      if (!expired && windows.size >= maxKeys) {
+        // Hard cap: sweep expired windows first, then evict the oldest entry
+        // (Map insertion order). Re-inserting a key moves it to the back, so
+        // the front is always the oldest window.
+        sweep(windows, at, windowMs);
+        lastSweep = at;
+        if (windows.size >= maxKeys) {
+          const oldest = windows.keys().next();
+          if (!oldest.done) windows.delete(oldest.value);
+        }
+      }
       state = { start: at, count: 0 };
       windows.set(key, state);
     }

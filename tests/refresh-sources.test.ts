@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Readable } from 'node:stream';
 import { parse as parseYaml } from 'yaml';
 import { openDb, type SubhubDb } from '../server/db';
 import { decrypt, encrypt } from '../server/db/crypto';
@@ -16,6 +17,15 @@ import {
   type FetchResponse,
 } from '../server/tasks/refresh-sources';
 import { handleSubscriptionExport, resetExportRateLimiter } from '../server/utils/subscription';
+import refreshSourcesHandler, {
+  BodyTooLargeError,
+  MAX_TRIGGER_BODY_BYTES,
+  readBodyWithLimit,
+  type TaskEvent,
+  type TaskRequest,
+} from '../server/api/tasks/refresh-sources.post';
+import { __setServerDbForTest } from '../server/utils/db';
+import { MAX_CACHE_BLOB_BYTES } from '../server/tasks/refresh-sources';
 
 /**
  * All URLs and payloads below are fake: `example.com` hosts and placeholder
@@ -210,5 +220,289 @@ describe('subscription export reads the cache', () => {
     expect(yaml.proxies.map((proxy) => proxy.name)).toEqual(['old-node']);
     expect(decrypt(db.select().from(sources).where(eq(sources.id, id)).get()!.url)).toBe(SOURCE_URL);
     resetExportRateLimiter();
+  });
+});
+
+
+describe('refresh source body limits', () => {
+  /** Build a fake streaming response from chunks, tracking cancellation. */
+  function streamResponse(
+    chunks: Uint8Array[],
+    options: { contentLength?: string; cancelAfterChunks?: number } = {},
+  ): { response: FetchResponse; state: { pulled: number; cancelled: boolean; cancelAfterChunks?: number } } {
+    let index = 0;
+    const state = { pulled: 0, cancelled: false, cancelAfterChunks: options.cancelAfterChunks };
+    const response: FetchResponse = {
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name) =>
+          name.toLowerCase() === 'content-length' ? (options.contentLength ?? null) : null,
+      },
+      text: async () => {
+        throw new Error('text() must not be used for streaming bodies');
+      },
+      body: {
+        async cancel() {
+          state.cancelled = true;
+        },
+        getReader() {
+          return {
+            async read() {
+              if (state.cancelled || index >= chunks.length) return { done: true, value: undefined };
+              state.pulled += 1;
+              return { done: false, value: chunks[index++]! };
+            },
+            async cancel() {
+              state.cancelled = true;
+            },
+            releaseLock() {},
+            get closed(): Promise<void> {
+              return Promise.resolve();
+            },
+          };
+        },
+      },
+    };
+    return { response, state };
+  }
+
+  it('rejects a stream that crosses maxBytes mid-way and cancels the reader', async () => {
+    const sourceId = insertSource({ lastOkAt: null, cacheBlob: OLD_BODY });
+    const chunk = new Uint8Array(1024).fill(0x61);
+    const { response, state } = streamResponse(new Array(20).fill(chunk));
+    const fetcher = vi.fn<Fetcher>(async () => response);
+
+    const result = await refreshSource(db, sourceId, { fetcher, now: () => NOW, maxBytes: 4 * 1024 });
+
+    expect(result.outcome).toBe('failed');
+    expect(result.error).toContain('response exceeds 4096 bytes');
+    expect(state.cancelled).toBe(true);
+    // Stopped pulling as soon as the cap was crossed (5th 1 KiB chunk).
+    expect(state.pulled).toBe(5);
+
+    const row = db.select().from(sources).where(eq(sources.id, sourceId)).get()!;
+    expect(row.cacheBlob).toBe(OLD_BODY);
+    expect(row.lastOkAt).toBeNull();
+    expect(row.lastError).toContain('response exceeds');
+  });
+
+  it('rejects an oversized Content-Length before reading the body', async () => {
+    const sourceId = insertSource({ lastOkAt: null });
+    const { response, state } = streamResponse([new Uint8Array(8).fill(0x61)], {
+      contentLength: String(MAX_CACHE_BLOB_BYTES + 1),
+    });
+    const fetcher = vi.fn<Fetcher>(async () => response);
+
+    const result = await refreshSource(db, sourceId, { fetcher, now: () => NOW });
+
+    expect(result.outcome).toBe('failed');
+    expect(result.error).toContain(`response exceeds ${MAX_CACHE_BLOB_BYTES} bytes`);
+    expect(state.pulled).toBe(0);
+    expect(state.cancelled).toBe(true);
+
+    const row = db.select().from(sources).where(eq(sources.id, sourceId)).get()!;
+    expect(row.cacheBlob).toBeNull();
+    expect(row.lastOkAt).toBeNull();
+  });
+
+  it('streams a body under the cap and decodes it as UTF-8', async () => {
+    const sourceId = insertSource({ lastOkAt: null });
+    const encoded = new TextEncoder().encode(NEW_BODY);
+    // Split inside a multi-byte sequence to exercise whole-buffer decoding.
+    const splitAt = encoded.length - 5;
+    const { response, state } = streamResponse(
+      [encoded.slice(0, splitAt), encoded.slice(splitAt)],
+      { contentLength: String(encoded.length) },
+    );
+    const fetcher = vi.fn<Fetcher>(async () => response);
+
+    const result = await refreshSource(db, sourceId, { fetcher, now: () => NOW });
+
+    expect(result).toMatchObject({ outcome: 'refreshed', bytes: encoded.length });
+    const row = db.select().from(sources).where(eq(sources.id, sourceId)).get()!;
+    expect(row.cacheBlob).toBe(NEW_BODY);
+  });
+
+  it('falls back to text() when the response has no stream, still enforcing the cap', async () => {
+    const sourceId = insertSource({ lastOkAt: null, cacheBlob: OLD_BODY });
+    const small = await refreshSource(db, sourceId, {
+      fetcher: async () => ({ ok: true, status: 200, text: async () => NEW_BODY, body: null }),
+      now: () => NOW,
+      maxBytes: 1024,
+    });
+    expect(small.outcome).toBe('refreshed');
+
+    const large = await refreshSource(db, sourceId, {
+      fetcher: async () => ({ ok: true, status: 200, text: async () => 'x'.repeat(2048) }),
+      now: () => NOW,
+      maxBytes: 1024,
+    });
+    expect(large.outcome).toBe('failed');
+    expect(large.error).toContain('response exceeds 1024 bytes');
+    const row = db.select().from(sources).where(eq(sources.id, sourceId)).get()!;
+    expect(row.cacheBlob).toBe(NEW_BODY);
+  });
+});
+
+/** Minimal fake Nitro event: a request with headers/stream and a response. */
+function fakeEvent(options: {
+  headers?: Record<string, string | string[] | undefined>;
+  url?: string;
+  body?: Readable;
+} = {}): TaskEvent & { headersSent: Map<string, string>; destroyed: boolean } {
+  const headersSent = new Map<string, string>();
+  const req = {
+    url: options.url ?? '/api/tasks/refresh-sources',
+    headers: options.headers ?? {},
+    on: options.body
+      ? (event: string, listener: (...args: unknown[]) => void) => {
+          options.body!.on(event, listener);
+          return req;
+        }
+      : undefined,
+    destroy: () => {},
+  };
+  const event = {
+    node: {
+      req: req as TaskRequest,
+      res: {
+        statusCode: 200,
+        setHeader(name: string, value: string) {
+          headersSent.set(name.toLowerCase(), value);
+        },
+      },
+    },
+    headersSent,
+    destroyed: false,
+  };
+  event.node.req.destroy = () => {
+    event.destroyed = true;
+    options.body?.destroy();
+  };
+  return event;
+}
+
+/** A Readable emitting `chunks` asynchronously, like a socket body. */
+function chunkedBody(chunks: Array<Buffer | string>, chunkSize = 4 * 1024): Readable {
+  const buffers = chunks.flatMap((chunk) => {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const slices: Buffer[] = [];
+    for (let i = 0; i < buffer.length; i += chunkSize) slices.push(buffer.subarray(i, i + chunkSize));
+    return slices;
+  });
+  return Readable.from(buffers);
+}
+
+describe('POST /api/tasks/refresh-sources auth', () => {
+  const PASSWORD = 'test-admin-password';
+  const auth = { password: PASSWORD };
+
+  beforeEach(() => {
+    __setServerDbForTest(db);
+  });
+
+  afterEach(() => {
+    __setServerDbForTest(null);
+  });
+
+  function call(headers: Record<string, string | string[] | undefined>, url?: string) {
+    return refreshSourcesHandler(fakeEvent({ headers, url }), auth);
+  }
+
+  it('rejects a missing header with 401', async () => {
+    const event = fakeEvent({});
+    expect(await refreshSourcesHandler(event, auth)).toEqual({ error: 'unauthorized' });
+    expect(event.node.res.statusCode).toBe(401);
+  });
+
+  it('rejects a wrong header with 401', async () => {
+    const event = fakeEvent({ headers: { 'x-admin-password': 'wrong' } });
+    await refreshSourcesHandler(event, auth);
+    expect(event.node.res.statusCode).toBe(401);
+  });
+
+  it('rejects every request when SUBHUB_ADMIN_PASSWORD is not configured', async () => {
+    const event = fakeEvent({ headers: { 'x-admin-password': 'subhub-dev-admin' } });
+    await refreshSourcesHandler(event, { password: null });
+    expect(event.node.res.statusCode).toBe(401);
+  });
+
+  it('refreshes when the header matches the configured password', async () => {
+    const sourceId = insertSource({ lastOkAt: null });
+    const event = fakeEvent({
+      headers: { 'x-admin-password': PASSWORD },
+      url: `/api/tasks/refresh-sources?sourceId=${sourceId}`,
+    });
+    const result = (await refreshSourcesHandler(event, auth)) as { checked: number };
+    expect(event.node.res.statusCode).toBe(200);
+    expect(result.checked).toBe(1);
+  });
+
+  it('validates sourceId only after authentication', async () => {
+    const event = fakeEvent({ url: '/api/tasks/refresh-sources?sourceId=abc' });
+    expect(await refreshSourcesHandler(event, auth)).toEqual({ error: 'unauthorized' });
+    expect(event.node.res.statusCode).toBe(401);
+  });
+});
+
+describe('POST /api/tasks/refresh-sources body limit', () => {
+  const PASSWORD = 'test-admin-password';
+  const auth = { password: PASSWORD };
+  const headers = { 'x-admin-password': PASSWORD };
+
+  beforeEach(() => {
+    __setServerDbForTest(db);
+  });
+
+  afterEach(() => {
+    __setServerDbForTest(null);
+  });
+
+  it('rejects an oversized Content-Length immediately, without reading', async () => {
+    let read = false;
+    const body = new Readable({
+      read() {
+        read = true;
+      },
+    });
+    const event = fakeEvent({
+      headers: { ...headers, 'content-length': String(MAX_TRIGGER_BODY_BYTES + 1) },
+      body,
+    });
+    expect(await refreshSourcesHandler(event, auth)).toEqual({ error: 'request body too large' });
+    expect(event.node.res.statusCode).toBe(413);
+    expect(event.destroyed).toBe(true);
+    expect(read).toBe(false);
+  });
+
+  it('readBodyWithLimit aborts mid-stream once the cap is crossed', async () => {
+    const body = chunkedBody([Buffer.alloc(MAX_TRIGGER_BODY_BYTES * 4, 0x61)]);
+    const event = fakeEvent({ body });
+    await expect(readBodyWithLimit(event.node.req)).rejects.toBeInstanceOf(BodyTooLargeError);
+    expect(event.destroyed).toBe(true);
+  });
+
+  it('responds 413 when a chunked body exceeds the cap', async () => {
+    const body = chunkedBody([Buffer.alloc(MAX_TRIGGER_BODY_BYTES * 2, 0x62)]);
+    const event = fakeEvent({ headers, body });
+    expect(await refreshSourcesHandler(event, auth)).toEqual({ error: 'request body too large' });
+    expect(event.node.res.statusCode).toBe(413);
+    expect(event.headersSent.get('connection')).toBe('close');
+    expect(event.destroyed).toBe(true);
+  });
+
+  it('accepts a small body and still runs the refresh', async () => {
+    const event = fakeEvent({
+      headers: { ...headers, 'content-length': '2' },
+      body: chunkedBody(['{}']),
+    });
+    const result = (await refreshSourcesHandler(event, auth)) as { checked: number };
+    expect(event.node.res.statusCode).toBe(200);
+    expect(result.checked).toBe(0);
+  });
+
+  it('uses the exported default body cap', () => {
+    expect(MAX_TRIGGER_BODY_BYTES).toBeLessThanOrEqual(16 * 1024);
   });
 });

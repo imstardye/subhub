@@ -23,10 +23,19 @@ export const MAX_CACHE_BLOB_BYTES = 10 * 1024 * 1024;
 /** Default per-request timeout in milliseconds. */
 export const DEFAULT_FETCH_TIMEOUT_MS = 15_000;
 
+/** Minimal subset of `Response`/`Headers` used by the refresh task. */
+export interface ReadableBody {
+  getReader(): ReadableStreamDefaultReader<Uint8Array>;
+  cancel?(reason?: unknown): Promise<void>;
+}
+
 export interface FetchResponse {
   ok: boolean;
   status: number;
   text(): Promise<string>;
+  headers?: { get(name: string): string | null };
+  /** Streaming body; when absent the task falls back to `text()`. */
+  body?: ReadableBody | null;
 }
 
 /** Minimal fetcher shape (compatible with global `fetch`). */
@@ -84,6 +93,74 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
+/** Abort a response body when we already know it is unacceptable. */
+function abortSilently(body: FetchResponse['body']): void {
+  try {
+    const close = (body as { close?: () => void } | null | undefined)?.close;
+    if (typeof close === 'function') close.call(body);
+    // `close()` releases undici's connection; `cancel()` marks the stream done.
+    const result = body?.cancel?.();
+    if (result && typeof (result as Promise<void>).catch === 'function') {
+      (result as Promise<void>).catch(() => {});
+    }
+  } catch {
+    // Aborting is best effort; the caller already has its error.
+  }
+}
+
+/**
+ * Read a response body while counting bytes, aborting the stream (and throwing)
+ * as soon as `maxBytes` is crossed. Falls back to `text()` for responses without
+ * a streaming body, still validating the resulting size.
+ */
+async function readBodyWithLimit(
+  response: FetchResponse,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<{ body: string; bytes: number }> {
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    const text = await response.text();
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (bytes > maxBytes) throw new Error(`response exceeds ${maxBytes} bytes`);
+    return { body: text, bytes };
+  }
+
+  const responseBody = response.body;
+  const reader = responseBody.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  const oversize = (): Error => new Error(`response exceeds ${maxBytes} bytes`);
+
+  try {
+    while (true) {
+      if (signal.aborted) {
+        await reader.cancel().catch(() => {});
+        throw new Error('response aborted');
+      }
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        bytes += value.byteLength;
+        if (bytes > maxBytes) {
+          // Stop pulling data from the socket immediately.
+          await reader.cancel(oversize()).catch(() => {});
+          throw oversize();
+        }
+        chunks.push(value);
+      }
+    }
+  } catch (error) {
+    // Make sure a rejected read / timeout also tears down the stream.
+    await reader.cancel(error).catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock?.();
+  }
+
+  const buffer = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)));
+  return { body: new TextDecoder('utf-8').decode(buffer), bytes };
+}
+
 async function fetchSourceBody(
   source: Source,
   options: RefreshOptions,
@@ -114,11 +191,18 @@ async function fetchSourceBody(
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
-    const body = await response.text();
-    const bytes = Buffer.byteLength(body, 'utf8');
-    if (bytes === 0) throw new Error('empty response body');
-    if (bytes > maxBytes) throw new Error(`response exceeds ${maxBytes} bytes`);
-    return { body, bytes };
+    const declared = response.headers?.get('content-length');
+    if (declared !== null && declared !== undefined && declared.trim() !== '') {
+      const declaredBytes = Number(declared);
+      if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+        abortSilently(response.body);
+        throw new Error(`response exceeds ${maxBytes} bytes (content-length ${declaredBytes})`);
+      }
+    }
+
+    const body = await readBodyWithLimit(response, maxBytes, controller.signal);
+    if (body.bytes === 0) throw new Error('empty response body');
+    return body;
   } finally {
     clearTimeout(timer);
   }

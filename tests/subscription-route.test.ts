@@ -10,10 +10,12 @@ import { accessLogs, sources, userSources, users } from '../server/db/schema';
 import { encrypt } from '../server/db/crypto';
 import {
   detectTargetFromUserAgent,
+  exportRateLimiterSize,
   handleSubscriptionExport,
   resetExportRateLimiter,
   resolveTarget,
 } from '../server/utils/subscription';
+import { RATE_LIMIT_MAX } from '../server/utils/rate-limit';
 
 /** Test-only token; every fixture host below is example.com. */
 const TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -52,9 +54,9 @@ afterEach(() => {
   }
 });
 
-function call(token: string, target?: string | null, userAgent?: string | null) {
+function call(token: string, target?: string | null, userAgent?: string | null, ip = '127.0.0.1') {
   return handleSubscriptionExport(
-    { token, target, userAgent: userAgent ?? 'clash-verge/v2.0', ip: '127.0.0.1' },
+    { token, target, userAgent: userAgent ?? 'clash-verge/v2.0', ip },
     { db },
   );
 }
@@ -94,6 +96,48 @@ describe('GET /s/:token rate limiting', () => {
     expect(call(DISABLED_TOKEN).status).toBe(404);
   });
 
+});
+
+describe('GET /s/:token unknown tokens', () => {
+  it('does not create one limiter entry per made-up token', () => {
+    // Each request uses a fresh random token: a per-token map would grow by
+    // one entry per request. Requests beyond the IP budget are 429, never a
+    // new map entry.
+    for (let i = 0; i < 500; i += 1) {
+      expect([404, 429]).toContain(call(`fake-${i}-${'x'.repeat(16)}`).status);
+    }
+    expect(exportRateLimiterSize()).toBe(1);
+  });
+
+  it('rate limits unknown tokens per IP instead of per token', () => {
+    for (let i = 0; i < RATE_LIMIT_MAX; i += 1) {
+      expect(call(`fake-${i}`).status).toBe(404);
+    }
+    expect(call('another-fake-token').status).toBe(429);
+    // A different client IP still gets its own budget.
+    expect(call('another-fake-token', null, null, '198.51.100.7').status).toBe(404);
+    // The map stays at one entry per IP seen, regardless of token count.
+    expect(exportRateLimiterSize()).toBe(2);
+  });
+
+  it('never exceeds a bounded map under a large token flood', () => {
+    let blocked = 0;
+    for (let i = 0; i < 2_000; i += 1) {
+      const status = call(`flood-${i}-${'y'.repeat(24)}`, null, null, `192.0.2.${i % 8}`).status;
+      if (status === 429) blocked += 1;
+    }
+    expect(blocked).toBeGreaterThan(0);
+    // Bounded by the number of distinct IPs (8), not by the 2k tokens.
+    expect(exportRateLimiterSize()).toBeLessThanOrEqual(8);
+  });
+
+  it('still applies the per-token limit to known users', () => {
+    for (let i = 0; i < RATE_LIMIT_MAX; i += 1) call(TOKEN);
+    expect(call(TOKEN).status).toBe(429);
+    // The disabled user is tracked in the IP bucket, not the token bucket.
+    expect(call(DISABLED_TOKEN).status).toBe(404);
+    expect(exportRateLimiterSize()).toBe(2);
+  });
 });
 
 describe('GET /s/:token user lookup', () => {
@@ -136,6 +180,16 @@ describe('GET /s/:token valid export', () => {
       'upload=0; download=0; total=0; expire=0',
     );
     expect(parseYaml(response.body)).toEqual({ proxies: [] });
+  });
+
+  it('sends cache-control: no-store and the security headers on 200', () => {
+    attachSource(null);
+    for (const target of [undefined, 'clash', 'mihomo']) {
+      const response = call(TOKEN, target);
+      expect(response.status).toBe(200);
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(response.headers['x-content-type-options']).toBe('nosniff');
+    }
   });
 
   it('returns 200 with an empty proxies list when the source cache is empty', () => {

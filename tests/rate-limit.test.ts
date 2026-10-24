@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { createRateLimiter, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS } from '../server/utils/rate-limit';
+import {
+  createRateLimiter,
+  RATE_LIMIT_MAX,
+  RATE_LIMIT_MAX_KEYS,
+  RATE_LIMIT_WINDOW_MS,
+} from '../server/utils/rate-limit';
 
 describe('rate limiter', () => {
   it('allows 30 requests per token per minute and blocks the 31st', () => {
@@ -48,6 +53,36 @@ describe('rate limiter', () => {
   it('rejects invalid limits', () => {
     expect(() => createRateLimiter({ max: 0 })).toThrow();
     expect(() => createRateLimiter({ windowMs: 0 })).toThrow();
+    expect(() => createRateLimiter({ maxKeys: 0 })).toThrow();
+  });
+});
+
+describe('rate limiter hard cap', () => {
+  it('never tracks more than maxKeys entries', () => {
+    const limiter = createRateLimiter({ max: 1, maxKeys: 8 });
+    // Same clock for every call: nothing expires, so only eviction bounds the map.
+    for (let i = 0; i < 10_000; i += 1) limiter.check(`fake-token-${i}`);
+    expect(limiter.size()).toBe(8);
+  });
+
+  it('evicts the oldest key first and keeps recent ones', () => {
+    const limiter = createRateLimiter({ max: 1, maxKeys: 2 });
+    expect(limiter.consume('old').allowed).toBe(true);
+    expect(limiter.consume('mid').allowed).toBe(true);
+    // Third key evicts 'old'; 'mid' is still at its limit.
+    expect(limiter.consume('new').allowed).toBe(true);
+    expect(limiter.size()).toBe(2);
+    expect(limiter.check('mid')).toBe(false);
+    // 'old' was forgotten, so it starts a fresh window instead of staying blocked.
+    expect(limiter.consume('old').allowed).toBe(true);
+    expect(limiter.size()).toBe(2);
+  });
+
+  it('defaults to a 4096-key cap', () => {
+    expect(RATE_LIMIT_MAX_KEYS).toBe(4096);
+    const limiter = createRateLimiter({ max: 1 });
+    for (let i = 0; i < RATE_LIMIT_MAX_KEYS + 1_000; i += 1) limiter.check(`t${i}`);
+    expect(limiter.size()).toBe(RATE_LIMIT_MAX_KEYS);
   });
 });
 
