@@ -11,12 +11,19 @@
  *
  * The user's rule profile is applied exactly as in the public export (same
  * `loadUserProfile` + `renderTargetBody` path), so what an admin sees here is
- * what `/s/:token` serves.
+ * what `/s/:token` serves. An optional `profile` (profile *name*) overrides the
+ * assigned profile exactly like the URL's trailing segment — unknown name is a
+ * 404 here too, never a silent fallback.
  */
 import { eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { users } from '../db/schema';
-import { collectUserNodes, loadUserProfile, renderTargetBody } from './export-nodes';
+import {
+  collectUserNodes,
+  loadUserProfile,
+  renderTargetBody,
+  resolveProfileIdByName,
+} from './export-nodes';
 import {
   contentTypeForTarget,
   EXPORT_TARGETS,
@@ -35,6 +42,8 @@ export interface PreviewResult {
   name: string;
   enabled: boolean;
   target: ExportTarget;
+  /** Profile override the caller asked for (absent when none was given). */
+  profile?: string | null;
   status: number;
   contentType: string;
   body: string;
@@ -66,6 +75,17 @@ function parsePreviewTarget(value: unknown): ExportTarget {
 }
 
 /**
+ * Validate the optional profile override; absent means "no override". The name
+ * is passed through untrimmed-but-checked (profiles are matched exactly), only
+ * rejecting obviously unusable input.
+ */
+function parsePreviewProfile(value: unknown): string | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string') throw new ValidationError('profile must be a string');
+  return value;
+}
+
+/**
  * Render a preview for `body.userId`. A missing user is a 404; a disabled user
  * is still rendered (admin debugging) and flagged via `enabled: false`.
  *
@@ -80,10 +100,25 @@ export async function previewSubscription(
   if (!user) throw new ValidationError('user not found', 404);
 
   const target = parsePreviewTarget(body.target);
+  // Profile override by name (same semantics as `/s/:token/:target/:profile`).
+  const profileName = parsePreviewProfile(body.profile);
+  let overrideProfileId: number | null = null;
+  if (profileName) {
+    overrideProfileId = resolveProfileIdByName(db, profileName);
+    if (overrideProfileId === null) throw new ValidationError('profile not found', 404);
+  }
+
   const nodes = collectUserNodes(db, user.id);
   // Same single-pass profile load as the public export: `exclude_remarks` is
   // applied to `nodes` before the groups are expanded.
-  const loaded = await loadUserProfile(db, user.id, target, nodes);
+  const loaded = await loadUserProfile(
+    db,
+    user.id,
+    target,
+    nodes,
+    undefined,
+    overrideProfileId,
+  );
   const rendered = renderTargetBody(target, loaded?.nodes ?? nodes, {}, loaded?.profile ?? null);
   const { body: text, truncated } = truncateBody(rendered);
 
@@ -92,6 +127,7 @@ export async function previewSubscription(
     name: user.name,
     enabled: user.enabled,
     target,
+    profile: profileName,
     status: 200,
     // json for sing-box, plain text for the share-link and line-based
     // bodies, YAML for mihomo/clash.

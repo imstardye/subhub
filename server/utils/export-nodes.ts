@@ -294,8 +294,27 @@ export interface LoadedUserProfile {
 }
 
 /**
+ * Resolve a profile *name* (the trailing URL segment of
+ * `/s/:token/:target/:profile` and the admin preview's `profile` field) to its
+ * id. Exact, case-sensitive match on `profiles.name`; `null` when no profile
+ * has that name, so callers can answer 404 instead of silently falling back to
+ * the user's assigned profile.
+ */
+export function resolveProfileIdByName(db: SubhubDb, name: string): number | null {
+  if (!name) return null;
+  const row = db
+    .select({ id: profiles.id })
+    .from(profiles)
+    .where(eq(profiles.name, name))
+    .get();
+  return row?.id ?? null;
+}
+
+/**
  * Load and parse the rule profile assigned to a user, applying its
- * `[common] exclude_remarks` filter to `nodes`.
+ * `[common] exclude_remarks` filter to `nodes`. An explicit `profileId`
+ * overrides the assignment (the URL's profile-name suffix; see
+ * `resolveProfileIdByName`).
  *
  * Missing user, missing profileId, missing/removed profile row, unreadable INI
  * or an unexpected error all yield `null` (today's nodes-only behaviour, no
@@ -312,18 +331,30 @@ export async function loadUserProfile(
   exportTarget: ExportTarget,
   nodes: ProxyNode[],
   resolveIni: ProfileIniResolver = fetchProfileIni,
+  /**
+   * Explicit profile override (the URL's trailing profile-name segment, see
+   * `subscription.ts`). When given, this profile is loaded instead of
+   * `users.profileId`; everything else (INI fetch, `exclude_remarks`, groups,
+   * rules, dnsTemplate) is identical. The caller resolves the name first, so
+   * an unknown override never reaches this function.
+   */
+  profileId?: number | null,
 ): Promise<LoadedUserProfile | null> {
   try {
-    // users.profileId -> profiles.id; a disabled export path only reaches an
-    // enabled user, but the lookup works for any existing user id.
-    const link = db
-      .select({ profileId: users.profileId })
-      .from(users)
-      .where(eq(users.id, userId))
-      .get();
-    if (!link?.profileId) return null;
+    let effectiveProfileId = profileId ?? null;
+    if (!effectiveProfileId) {
+      // users.profileId -> profiles.id; a disabled export path only reaches an
+      // enabled user, but the lookup works for any existing user id.
+      const link = db
+        .select({ profileId: users.profileId })
+        .from(users)
+        .where(eq(users.id, userId))
+        .get();
+      effectiveProfileId = link?.profileId ?? null;
+    }
+    if (!effectiveProfileId) return null;
 
-    const row = db.select().from(profiles).where(eq(profiles.id, link.profileId)).get();
+    const row = db.select().from(profiles).where(eq(profiles.id, effectiveProfileId)).get();
     if (!row) return null;
 
     const iniText = await resolveIni({ iniText: row.iniText ?? null, iniUrl: row.iniUrl ?? null });

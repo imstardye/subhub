@@ -11,6 +11,10 @@
  * The user's rule profile (`users.profileId`) is applied on top of the nodes:
  * its proxy groups, rules and rule-providers are appended to the rendered YAML.
  * No profile — or a broken/unreachable one — keeps the plain nodes-only body.
+ *
+ * Per-request override: the URL may name a profile (see `ExportRequest.profile`
+ * and `resolveProfileIdByName`), which is rendered instead of the assigned one
+ * for that request only — the user row is never modified.
  */
 import { and, eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
@@ -20,6 +24,7 @@ import {
   collectUserUserInfo,
   loadUserProfile,
   renderTargetBody,
+  resolveProfileIdByName,
   type ProfileIniResolver,
 } from './export-nodes';
 import { formatUserInfo, type SubscriptionUserInfo } from './userinfo';
@@ -96,6 +101,19 @@ export interface ExportRequest {
   token: string;
   /** Raw `:target` path segment; empty when the client omitted it. */
   target?: string | null;
+  /**
+   * Rule-profile override, by profile *name* (case-sensitive).
+   *
+   * URL forms (see `server/routes/s/[token]/`):
+   * - `/s/:token` -> no override, target from the User-Agent;
+   * - `/s/:token/:target` -> no override;
+   * - `/s/:token/:target/:profile` -> override + explicit target;
+   * - `/s/:token/:profile` -> override + default (User-Agent) target, used when
+   *   the 2nd segment is not a target but is a profile name.
+   *
+   * An unknown name is a 404, never a fallback to `users.profileId`.
+   */
+  profile?: string | null;
   userAgent?: string | null;
   ip?: string | null;
 }
@@ -187,7 +205,7 @@ export interface ExportDeps {
 }
 
 /**
- * Handle GET /s/:token[/:target].
+ * Handle GET /s/:token[/:target[/:profile]].
  *
  * Order of checks:
  *  1. empty / over-long token -> 404 (no lookup, no log)
@@ -195,7 +213,8 @@ export interface ExportDeps {
  *  3. per-token limit for known users, per-IP limit for unknown/disabled
  *     tokens (so fake tokens cannot inflate the limiter map) -> 429
  *  4. missing or disabled user -> 404 (+ access log)
- *  5. build the subscription -> 200
+ *  5. unknown explicit target -> 400; unknown profile name -> 404
+ *  6. build the subscription (with the profile override, if any) -> 200
  */
 export async function handleSubscriptionExport(
   request: ExportRequest,
@@ -256,11 +275,45 @@ export async function handleSubscriptionExport(
     return textResponse(404, 'Not Found\n', rateHeaders);
   }
 
-  const target = resolveTarget(request.target, request.userAgent);
+  // Profile overrides are resolved ONCE, before rendering:
+  // - `/s/:token/:target/:profile` -> `request.profile` is the 3rd segment.
+  // - `/s/:token/:profile` (form 2) -> `request.profile` is the 2nd segment,
+  //   which the request layer reports as the target too (a target name wins
+  //   there). Such a segment is an override only when a profile has that name;
+  //   otherwise it is an unknown target and keeps today's 400.
+  // An unknown name in the override position is a 404 (the old gateway's URL
+  // variants answered the same way): silently serving the assigned profile
+  // would make a typo look like a working link.
+  const segment = request.profile ?? null;
+  const isTargetSegment =
+    !!segment && isExportTarget(segment.trim().toLowerCase());
+  // Form 2: the 2nd segment is not a target, so it is *tried* as a profile.
+  const isForm2 = !!segment && segment === (request.target ?? null) && !isTargetSegment;
+  // Resolved once; `null` means "no profile has that name" (-> 404 below).
+  const overrideProfileId = segment ? resolveProfileIdByName(db, segment) : null;
+  // Form 2 keeps the User-Agent default target; form 3 has its explicit one.
+  const effectiveTarget = isForm2 ? null : (request.target ?? null);
+
+  if (overrideProfileId === null && segment) {
+    // Names no profile (3rd segment, or a 2nd segment that is neither a target
+    // nor a profile): 404, never a silent fallback. Note base main answered 400
+    // for such a 2nd segment; the profile-suffix spec asks for 404.
+    logAccess(db, {
+      userId: user.id,
+      target: effectiveTarget,
+      userAgent: request.userAgent,
+      ip: request.ip,
+      status: 404,
+      startedAt,
+    });
+    return textResponse(404, 'Not Found\n', rateHeaders);
+  }
+
+  const target = resolveTarget(effectiveTarget, request.userAgent);
   if (!target) {
     logAccess(db, {
       userId: user.id,
-      target: request.target ?? null,
+      target: effectiveTarget,
       userAgent: request.userAgent,
       ip: request.ip,
       status: 400,
@@ -277,8 +330,16 @@ export async function handleSubscriptionExport(
     const nodes = collectUserNodes(db, user.id);
     // The profile load also applies `[common] exclude_remarks`: the returned
     // nodes already have the info/ads pseudo-nodes dropped, and the profile's
-    // group regexes were expanded against that filtered set.
-    const loaded = await loadUserProfile(db, user.id, target, nodes, deps.resolveProfileIni);
+    // group regexes were expanded against that filtered set. The override (when
+    // present) replaces `users.profileId` for this request only.
+    const loaded = await loadUserProfile(
+      db,
+      user.id,
+      target,
+      nodes,
+      deps.resolveProfileIni,
+      overrideProfileId,
+    );
     body = renderTargetBody(target, loaded?.nodes ?? nodes, {}, loaded?.profile ?? null);
     userinfo = collectUserUserInfo(db, user.id);
   } catch {

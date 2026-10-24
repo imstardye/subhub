@@ -4,7 +4,8 @@
  * (`mihomo`, `clash`, `shadowrocket`, `singbox`, `surge`, `loon`, `uri`).
  *
  * Same handler as `/s/:token`; see `index.get.ts` for the P2 scope and the
- * P4 TODO list.
+ * P4 TODO list. A 3rd segment (`/s/:token/:target/:profile`) is handled by
+ * `[target]/[profile].get.ts`.
  */
 import exportHandler from '../../../utils/export-handler';
 
