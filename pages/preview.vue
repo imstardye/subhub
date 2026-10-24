@@ -12,6 +12,7 @@ definePageMeta({ layout: 'admin' });
 
 import type { AdminUser } from '~/server/utils/admin-users';
 import { apiErrorMessage } from '~/core/utils/api-error';
+import { previewBodyText } from '~/core/utils/admin-ui';
 import { EXPORT_TARGETS, type ExportTarget } from '~/server/utils/targets';
 
 interface PreviewResponse {
@@ -35,6 +36,16 @@ const selectedUserId = ref<string>('');
 const target = ref<ExportTarget>('mihomo');
 const result = ref<PreviewResponse | null>(null);
 const copied = ref(false);
+
+/**
+ * Shadowrocket bodies are base64 share links; the page shows the decoded link
+ * list (copy still uses the raw body, see `copyResult`).
+ */
+const shown = computed(() =>
+  result.value
+    ? previewBodyText(result.value.target, result.value.body, result.value.truncated === true)
+    : { text: '', decoded: false },
+);
 
 const targetOptions = [...EXPORT_TARGETS];
 
@@ -88,6 +99,7 @@ async function generate() {
 async function copyResult() {
   if (!result.value) return;
   try {
+    // Always the raw export body, never the decoded preview text.
     await navigator.clipboard.writeText(result.value.body);
     copied.value = true;
     window.setTimeout(() => {
@@ -147,12 +159,13 @@ onMounted(loadUsers);
         </h2>
         <div class="actions">
           <span class="meta">{{ result.target }} · {{ result.status }}</span>
+          <span v-if="shown.decoded" class="badge">已解码分享链接</span>
           <button type="button" class="small" @click="copyResult">
             {{ copied ? '已复制' : '复制结果' }}
           </button>
         </div>
       </div>
-      <pre class="body"><code>{{ result.body }}</code></pre>
+      <pre class="body"><code>{{ shown.text }}</code></pre>
     </div>
   </section>
 </template>

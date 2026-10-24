@@ -46,21 +46,18 @@ describe('target metadata', () => {
     ]);
   });
 
-  it('no longer treats uri or singbox as mihomo fallbacks', () => {
+  it('treats no target as a mihomo fallback anymore', () => {
     for (const target of EXPORT_TARGETS) {
-      const expected = ['shadowrocket', 'surge', 'loon'].includes(target);
-      expect(isFallbackTarget(target)).toBe(expected);
+      expect(isFallbackTarget(target)).toBe(false);
     }
-    expect(isFallbackTarget('uri' as ExportTarget)).toBe(false);
-    expect(isFallbackTarget('singbox' as ExportTarget)).toBe(false);
   });
 
   it.each([
     ['mihomo', 'text/yaml; charset=utf-8', 'yaml'],
     ['clash', 'text/yaml; charset=utf-8', 'yaml'],
-    ['shadowrocket', 'text/yaml; charset=utf-8', 'yaml'],
-    ['surge', 'text/yaml; charset=utf-8', 'yaml'],
-    ['loon', 'text/yaml; charset=utf-8', 'yaml'],
+    ['shadowrocket', 'text/plain; charset=utf-8', 'txt'],
+    ['surge', 'text/plain; charset=utf-8', 'conf'],
+    ['loon', 'text/plain; charset=utf-8', 'conf'],
     ['singbox', 'application/json; charset=utf-8', 'json'],
     ['uri', 'text/plain; charset=utf-8', 'txt'],
   ] as const)('%s -> %s / .%s', (target, contentType, extension) => {
@@ -97,15 +94,6 @@ describe('renderTargetBody', () => {
       renderTargetBody('singbox', MIXED),
     );
     expect(renderTargetBody('singbox', MIXED, {}, PROFILE)).not.toContain('PROXY');
-  });
-
-  it('keeps the mihomo YAML fallback for the remaining P4 targets', () => {
-    for (const target of ['shadowrocket', 'surge', 'loon'] as const) {
-      const body = renderTargetBody(target, MIXED, {}, PROFILE);
-      expect(body).toContain('proxies:');
-      expect(body).toContain('PROXY');
-      expect(body).not.toContain('outbounds');
-    }
   });
 
   it('emits valid empty documents for an empty node list', () => {

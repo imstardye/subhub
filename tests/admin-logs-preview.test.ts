@@ -269,6 +269,48 @@ describe('POST /api/admin/preview rendering', () => {
     expect(parsed.proxies!.length).toBe(2);
   });
 
+  it('reports the real content type per target (text/plain for shadowrocket/surge/loon)', async () => {
+    attachSource(NODE_LINKS);
+    const expected: Record<string, string> = {
+      mihomo: 'text/yaml; charset=utf-8',
+      clash: 'text/yaml; charset=utf-8',
+      singbox: 'application/json; charset=utf-8',
+      uri: 'text/plain; charset=utf-8',
+      shadowrocket: 'text/plain; charset=utf-8',
+      surge: 'text/plain; charset=utf-8',
+      loon: 'text/plain; charset=utf-8',
+    };
+    for (const target of EXPORT_TARGETS) {
+      const { body } = await preview({ userId, target });
+      expect(body.contentType).toBe(expected[target]);
+    }
+  });
+
+  it('renders shadowrocket as a base64 link list and surge/loon as config text', async () => {
+    attachSource(NODE_LINKS);
+
+    const shadowrocket = await preview({ userId, target: 'shadowrocket' });
+    expect(shadowrocket.body.body).toMatch(/^[A-Za-z0-9+/]+=*$/);
+    expect(Buffer.from(shadowrocket.body.body as string, 'base64').toString('utf8').split('\n')).toEqual([
+      'ss://YWVzLTI1Ni1nY206c2VjcmV0@node1.example.com:8388#node-one',
+      'ss://YWVzLTI1Ni1nY206c2VjcmV0@node2.example.com:8388#node-two',
+    ]);
+
+    const surge = await preview({ userId, target: 'surge' });
+    expect(surge.body.body).toBe(
+      [
+        'node-one = ss, node1.example.com, 8388, encrypt-method=aes-256-gcm, password=secret, udp-relay=true',
+        'node-two = ss, node2.example.com, 8388, encrypt-method=aes-256-gcm, password=secret, udp-relay=true',
+        '',
+      ].join('\n'),
+    );
+
+    const loon = await preview({ userId, target: 'loon' });
+    expect((loon.body.body as string).split('\n')[0]).toBe(
+      'node-one = Shadowsocks,node1.example.com,8388,aes-256-gcm,secret',
+    );
+  });
+
   it('renders without a cache and accepts every EXPORT_TARGETS value', async () => {
     for (const target of EXPORT_TARGETS) {
       const { status, body } = await preview({ userId, target });

@@ -5,8 +5,8 @@
  *
  * P2 scope: user lookup, per-token rate limiting, cache-backed source
  * aggregation (the refresh task fills `cache_blob`) and access logging.
- * `singbox` and `uri` have real producers; shadowrocket/surge/loon still fall
- * back to the mihomo YAML (see P4 note below and `targets.ts`).
+ * Every target has a real producer now (mihomo/clash YAML, shadowrocket /
+ * surge / loon line formats, singbox JSON, uri share links).
  *
  * The user's rule profile (`users.profileId`) is applied on top of the nodes:
  * its proxy groups, rules and rule-providers are appended to the rendered YAML.
@@ -16,11 +16,11 @@ import { and, eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { accessLogs, users } from '../db/schema';
 import {
-  buildTargetProxies,
   collectUserNodes,
   collectUserUserInfo,
   loadUserProfile,
   renderTargetBody,
+  targetProxyNames,
   type ProfileIniResolver,
 } from './export-nodes';
 import { formatUserInfo, type SubscriptionUserInfo } from './userinfo';
@@ -278,9 +278,7 @@ export async function handleSubscriptionExport(
     const nodes = collectUserNodes(db, user.id);
     // Group regexes (`.*`, `((?i)hk)`, ...) are expanded against the names the
     // producer will emit, i.e. after transformation/filtering.
-    const nodeNames = buildTargetProxies(target, nodes)
-      .map((node) => node.name)
-      .filter(Boolean);
+    const nodeNames = targetProxyNames(target, nodes);
     const profile = await loadUserProfile(db, user.id, target, deps.resolveProfileIni, nodeNames);
     body = renderTargetBody(target, nodes, {}, profile);
     userinfo = collectUserUserInfo(db, user.id);

@@ -11,6 +11,32 @@ import { stringify as stringifyYaml } from 'yaml';
 import type { ProduceOptions, ProxyNode } from '../types';
 import { deepClone, normalizeVmessSecurity } from '../utils';
 
+/**
+ * Why a node was dropped by a client producer, or `undefined` when it is
+ * representable.
+ *
+ * `prepareNode` strips every `_`-prefixed key, so `cleanupValue` (and with it
+ * `prepareNode`) would delete a reason stored as `_skipped` on the returned
+ * node. Cleanup skips those keys *before* recursing into them, so reading the
+ * reason off the clone is safe.
+ */
+const SKIP_REASON_KEY = '_skipped';
+
+/** Mark a prepared (cleaned) node with its skip reason, for the caller. */
+export function withSkipReason(node: ProxyNode, reason: string): ProxyNode {
+  node[SKIP_REASON_KEY] = reason;
+  return node;
+}
+
+/**
+ * The skip reason recorded by a producer helper (`surgeProxyLine` & co), or
+ * `undefined` when the node is representable.
+ */
+export function nodeSkipReason(node: ProxyNode): string | undefined {
+  const reason = node[SKIP_REASON_KEY];
+  return typeof reason === 'string' && reason !== '' ? reason : undefined;
+}
+
 export function cleanupValue<T>(value: T): T {
   if (Array.isArray(value)) {
     return value

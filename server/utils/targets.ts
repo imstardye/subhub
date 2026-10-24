@@ -22,14 +22,14 @@ export type ExportTarget = (typeof EXPORT_TARGETS)[number];
 
 /**
  * Targets that still render the mihomo YAML body because their dedicated
- * producer is not implemented yet (P4).
- *
- * `singbox` and `uri` are real producers now (`core/producers/singbox.ts` /
- * `core/producers/uri.ts`); surge/loon/shadowrocket are done on another branch.
+ * producer is not implemented yet. Every current target has a real producer
+ * (mihomo/clash YAML, shadowrocket/surge/loon line formats, singbox JSON,
+ * uri share links), so the fallback set is empty; the check stays so a
+ * future target can opt into the fallback explicitly.
  */
-export type FallbackTarget = Extract<ExportTarget, 'shadowrocket' | 'surge' | 'loon'>;
+export type FallbackTarget = never;
 
-const FALLBACK_TARGETS = new Set<string>(['shadowrocket', 'surge', 'loon']);
+const FALLBACK_TARGETS = new Set<string>([]);
 
 export function isFallbackTarget(target: ExportTarget): target is FallbackTarget {
   return FALLBACK_TARGETS.has(target);
@@ -37,17 +37,25 @@ export function isFallbackTarget(target: ExportTarget): target is FallbackTarget
 
 /** Content-Type of a target's body (also used by the admin preview). */
 export function contentTypeForTarget(target: ExportTarget): string {
-  // `singbox` is JSON; `uri` is an opaque base64 blob (its own body is share
-  // links, not YAML). Everything else still renders Clash/mihomo YAML.
+  // `singbox` is JSON; the share-link and line-based bodies are plain text.
+  // Everything else renders Clash/mihomo YAML.
   if (target === 'singbox') return 'application/json; charset=utf-8';
-  if (target === 'uri') return 'text/plain; charset=utf-8';
+  if (
+    target === 'uri' ||
+    target === 'shadowrocket' ||
+    target === 'surge' ||
+    target === 'loon'
+  ) {
+    return 'text/plain; charset=utf-8';
+  }
   return 'text/yaml; charset=utf-8';
 }
 
 /** File extension used in the download `Content-Disposition`. */
 export function fileNameExtensionFor(target: ExportTarget): string {
   if (target === 'singbox') return 'json';
-  if (target === 'uri') return 'txt';
+  if (target === 'uri' || target === 'shadowrocket') return 'txt';
+  if (target === 'surge' || target === 'loon') return 'conf';
   return 'yaml';
 }
 

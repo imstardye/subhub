@@ -194,9 +194,58 @@ describe('GET /s/:token valid export', () => {
     });
   });
 
+  it('applies the profile groups (not rules) to surge/loon and prunes skipped nodes', async () => {
+    attachSource(
+      [
+        'proxies:',
+        '  - {name: "fixture-ss", type: ss, server: example.com, port: 8388, cipher: aes-128-gcm, password: "fake"}',
+        '  - {name: "fixture-vless", type: vless, server: vless.example.com, port: 443, uuid: 11111111-2222-3333-4444-555555555555}',
+      ].join('\n'),
+    );
+    const profile = db
+      .insert(profiles)
+      .values({
+        name: 'groups-only',
+        iniText: [
+          '[custom]',
+          'custom_proxy_group=🚀 节点选择`select`.*',
+          'custom_proxy_group=vless-only`select`[]fixture-vless',
+          'custom_proxy_group=auto`url-test`.*`https://example.com/generate_204`300',
+          'ruleset=🚀 节点选择,[]MATCH',
+        ].join('\n'),
+      })
+      .returning({ id: profiles.id })
+      .get()!;
+    db.update(users).set({ profileId: profile.id }).where(eq(users.id, userId)).run();
+
+    resetExportRateLimiter();
+    const surge = await call(TOKEN, 'surge');
+    const surgeLines = surge.body.split('\n');
+    expect(surgeLines[0]).toContain('fixture-ss = ss,');
+    // Surge has no VLESS: the node is skipped, its group disappears, the
+    // catch-all group keeps only the emitted node, and there are no rules.
+    expect(surge.body).not.toContain('fixture-vless');
+    expect(surge.body).toContain('🚀 节点选择 = select,fixture-ss');
+    expect(surge.body).toContain('auto = url-test,fixture-ss,url=https://example.com/generate_204,interval=300');
+    expect(surge.body).not.toContain('vless-only');
+    expect(surge.body).not.toContain('MATCH,');
+
+    resetExportRateLimiter();
+    const loon = await call(TOKEN, 'loon');
+    expect(loon.body).toContain('fixture-vless = VLESS,');
+    expect(loon.body).toContain('🚀 节点选择 = select,fixture-ss,fixture-vless');
+    expect(loon.body).toContain('vless-only = select,fixture-vless');
+    expect(loon.body).not.toContain('MATCH,');
+
+    // Shadowrocket subscriptions carry nodes only: no group syntax at all.
+    resetExportRateLimiter();
+    const shadowrocket = await call(TOKEN, 'shadowrocket');
+    expect(parseSubscription(shadowrocket.body)).toHaveLength(2);
+  });
+
   it('sends cache-control: no-store and the security headers on 200', async () => {
     attachSource(null);
-    for (const target of [undefined, 'clash', 'mihomo']) {
+    for (const target of [undefined, 'clash', 'mihomo', 'shadowrocket', 'surge', 'loon']) {
       const response = await call(TOKEN, target);
       expect(response.status).toBe(200);
       expect(response.headers['cache-control']).toBe('no-store');
@@ -212,10 +261,10 @@ describe('GET /s/:token valid export', () => {
     expect(parseYaml(response.body)).toMatchObject({ proxies: [] });
   });
 
-  it('falls back to mihomo YAML only for targets that are not implemented yet (P4)', async () => {
+  it('serves the full mihomo YAML document for mihomo and clash', async () => {
     attachSource('proxies:\n  - {name: "fixture-ss", type: ss, server: example.com, port: 8388, cipher: aes-128-gcm, password: "fake"}\n');
-    // `mihomo` is the real producer; `singbox`/`uri` have their own below.
-    for (const target of ['shadowrocket', 'surge', 'loon']) {
+    // Every other target has its own real producer, covered by the tests below.
+    for (const target of ['mihomo', 'clash']) {
       const response = await call(TOKEN, target);
       expect(response.status).toBe(200);
       const yaml = parseYaml(response.body) as { proxies: Array<{ name: string }> };
@@ -275,6 +324,46 @@ describe('GET /s/:token valid export', () => {
     const uri = await call(TOKEN, 'uri');
     expect(uri.status).toBe(200);
     expect(uri.body).toBe('');
+  });
+
+  it('serves real shadowrocket/surge/loon documents as text/plain, never YAML', async () => {
+    attachSource(
+      [
+        'proxies:',
+        '  - {name: "fixture-ss", type: ss, server: example.com, port: 8388, cipher: aes-128-gcm, password: "fake"}',
+        '  - {name: "fixture-vless", type: vless, server: vless.example.com, port: 443, uuid: 11111111-2222-3333-4444-555555555555, tls: true, servername: vless.example.com}',
+      ].join('\n'),
+    );
+
+    const shadowrocket = await call(TOKEN, 'shadowrocket');
+    expect(shadowrocket.status).toBe(200);
+    expect(shadowrocket.headers['content-type']).toBe('text/plain; charset=utf-8');
+    expect(shadowrocket.headers['content-disposition']).toContain('-shadowrocket.txt');
+    // Base64 of link lines: parseable as a subscription.
+    expect(shadowrocket.body).toMatch(/^[A-Za-z0-9+/]+=*$/);
+    expect(parseSubscription(shadowrocket.body).map((node) => node.name)).toEqual([
+      'fixture-ss',
+      'fixture-vless',
+    ]);
+
+    const surge = await call(TOKEN, 'surge');
+    expect(surge.status).toBe(200);
+    expect(surge.headers['content-type']).toBe('text/plain; charset=utf-8');
+    expect(surge.headers['content-disposition']).toContain('-surge.conf');
+    expect(surge.body).toBe(
+      'fixture-ss = ss, example.com, 8388, encrypt-method=aes-128-gcm, password=fake, udp-relay=true\n',
+    );
+    // No YAML structure of any kind (no `proxies:` list, no `- name:` items).
+    expect(surge.body).not.toContain('proxies:');
+    expect(surge.body).not.toContain('- name:');
+
+    const loon = await call(TOKEN, 'loon');
+    expect(loon.status).toBe(200);
+    expect(loon.headers['content-type']).toBe('text/plain; charset=utf-8');
+    expect(loon.headers['content-disposition']).toContain('-loon.conf');
+    // Loon supports VLESS; Surge does not.
+    expect(loon.body.split('\n')[0]).toBe('fixture-ss = Shadowsocks,example.com,8388,aes-128-gcm,fake');
+    expect(loon.body).toContain('fixture-vless = VLESS,vless.example.com,443,none,');
   });
 
   it('rejects an unknown explicit target without disclosing anything', async () => {

@@ -17,10 +17,10 @@ import { eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { users } from '../db/schema';
 import {
-  buildTargetProxies,
   collectUserNodes,
   loadUserProfile,
   renderTargetBody,
+  targetProxyNames,
 } from './export-nodes';
 import {
   contentTypeForTarget,
@@ -86,9 +86,7 @@ export async function previewSubscription(
 
   const target = parsePreviewTarget(body.target);
   const nodes = collectUserNodes(db, user.id);
-  const nodeNames = buildTargetProxies(target, nodes)
-    .map((node) => node.name)
-    .filter(Boolean);
+  const nodeNames = targetProxyNames(target, nodes);
   const profile = await loadUserProfile(db, user.id, target, undefined, nodeNames);
   const rendered = renderTargetBody(target, nodes, {}, profile);
   const { body: text, truncated } = truncateBody(rendered);
@@ -99,8 +97,8 @@ export async function previewSubscription(
     enabled: user.enabled,
     target,
     status: 200,
-    // json for sing-box, plain text for the share-link body and the (still
-    // YAML) legacy/fallback targets.
+    // json for sing-box, plain text for the share-link and line-based
+    // bodies, YAML for mihomo/clash.
     contentType: contentTypeForTarget(target),
     body: text,
     ...(truncated ? { truncated: true } : {}),
