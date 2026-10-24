@@ -316,6 +316,32 @@ ruleset=GROUP C,[]FINAL
     ]);
   });
 
+  it('does not append a policy onto a rule that already has one', () => {
+    expect(expandRuleList('DOMAIN,example.com,OLD', 'NEW')).toEqual([
+      'DOMAIN,example.com,OLD',
+    ]);
+    expect(
+      expandRuleList('IP-CIDR,203.0.113.0/24,OLD,no-resolve', 'NEW'),
+    ).toEqual(['IP-CIDR,203.0.113.0/24,OLD,no-resolve']);
+    expect(expandRuleList('DOMAIN,example.com', 'NEW')).toEqual([
+      'DOMAIN,example.com,NEW',
+    ]);
+
+    const built = buildRules(
+      parseIni(`
+[custom]
+ruleset=NEW,[]DOMAIN,example.com,OLD
+ruleset=NEW,[]IP-CIDR,203.0.113.0/24,OLD,no-resolve
+ruleset=NEW,[]DOMAIN,example.com
+`),
+    );
+    expect(built.rules).toEqual([
+      'DOMAIN,example.com,OLD',
+      'IP-CIDR,203.0.113.0/24,OLD,no-resolve',
+      'DOMAIN,example.com,NEW',
+    ]);
+  });
+
   it('keeps inline rules whose content contains commas', () => {
     const ini = parseIni(`
 [custom]

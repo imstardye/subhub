@@ -86,42 +86,47 @@ function splitFirstComma(value: string): [string, string] {
  * `DOMAIN-REGEX,^a.{0,61}$`. Only the type, trailing known options and an
  * optional policy target are separated from the content.
  */
-function parseRuleLine(line: string, target?: string): ParsedRuleLine | null {
+function parseRuleLine(line: string): ParsedRuleLine | null {
   const firstComma = line.indexOf(',');
   const rawType = (firstComma === -1 ? line : line.slice(0, firstComma)).trim();
   if (!rawType) return null;
 
   let rest = firstComma === -1 ? '' : line.slice(firstComma + 1);
   const options: string[] = [];
-  let sourceTarget: string | undefined;
 
   while (rest) {
     const lastComma = rest.lastIndexOf(',');
     if (lastComma === -1) break;
 
     const tail = rest.slice(lastComma + 1).trim();
-    const lower = tail.toLowerCase();
-    if (RULE_TRAILING_OPTIONS.has(lower)) {
-      options.unshift(tail);
-      rest = rest.slice(0, lastComma);
-      continue;
-    }
+    if (!RULE_TRAILING_OPTIONS.has(tail.toLowerCase())) break;
 
-    if (
-      !sourceTarget &&
-      ((target && tail === target) ||
-        BUILTIN_RULE_TARGETS.has(tail.toUpperCase()))
-    ) {
-      sourceTarget = tail;
-      rest = rest.slice(0, lastComma);
-      continue;
-    }
+    options.unshift(tail);
+    rest = rest.slice(0, lastComma);
+  }
 
-    break;
+  // After trailing options are removed, a classical rule is `TYPE,payload`
+  // or `TYPE,payload,policy`. Peel the last segment only when it is a known
+  // policy (the assigned group, or a built-in target) so comma-containing
+  // payloads such as `^a.{0,61}$` stay intact.
+  let sourceTarget: string | undefined;
+  const mappedType = mapRuleType(rawType);
+  if (mappedType !== 'MATCH' && mappedType !== 'FINAL') {
+    const lastComma = rest.lastIndexOf(',');
+    if (lastComma !== -1) {
+      const tail = rest.slice(lastComma + 1).trim();
+      const payload = rest.slice(0, lastComma).trim();
+      // A policy is a single token (group name or DIRECT/REJECT/…).
+      // Comma-containing payloads such as `^a.{0,61}$` do not match.
+      if (tail && payload && /^[\w][\w .+-]*$/.test(tail)) {
+        sourceTarget = tail;
+        rest = rest.slice(0, lastComma);
+      }
+    }
   }
 
   return {
-    type: mapRuleType(rawType),
+    type: mappedType,
     content: rest.trim(),
     options,
     ...(sourceTarget ? { target: sourceTarget } : {}),
@@ -142,6 +147,7 @@ function parseRuleset(raw: string): RulesetEntry {
   if (source.startsWith('[]')) {
     const body = source.slice(2);
     const parsed = parseRuleLine(body);
+    entry.sourceTarget = parsed?.target;
     entry.kind = 'inline';
     entry.inlineType = parsed?.type ?? '';
     entry.inlineValue = parsed
@@ -444,7 +450,10 @@ function inlineRuleToClash(entry: RulesetEntry, target: 'mihomo' | 'legacy'): st
 
   const content = values[0] ?? '';
   const options = values.slice(1);
-  const parts = [normalizedType, content, entry.group, ...options].filter(Boolean);
+  // Keep a policy already present on the inline rule instead of appending
+  // the ruleset group as a second one.
+  const policy = entry.sourceTarget ?? entry.group;
+  const parts = [normalizedType, content, policy, ...options].filter(Boolean);
   return parts.join(',');
 }
 
@@ -491,7 +500,7 @@ function expandRuleListDetailed(
   const rules: string[] = [];
   const skipped: string[] = [];
   for (const line of lines) {
-    const parsed = parseRuleLine(line, group);
+    const parsed = parseRuleLine(line);
     if (!parsed) continue;
 
     if (parsed.type === 'MATCH' || parsed.type === 'FINAL') {
@@ -504,7 +513,10 @@ function expandRuleListDetailed(
       continue;
     }
 
-    const parts = [parsed.type, parsed.content, group, ...parsed.options]
+    // A rule that already names a policy keeps it. Appending `group`
+    // would emit a second policy (DOMAIN,example.com,OLD,NEW).
+    const policy = parsed.target ?? group;
+    const parts = [parsed.type, parsed.content, policy, ...parsed.options]
       .filter(Boolean);
     rules.push(parts.join(','));
   }

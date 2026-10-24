@@ -55,6 +55,8 @@ export interface RulesetEntry {
   inlineType?: string;
   /** Inline rule payload split on commas (`['CN', 'no-resolve']`). */
   inlineValue?: string[];
+  /** Policy already written on an inline rule, when one was present. */
+  sourceTarget?: string;
   /** Original line, useful for diagnostics. */
   raw: string;
 }
