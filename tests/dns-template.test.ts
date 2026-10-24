@@ -120,6 +120,7 @@ describe('built-in DNS template', () => {
       ],
       'default-nameserver': ['223.5.5.5', '119.29.29.29'],
       nameserver: ['https://dns.alidns.com/dns-query', 'https://doh.pub/dns-query'],
+      'proxy-server-nameserver': ['https://dns.alidns.com/dns-query', 'https://doh.pub/dns-query'],
       fallback: ['https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query'],
       'fallback-filter': {
         geoip: true,
@@ -133,6 +134,15 @@ describe('built-in DNS template', () => {
 
   it('omits `listen` so the config imports without opening a local DNS port', () => {
     expect(BUILTIN_DNS_TEMPLATE).not.toHaveProperty('listen');
+  });
+
+  // mihomo rejects the whole config otherwise: "if respect-rules is turned
+  // on, proxy-server-nameserver cannot be empty" (hit on a real import).
+  it('sets proxy-server-nameserver because respect-rules requires it', () => {
+    expect(BUILTIN_DNS_TEMPLATE['respect-rules']).toBe(true);
+    const psn = BUILTIN_DNS_TEMPLATE['proxy-server-nameserver'] as string[];
+    expect(Array.isArray(psn)).toBe(true);
+    expect(psn.length).toBeGreaterThan(0);
   });
 
   // fake-ip without encrypted nameservers still leaks; both halves are asserted.

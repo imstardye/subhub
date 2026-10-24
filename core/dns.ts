@@ -50,6 +50,9 @@ export const BUILTIN_DNS_TEMPLATE: Readonly<Record<string, unknown>> = Object.fr
   'default-nameserver': ['223.5.5.5', '119.29.29.29'],
   // Encrypted DNS. Domestic DoH first so CN domains resolve fast.
   nameserver: ['https://dns.alidns.com/dns-query', 'https://doh.pub/dns-query'],
+  // Resolver for proxy *server* hostnames. mihomo refuses the whole config
+  // when `respect-rules` is on and this is empty, so it must be set.
+  'proxy-server-nameserver': ['https://dns.alidns.com/dns-query', 'https://doh.pub/dns-query'],
   // Overseas DoH, used for answers that look foreign (see fallback-filter).
   fallback: ['https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query'],
   'fallback-filter': {
