@@ -147,7 +147,6 @@ describe('admin API middleware', () => {
       url?: string;
     };
     req.url = url;
-    let nexted = false;
     let ended: string | undefined;
     interface TestResponse {
       statusCode: number;
@@ -165,15 +164,25 @@ describe('admin API middleware', () => {
         ended = body;
       },
     };
-    (adminApiMiddleware as unknown as (
-      req: { headers: Record<string, string | string[] | undefined>; url?: string },
-      res: TestResponse,
-      next: () => void,
-    ) => void)(req, res, () => {
-      nexted = true;
-    });
+    // Nitro calls server middleware as an h3 event handler: one argument, no
+    // `next`. Returning normally means "continue"; answering means "stop".
+    const handler = adminApiMiddleware as unknown as (event: unknown) => unknown;
+    // A real h3 event exposes the node pair via `node` and the parsed path;
+    // keep the `_path` the route helpers read as well.
+    const h3Event = { node: { req, res }, path: url.split('?')[0], _path: url.split('?')[0] };
+    handler(h3Event);
+    // Anything that answered the request (401 JSON) stopped it.
+    const nexted = ended === undefined && res.statusCode === 200;
     return { nexted, ended, status: res.statusCode, res };
   }
+
+  it('is a plain event handler, so Nitro never has to pass `next`', () => {
+    // Regression: a connect-style `(req, res, next)` export threw
+    // `TypeError: next is not a function` and every request got a 500.
+    expect(adminApiMiddleware.length).toBe(1);
+    const { event } = makeApiEvent({ url: '/' });
+    expect(() => (adminApiMiddleware as unknown as (event: unknown) => unknown)(event)).not.toThrow();
+  });
 
   it('lets login and logout through without a session', () => {
     expect(isPublicAdminApiPath('/api/admin/login')).toBe(true);
