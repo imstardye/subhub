@@ -1,0 +1,17 @@
+node_modules
+.nuxt
+.output
+.git
+.github
+tests
+coverage
+*.log
+.env
+.env.*
+!.env.example
+dist
+.cache
+.DS_Store
+README.md
+LICENSE
+.data/
