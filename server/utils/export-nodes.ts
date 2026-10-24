@@ -36,7 +36,8 @@ import {
   buildRules,
   buildShadowrocketSubscription,
   buildSurgeProxies,
-  excludeRemarkNodes,
+  compileExcludeRemarks,
+  filterInfoAndRemarkNodes,
   parseIni,
   parseSubscription,
   prepareNode,
@@ -314,9 +315,11 @@ export function targetProxyNames(target: ExportTarget, nodes: ProxyNode[]): stri
 
 /**
  * Result of `loadUserProfile`: the profile to render with, plus the node list
- * to render it for. `nodes` is the input minus the nodes matched by the
- * profile's `[common] exclude_remarks` (identical when there is no such
- * pattern), so callers must render with these nodes — never the raw ones.
+ * to render it for. `nodes` is the input minus the built-in info/ads
+ * pseudo-nodes and minus the nodes matched by the profile's
+ * `[common] exclude_remarks` (the union of both; identical to the input only
+ * when nothing matches), so callers must render with these nodes — never the
+ * raw ones.
  */
 export interface LoadedUserProfile {
   profile: ExportProfile;
@@ -341,14 +344,13 @@ export function resolveProfileIdByName(db: SubhubDb, name: string): number | nul
 }
 
 /**
- * Load and parse the rule profile assigned to a user, applying its
- * `[common] exclude_remarks` filter to `nodes`. An explicit `profileId`
- * overrides the assignment (the URL's profile-name suffix; see
+ * Load and parse the rule profile assigned to a user, applying the built-in
+ * info-node filter and its `[common] exclude_remarks` to `nodes`. An explicit
+ * `profileId` overrides the assignment (the URL's profile-name suffix; see
  * `resolveProfileIdByName`).
  *
  * Missing user, missing profileId, missing/removed profile row, unreadable INI
- * or an unexpected error all yield `null` (today's nodes-only behaviour, no
- * filtering).
+ * or an unexpected error all yield `null` (today's nodes-only behaviour).
  *
  * What the export does with the profile depends on the target
  * (`exportProfileCapability`): shadowrocket ignores profiles' groups/rules
@@ -391,11 +393,13 @@ export async function loadUserProfile(
     if (!iniText) return null;
 
     const ini = parseIni(iniText);
-    // `[common] exclude_remarks` is applied here, on the raw parsed nodes,
-    // *before* the group regexes are expanded: groups (`.*`, `((?i)hk)`, ...)
-    // must only ever see the nodes the export will emit. Doing it here keeps
-    // the INI fetch single-pass (the pattern lives in the same profile).
-    const visibleNodes = excludeRemarkNodes(nodes, ini);
+    // Info/ads pseudo-nodes (`剩余流量：…`, `套餐到期：…`) are dropped by the
+    // BUILT-IN set first, then the profile's pattern. Applied here, on the raw
+    // parsed nodes, *before* the group regexes are expanded: groups (`.*`,
+    // `((?i)hk)`, ...) must only ever see the nodes the export will emit. The
+    // dropped set is the union of both (`exclude_remarks` still means exactly
+    // what subconverter means). Doing it here keeps the INI fetch single-pass.
+    const visibleNodes = filterInfoAndRemarkNodes(nodes, compileExcludeRemarks(ini));
     const nodeNames = targetProxyNames(exportTarget, visibleNodes);
     // The profile variant decides which Clash dialect the rules target; the
     // export target only picks the node producer (see `withProfile`).

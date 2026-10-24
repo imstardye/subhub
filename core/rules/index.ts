@@ -26,6 +26,12 @@ export {
   type RemarkExcluder,
 } from './exclude-remarks';
 export {
+  filterInfoAndRemarkNodes,
+  filterInfoNodes,
+  INFO_NODE_KEYWORDS,
+  isInfoNodeName,
+} from './info-nodes';
+export {
   BUILTIN_GROUP_MEMBERS,
   minGroupMembers,
   pruneEmptyGroups,

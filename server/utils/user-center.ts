@@ -45,7 +45,7 @@ import {
   parseOptionalText,
   parseSourceUrl,
 } from './admin-validation';
-import { parseSubscription } from '../../core';
+import { filterInfoNodes, parseSubscription } from '../../core';
 import { isSourceDisabled } from './export-nodes';
 import { refreshSource, type Fetcher } from '../tasks/refresh-sources';
 import type { SubscriptionUserInfo } from './userinfo';
@@ -108,12 +108,21 @@ export function sourceHealth(row: SourceRowSubset): UserCenterHealth {
   return { state: 'ok', error: null, lastOkAt };
 }
 
-/** Number of nodes a cache blob parses to; `null` when it does not parse. */
+/**
+ * Number of nodes a cache blob parses to; `null` when it does not parse.
+ *
+ * Counts the nodes an export would actually carry: the built-in info/ads
+ * pseudo-node set (`剩余流量：…`, `套餐到期：…` — see `core/rules/info-nodes.ts`)
+ * is filtered out here too, so the user center's "N 个节点" matches the export.
+ * The cache itself keeps the raw payload; only the count/filter path drops them.
+ * The rule profile's `exclude_remarks` is deliberately NOT applied here — it is
+ * per-profile, while this is a per-source figure.
+ */
 export function countCachedNodes(blob: string | null): number | null {
   const text = blob?.trim();
   if (!text) return null;
   try {
-    return parseSubscription(text).length;
+    return filterInfoNodes(parseSubscription(text)).length;
   } catch {
     return null;
   }

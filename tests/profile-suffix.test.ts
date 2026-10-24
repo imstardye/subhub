@@ -44,10 +44,16 @@ type MihomoDocument = {
 };
 
 /**
- * Six nodes: two of them info pseudo-nodes only profile B excludes, plus the
- * marker node only profile B keeps. Both profiles declare a distinct group so
- * the rendered group list identifies which profile was applied.
+ * Six nodes: two of them info pseudo-nodes — always dropped, by the built-in
+ * info-node set as well as by each profile's `exclude_remarks` (union, see
+ * tests/info-nodes.test.ts) — plus two real nodes and the marker node only
+ * profile B keeps. Both profiles declare a distinct group so the rendered group
+ * list identifies which profile was applied. The info nodes stay in the fixture
+ * because they must never come back.
  */
+/** The real nodes of the fixture, in source order. */
+const REAL_NODE_NAMES = ['🇭🇰 香港 01', '🇯🇵 日本 01', '🇺🇸 美国 01', 'B-ONLY 节点'];
+
 const SOURCE_YAML = [
   'proxies:',
   '  - {name: "🇭🇰 香港 01", type: ss, server: hk.example.com, port: 8388, cipher: aes-128-gcm, password: "fake"}',
@@ -161,9 +167,10 @@ describe('GET /s/:token/:target/:profile', () => {
     const overridden = await callPath(`/s/${TOKEN}/clash/v2o`);
     expect(overridden.status).toBe(200);
     expect(groupNames(overridden.body)).toEqual(['group-b']);
-    // B's exclude_remarks applies: 剩余流量 dropped, 套餐到期 kept.
-    expect(proxyNames(overridden.body)).toContain('套餐到期：2026');
+    // Info pseudo-nodes never render, whichever profile is used.
     expect(proxyNames(overridden.body)).not.toContain('剩余流量：1 TB');
+    expect(proxyNames(overridden.body)).not.toContain('套餐到期：2026');
+    expect(proxyNames(overridden.body)).toEqual(REAL_NODE_NAMES);
     // The override also drives the profile dnsTemplate (B has one).
     expect((parseYaml(overridden.body) as MihomoDocument).dns).toEqual({
       enable: true,
@@ -177,9 +184,10 @@ describe('GET /s/:token/:target/:profile', () => {
     const assigned = await callPath(`/s/${TOKEN}/clash`);
     expect(assigned.status).toBe(200);
     expect(groupNames(assigned.body)).toEqual(['group-a']);
-    // A's exclude_remarks applies: 套餐到期 dropped, 剩余流量 kept.
-    expect(proxyNames(assigned.body)).toContain('剩余流量：1 TB');
+    // Info pseudo-nodes never render, whichever profile is used.
+    expect(proxyNames(assigned.body)).not.toContain('剩余流量：1 TB');
     expect(proxyNames(assigned.body)).not.toContain('套餐到期：2026');
+    expect(proxyNames(assigned.body)).toEqual(REAL_NODE_NAMES);
     expect((parseYaml(assigned.body) as MihomoDocument).dns).toEqual(BUILTIN_DNS_TEMPLATE);
     expect((parseYaml(assigned.body) as MihomoDocument).rules).toContain('MATCH,group-a');
 
@@ -197,14 +205,13 @@ describe('GET /s/:token/:target/:profile', () => {
     expect(surge.body).toContain('group-b');
     expect(surge.body).not.toContain('group-a');
 
-    // shadowrocket is nodes-only but still honours exclude_remarks.
+    // shadowrocket is nodes-only but still honours the node filters.
     const shadowrocket = await callPath(`/s/${TOKEN}/shadowrocket/v2o`);
     expect(shadowrocket.status).toBe(200);
     const links = Buffer.from(shadowrocket.body, 'base64').toString('utf8').split('\n');
     expect(links.some((link) => link.includes(encodeURIComponent('剩余流量')))).toBe(false);
-    expect(links.some((link) => link.includes('japanese-marker') || link.includes(encodeURIComponent('套餐到期')))).toBe(
-      true,
-    );
+    expect(links.some((link) => link.includes(encodeURIComponent('套餐到期')))).toBe(false);
+    expect(links).toHaveLength(REAL_NODE_NAMES.length);
   });
 
   it('answers 404 for an unknown profile name (no fallback)', async () => {

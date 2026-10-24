@@ -304,7 +304,11 @@ describe('GET /s/:token exclude_remarks', () => {
     ]);
   });
 
-  it('keeps all nodes when the profile has no (or an invalid) exclude_remarks', async () => {
+  // Without a (usable) `exclude_remarks` there is nothing INI-driven to drop,
+  // but the BUILT-IN info-node filter still removes `剩余流量…` / `套餐到期…`
+  // (tests/info-nodes.test.ts owns that behaviour; asserted here so the union
+  // is visible where the INI path is tested).
+  it('keeps all real nodes when the profile has no (or an invalid) exclude_remarks', async () => {
     for (const ini of [
       '[custom]\ncustom_proxy_group=🚀 节点选择`select`.*\nruleset=🚀 节点选择,[]MATCH',
       '[common]\nexclude_remarks=(到期\n[custom]\ncustom_proxy_group=🚀 节点选择`select`.*\nruleset=🚀 节点选择,[]MATCH',
@@ -321,8 +325,8 @@ describe('GET /s/:token exclude_remarks', () => {
       const { response } = await exportWith(TOKEN, 'mihomo');
       expect(response.status).toBe(200);
       const document = parseYaml(response.body) as MihomoDocument;
-      expect(document.proxies).toHaveLength(6);
-      expect(document['proxy-groups'][0]!.proxies).toHaveLength(6);
+      expect(document.proxies.map((proxy) => proxy.name)).toEqual(ALL_NAMES);
+      expect(document['proxy-groups'][0]!.proxies).toEqual(ALL_NAMES);
     }
   });
 
