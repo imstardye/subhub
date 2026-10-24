@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+/**
+ * Subscription preview for POST /api/admin/preview (P3).
+ *
+ * Renders exactly what `/s/:token/:target` would return for a user, but for the
+ * admin UI: no token lookup, no rate limiting and **no access log line**. The
+ * disabled flag is reported so an admin can debug a suspended user's output.
+ *
+ * The rendered body is capped at `PREVIEW_BODY_MAX_BYTES` (~200 KiB) so a user
+ * with hundreds of nodes cannot stall the admin page; `truncated` flags it.
+ */
+import { eq } from 'drizzle-orm';
+import type { SubhubDb } from '../db';
+import { users } from '../db/schema';
+import { collectUserNodes, renderTargetBody } from './export-nodes';
+import { EXPORT_TARGETS, isExportTarget, type ExportTarget } from './targets';
+import { parseId, ValidationError } from './admin-validation';
+
+/** Hard cap on the returned body (~200 KiB); larger exports are cut off. */
+export const PREVIEW_BODY_MAX_BYTES = 200 * 1024;
+
+export const DEFAULT_PREVIEW_TARGET: ExportTarget = 'mihomo';
+
+export interface PreviewResult {
+  userId: number;
+  name: string;
+  enabled: boolean;
+  target: ExportTarget;
+  status: number;
+  contentType: string;
+  body: string;
+  truncated?: boolean;
+}
+
+/**
+ * Cut `body` to at most `maxBytes` UTF-8 bytes without splitting a character.
+ * Returns the (possibly shorter) body and whether anything was dropped.
+ */
+export function truncateBody(
+  body: string,
+  maxBytes: number = PREVIEW_BODY_MAX_BYTES,
+): { body: string; truncated: boolean } {
+  if (Buffer.byteLength(body, 'utf8') <= maxBytes) return { body, truncated: false };
+  const buffer = Buffer.from(body, 'utf8').subarray(0, maxBytes);
+  // `toString` drops an incomplete trailing sequence, keeping the YAML valid-ish.
+  return { body: buffer.toString('utf8'), truncated: true };
+}
+
+/** Validate the requested target; absent means mihomo, unknown is a 400. */
+function parsePreviewTarget(value: unknown): ExportTarget {
+  if (value === undefined || value === null || value === '') return DEFAULT_PREVIEW_TARGET;
+  const target = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!isExportTarget(target)) {
+    throw new ValidationError(`target must be one of: ${EXPORT_TARGETS.join(', ')}`);
+  }
+  return target;
+}
+
+/**
+ * Render a preview for `body.userId`. A missing user is a 404; a disabled user
+ * is still rendered (admin debugging) and flagged via `enabled: false`.
+ */
+export function previewSubscription(db: SubhubDb, body: Record<string, unknown>): PreviewResult {
+  const userId = parseId(body.userId);
+  const user = db.select().from(users).where(eq(users.id, userId)).get();
+  if (!user) throw new ValidationError('user not found', 404);
+
+  const target = parsePreviewTarget(body.target);
+  const rendered = renderTargetBody(target, collectUserNodes(db, user.id));
+  const { body: text, truncated } = truncateBody(rendered);
+
+  return {
+    userId: user.id,
+    name: user.name,
+    enabled: user.enabled,
+    target,
+    status: 200,
+    // Every current target renders YAML (clash legacy or mihomo fallback).
+    contentType: 'text/yaml; charset=utf-8',
+    body: text,
+    ...(truncated ? { truncated: true } : {}),
+  };
+}

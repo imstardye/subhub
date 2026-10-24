@@ -59,6 +59,17 @@ export function requestPath(event: AdminApiEvent): string {
   return path.split('?')[0] ?? '/';
 }
 
+/** Request query string as a plain map (last value wins). */
+export function requestQuery(event: AdminApiEvent): Record<string, string> {
+  const raw = event.node.req.url ?? '';
+  const index = raw.indexOf('?');
+  if (index < 0) return {};
+  const params = new URLSearchParams(raw.slice(index + 1));
+  const out: Record<string, string> = {};
+  for (const [key, value] of params) out[key] = value;
+  return out;
+}
+
 /**
  * Read a JSON body. Accepts a pre-parsed object (Nitro adapters / tests) or a
  * JSON string; returns `undefined` for anything else. The cap keeps a hostile

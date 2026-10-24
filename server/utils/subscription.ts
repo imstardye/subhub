@@ -9,10 +9,11 @@
  * missing; unsupported targets fall back to the mihomo YAML (see P4 note
  * below).
  */
-import { and, asc, eq } from 'drizzle-orm';
-import { parseSubscription, produceMihomo, produceLegacy, type ProxyNode } from '../../core';
+import { and, eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
-import { accessLogs, sources, userSources, users } from '../db/schema';
+import { accessLogs, users } from '../db/schema';
+import { collectUserNodes, renderTargetBody } from './export-nodes';
+import { isExportTarget, type ExportTarget } from './targets';
 import {
   createRateLimiter,
   RATE_LIMIT_MAX,
@@ -20,25 +21,9 @@ import {
   RATE_LIMIT_WINDOW_MS,
 } from './rate-limit';
 
-/** Targets accepted by /s/:token/:target (SPEC: 订阅出口). */
-export const EXPORT_TARGETS = [
-  'mihomo',
-  'clash',
-  'shadowrocket',
-  'singbox',
-  'surge',
-  'loon',
-  'uri',
-] as const;
-
-export type ExportTarget = (typeof EXPORT_TARGETS)[number];
-
-/** A target that still falls back to mihomo YAML (P4 TODO). */
-export type FallbackTarget = Exclude<ExportTarget, 'mihomo' | 'clash'>;
-
-export function isExportTarget(value: string): value is ExportTarget {
-  return (EXPORT_TARGETS as readonly string[]).includes(value);
-}
+// Re-exported for the existing route/tests; the definitions live in targets.ts.
+export { EXPORT_TARGETS, isExportTarget } from './targets';
+export type { ExportTarget, FallbackTarget } from './targets';
 
 /**
  * Pick a target from the User-Agent when the path does not specify one.
@@ -138,60 +123,6 @@ export function resolveTarget(
   const explicit = (target ?? '').trim().toLowerCase();
   if (!explicit) return detectTargetFromUserAgent(userAgent);
   return isExportTarget(explicit) ? explicit : null;
-}
-
-interface CachedSource {
-  id: number;
-  cacheBlob: string | null;
-}
-
-/** Sources attached to a user, in their configured order. */
-function loadUserSourceCaches(db: SubhubDb, userId: number): CachedSource[] {
-  return db
-    .select({ id: sources.id, cacheBlob: sources.cacheBlob })
-    .from(userSources)
-    .innerJoin(sources, eq(sources.id, userSources.sourceId))
-    .where(eq(userSources.userId, userId))
-    .orderBy(asc(userSources.sort), asc(sources.id))
-    .all();
-}
-
-/**
- * Parse cached payloads into nodes, in the user's source order. Cache blobs are
- * the raw provider response (share links, base64 or Clash YAML), so they go
- * through `parseSubscription`. A broken cache entry only drops that source; the
- * export must still succeed with whatever remains.
- */
-function collectNodes(caches: CachedSource[]): ProxyNode[] {
-  const nodes: ProxyNode[] = [];
-  for (const entry of caches) {
-    const blob = entry.cacheBlob?.trim();
-    if (!blob) continue;
-    try {
-      nodes.push(...parseSubscription(blob));
-    } catch {
-      // Cache is stale/invalid; the refresh task will replace it.
-    }
-  }
-  return nodes;
-}
-
-function renderBody(target: ExportTarget, nodes: ProxyNode[]): string {
-  switch (target) {
-    case 'clash':
-      return produceLegacy(nodes);
-    case 'shadowrocket':
-    case 'singbox':
-    case 'surge':
-    case 'loon':
-    case 'uri':
-      // P4: dedicated producers for these targets are not implemented yet, so
-      // clients receive the mihomo YAML as a placeholder.
-      return produceMihomo(nodes);
-    case 'mihomo':
-    default:
-      return produceMihomo(nodes);
-  }
 }
 
 function fileNameFor(target: ExportTarget, user: { id: number }): string {
@@ -323,7 +254,7 @@ export function handleSubscriptionExport(
 
   let body: string;
   try {
-    body = renderBody(target, collectNodes(loadUserSourceCaches(db, user.id)));
+    body = renderTargetBody(target, collectUserNodes(db, user.id));
   } catch {
     logAccess(db, {
       userId: user.id,
