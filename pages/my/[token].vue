@@ -30,6 +30,7 @@ import {
   lastRefreshLabel,
   mainLink,
   maskUserToken,
+  originFromLocation,
   ownSourceStats,
   profileChoices,
   sourceCreatePayload,
@@ -62,15 +63,19 @@ const view = computed(() =>
 );
 const center = computed(() => (view.value.kind === 'ready' ? view.value.data : null));
 
-/** Request origin; the API also reports one (proxy-aware) as a fallback. */
+/**
+ * Request origin, taken from the browser itself after mount. The API's
+ * reported origin is NOT a usable fallback: behind a reverse proxy the
+ * server sees the internal host (`http://localhost`), and links built from
+ * it are wrong for the user. Before mount the links stay relative (they
+ * resolve against the page address) and become absolute once mounted.
+ */
 const origin = ref('');
 onMounted(() => {
   origin.value = originFromLocation(window.location);
 });
 
-const linkOrigin = computed(
-  () => origin.value || (center.value?.mainLink ?? '').replace(/\/s\/.*$/, ''),
-);
+const linkOrigin = computed(() => origin.value);
 
 /** Profile switcher state ('' = the assigned profile, i.e. no suffix). */
 const selectedProfile = ref<string | null>(null);
@@ -105,7 +110,9 @@ const qrSvg = ref<string | null>(null);
 watch(
   currentMainLink,
   async (link) => {
-    qrSvg.value = await qrSvgPath(link);
+    // A relative link (pre-mount, origin unknown) is useless in a QR code;
+    // wait for the absolute form once the client origin is known.
+    qrSvg.value = link.startsWith('http') ? await qrSvgPath(link) : null;
   },
   { immediate: true },
 );

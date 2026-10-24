@@ -359,3 +359,31 @@ describe('sub prefix seam', () => {
     }
   });
 });
+
+describe('page SFC wiring', () => {
+  it('imports every core/utils/user-center name the page uses', async () => {
+    // Regression (live, 2026-10-25): the page called originFromLocation()
+    // without importing it — SFCs are not type-checked for free identifiers,
+    // so the build stayed green while the browser threw a ReferenceError
+    // (intermittent Nuxt 500) and the links fell back to a localhost origin.
+    // This guard reads the SFC source and fails if a used name is unimported.
+    const { readFileSync } = await import('node:fs');
+    const vue = readFileSync(new URL('../pages/my/[token].vue', import.meta.url), 'utf8');
+    const core = readFileSync(new URL('../core/utils/user-center.ts', import.meta.url), 'utf8');
+    const exported = new Set(
+      [...core.matchAll(/export (?:function|const|type|interface) (\w+)/g)].map((m) => m[1]!),
+    );
+    const fromIdx = vue.indexOf("from '~/core/utils/user-center';");
+    const startIdx = vue.lastIndexOf('import {', fromIdx);
+    const importBlock = fromIdx > startIdx && startIdx >= 0
+      ? vue.slice(startIdx + 'import {'.length, vue.lastIndexOf('}', fromIdx))
+      : '';
+    const imported = new Set(
+      importBlock.split(',').map((part) => part.trim().replace(/^type\s+/, '')).filter(Boolean),
+    );
+    const missing = [...exported].filter(
+      (name) => new RegExp(`\\b${name}\\b`).test(vue) && !imported.has(name),
+    );
+    expect(missing).toEqual([]);
+  });
+});
