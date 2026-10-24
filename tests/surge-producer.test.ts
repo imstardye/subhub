@@ -12,6 +12,7 @@ import {
   buildSurgeGroups,
   buildSurgeProxies,
   produceSurge,
+  surgePortHopping,
   surgeProxyLine,
 } from '../core/producers';
 
@@ -133,6 +134,67 @@ describe('Surge producer: [Proxy] golden lines', () => {
     ).toEqual({ line: 'HY2 = hysteria2, example.com, 443, password=fake-password, sni=hy.example.com' });
   });
 
+  it('emits AnyTLS with password, sni and skip-cert-verify (Surge iOS 5.17+/Mac 6.4.3+)', () => {
+    expect(
+      surgeProxyLine(
+        node({ type: 'anytls', name: 'AT', port: 443, password: 'fake-password', sni: 'at.example.com' }),
+      ),
+    ).toEqual({
+      line: 'AT = anytls, example.com, 443, password=fake-password, sni=at.example.com',
+    });
+    expect(
+      surgeProxyLine(
+        node({
+          type: 'anytls',
+          name: 'AT',
+          port: 443,
+          password: 'pw',
+          servername: 'at.example.com',
+          alpn: ['h2', 'http/1.1'],
+          'skip-cert-verify': false,
+        }),
+      ),
+    ).toEqual({
+      line: 'AT = anytls, example.com, 443, password=pw, sni=at.example.com, alpn=h2,http/1.1, skip-cert-verify=false',
+    });
+  });
+
+  it('skips AnyTLS without a password', () => {
+    expect(surgeProxyLine(node({ type: 'anytls', name: 'AT', port: 443 }))).toEqual({
+      skipped: 'missing or unrepresentable protocol options',
+    });
+  });
+
+  it('emits Hysteria2 port hopping with semicolon-separated entries', () => {
+    expect(
+      surgeProxyLine(
+        node({ type: 'hysteria2', name: 'HY2', port: 443, password: 'pw', ports: '60000-62000' }),
+      ),
+    ).toEqual({
+      line: 'HY2 = hysteria2, example.com, 443, password=pw, port-hopping=60000-62000',
+    });
+    expect(
+      surgeProxyLine(
+        node({
+          type: 'hysteria2',
+          name: 'HY2',
+          port: 443,
+          password: 'pw',
+          ports: '60000,61000-62000',
+          'hop-interval': 15,
+          down: '100',
+          up: '50',
+          sni: 'hy.example.com',
+        }),
+      ),
+    ).toEqual({
+      line: 'HY2 = hysteria2, example.com, 443, password=pw, sni=hy.example.com, port-hopping=60000;61000-62000, port-hopping-interval=15, download-bandwidth=100',
+    });
+    // An unusable list leaves no `port-hopping` (the declaration port applies).
+    expect(surgePortHopping('garbage')).toBeUndefined();
+    expect(surgePortHopping('5000;6000-7000')).toBe('5000;6000-7000');
+  });
+
   it.each(['socks5', 'socks'])('emits SOCKS credentials for %s', (type) => {
     expect(
       surgeProxyLine(
@@ -151,7 +213,6 @@ describe('Surge producer: [Proxy] golden lines', () => {
 describe('Surge producer: skipped types', () => {
   it.each([
     ['vless', { uuid: UUID, tls: true }],
-    ['anytls', { password: 'fake' }],
     ['ssr', { cipher: 'aes-256-cfb', password: 'fake', protocol: 'origin', obfs: 'plain' }],
   ])('skips %s (no Surge support) and counts it', (type, fields) => {
     const result = buildSurgeProxies([
@@ -193,6 +254,28 @@ describe('Surge producer: [Proxy Group]', () => {
     node({ type: 'vless', name: 'vless-01', uuid: UUID }),
     node({ type: 'trojan', name: 'us-01', password: 'p' }),
   ];
+
+  it('keeps AnyTLS nodes in the [Proxy] section and in their groups', () => {
+    const nodes = [
+      node({ type: 'anytls', name: 'at-01', port: 443, password: 'p', sni: 'at.example.com' }),
+      node({ name: 'ss-01', cipher: 'aes-128-gcm', password: 'p' }),
+      node({ type: 'vless', name: 'vless-01', uuid: UUID }),
+    ];
+    const proxies = buildSurgeProxies(nodes);
+    expect(proxies.names).toEqual(['at-01', 'ss-01']);
+    expect(proxies.lines[0]).toBe(
+      'at-01 = anytls, example.com, 443, password=p, sni=at.example.com',
+    );
+    // VLESS is still skipped: only the anytls node is counted as emitted here.
+    expect(proxies.skipped.map((entry) => entry.name)).toEqual(['vless-01']);
+
+    const body = produceSurge(nodes, [
+      group({ name: 'nodes', type: 'select', proxies: ['at-01', 'vless-01', 'ss-01'] }),
+    ]);
+    expect(body).toContain('at-01 = anytls,');
+    expect(body).toContain('nodes = select,at-01,ss-01');
+    expect(body).not.toContain('vless-01');
+  });
 
   it('maps select/url-test/fallback/load-balance to Surge keywords', () => {
     const groups = buildSurgeGroups(

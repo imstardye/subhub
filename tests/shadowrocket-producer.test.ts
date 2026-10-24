@@ -219,6 +219,71 @@ describe('Shadowrocket producer: round trip through the repo URI parser', () => 
   });
 });
 
+describe('Shadowrocket producer: Hysteria2 port hopping and bandwidth', () => {
+  it('emits mport for a node with `ports` instead of skipping it', () => {
+    const built = shadowrocketLink(
+      node({ type: 'hysteria2', name: 'HY2-hop', port: 443, password: 'fake-pw', ports: '60000-62000' }),
+    );
+    if (!('line' in built)) throw new Error('expected a link');
+    expect(built.line).toBe('hysteria2://fake-pw@example.com:443?mport=60000-62000#HY2-hop');
+
+    // Round trip: the repo's own parser reads the range back.
+    expect(parseUri(built.line)).toMatchObject({
+      type: 'hysteria2',
+      name: 'HY2-hop',
+      server: 'example.com',
+      port: 443,
+      password: 'fake-pw',
+      ports: '60000-62000',
+    });
+  });
+
+  it('keeps every hop/bandwidth variant in the round trip', () => {
+    const links = buildShadowrocketLinks([
+      node({ type: 'hysteria2', name: 'hy-range', password: 'pw', ports: '60000-62000' }),
+      node({ type: 'hysteria2', name: 'hy-list', password: 'pw', ports: '60000,61000-62000' }),
+      node({ type: 'hysteria2', name: 'hy-bw', password: 'pw', up: 50, down: '200' }),
+      node({
+        type: 'hysteria2',
+        name: 'hy-all',
+        password: 'pw',
+        ports: '443-65535',
+        up: '30',
+        down: '120',
+        'hop-interval': 30,
+        sni: 'h.example.com',
+      }),
+    ]);
+    expect(links).toHaveLength(4);
+
+    const parsed = links.map((line) => parseUri(line)!);
+    expect(parsed.map((entry) => entry.name)).toEqual(['hy-range', 'hy-list', 'hy-bw', 'hy-all']);
+    expect(parsed[0]).toMatchObject({ ports: '60000-62000' });
+    expect(parsed[1]).toMatchObject({ ports: '60000,61000-62000' });
+    expect(parsed[2]).toMatchObject({ up: '50', down: '200' });
+    expect(parsed[3]).toMatchObject({
+      ports: '443-65535',
+      up: '30',
+      down: '120',
+      'hop-interval': '30',
+      sni: 'h.example.com',
+    });
+    expect(parsed[2]!.ports).toBeUndefined();
+  });
+
+  it('matches uri.ts field for field for hy2 port hopping', () => {
+    const nodes = [
+      node({ type: 'hysteria2', name: 'hy-hop', password: 'pw', ports: '60000,61000-62000' }),
+      node({ type: 'hysteria2', name: 'hy-bw', password: 'pw', up: 10, down: 20 }),
+    ];
+    const links = buildShadowrocketLinks(nodes);
+    const [hop, bw] = links;
+    expect(hop).toContain('mport=60000%2C61000-62000');
+    expect(bw).toContain('upmbps=10');
+    expect(bw).toContain('downmbps=20');
+  });
+});
+
 describe('Shadowrocket producer: document', () => {
   it('returns base64 of newline-joined links (Content-Type text/plain owners)', () => {
     const body = produceShadowrocket([
@@ -275,9 +340,8 @@ describe('Shadowrocket producer: link validity regressions', () => {
 
   it('skips nodes whose options the link format cannot carry faithfully', () => {
     const skipped = [
-      // Hysteria2 has no UUID and no port-hopping field in this URI form.
+      // Hysteria2 has no UUID: such a node is not a hy2 link at all.
       node({ type: 'hysteria2', name: 'hy-uuid', password: 'p', uuid: UUID }),
-      node({ type: 'hysteria2', name: 'hy-ports', password: 'p', ports: '20000-30000' }),
       // TUIC needs `uuid:password`; a bare password has no user info.
       node({ type: 'tuic', name: 'tuic-pw', password: 'p' }),
       node({ type: 'anytls', name: 'anytls-uuid', password: 'p', uuid: UUID }),
