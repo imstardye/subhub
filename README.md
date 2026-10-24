@@ -118,21 +118,135 @@ P1 共 187 个单测，覆盖：
 
 ## 环境变量
 
+所有可配置项使用 `SUBHUB_*` 前缀。仓库与镜像说明中只放占位符；**切勿**把真实
+secret、管理员密码或内网/生产域名写进 Git。
+
+| 变量 | 必填（生产） | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `SUBHUB_ADMIN_PASSWORD` | 是 | （开发态有固定测试密码；生产未设则拒绝登录） | 管理后台登录密码 |
+| `SUBHUB_SECRET` | 是 | （开发态有测试密钥；生产未设则拒绝签发会话） | 会话 HMAC 与订阅源 URL 加密 |
+| `SUBHUB_DB_PATH` | 强烈建议显式设置 | `.data/subhub.sqlite` | SQLite 文件路径 |
+| `SUBHUB_TRUSTED_IP_HEADER` | 否 | 未设置（只用 socket IP） | 仅当源站只经可信代理（如 Cloudflare）时再设，例如 `cf-connecting-ip` |
+
+本地开发可参考 [`.env.example`](./.env.example)：
+
 ```bash
 SUBHUB_ADMIN_PASSWORD=change-me
 SUBHUB_SECRET=change-me-too
 SUBHUB_DB_PATH=./.data/subhub.sqlite
-# 可选：仅在上面「安全前提」满足时才设置，例如 cf-connecting-ip
+# 可选：仅在「可信代理」安全前提满足时才设置
 # SUBHUB_TRUSTED_IP_HEADER=cf-connecting-ip
 ```
 
-### 生产部署注意事项
+## 部署
 
-- **必须挂载数据卷并显式设置 `SUBHUB_DB_PATH`** 指向该卷，例如
-  `SUBHUB_DB_PATH=/data/subhub.sqlite`。默认值仍是 `.data/subhub.sqlite`
-  （相对工作目录），不加改动；容器重建后若不挂卷，用户、订阅源与访问日志会
-  随容器一起丢失。
-- `SUBHUB_SECRET` 在生产环境必须设置（用于会话签名与订阅源 URL 加密）。
+面向自托管 / 容器部署的通用步骤。镜像由 GitHub Actions（`.github/workflows/release.yml`）
+在 `main` 与 `v*` tag 推送到 GHCR；PR 只跑测试与构建校验，不推送镜像。
+
+### 镜像（GHCR）
+
+```bash
+# 最新 main
+docker pull ghcr.io/imstardye/subhub:latest
+
+# 或固定到某次提交短 SHA / 版本 tag（推荐生产）
+docker pull ghcr.io/imstardye/subhub:sha-<short-sha>
+docker pull ghcr.io/imstardye/subhub:v0.1.0   # 仅当已打对应 tag
+```
+
+包为 public 时可直接 pull；若将来改为 private，需先
+`docker login ghcr.io`（用有 `read:packages` 权限的 token）。
+
+镜像默认监听 `0.0.0.0:3000`（`PORT` / `NITRO_PORT`），工作目录 `/app`，
+并以非 root 的 `node` 用户运行；Dockerfile 声明了 `VOLUME /data`。
+
+### 数据卷与数据库路径
+
+- **开发默认**：未设 `SUBHUB_DB_PATH` 时仍为 `.data/subhub.sqlite`（相对进程工作目录）。
+- **生产必须**：
+  1. 把宿主机（或命名卷）挂到容器内持久目录，推荐挂载点 `/data`；
+  2. **显式设置** `SUBHUB_DB_PATH` 指向该卷上的文件，例如
+     `SUBHUB_DB_PATH=/data/subhub.sqlite`。
+
+不挂卷或不设路径时，容器重建会丢掉用户、订阅源与访问日志。
+
+### 反向代理（不要直接暴露应用端口）
+
+应用容器应只在内网 / Docker 网络可达；**不要把 3000 直接映射到公网宿主机**。
+前面用 [Caddy](https://caddyserver.com/)（或 Nginx、Traefik 等）做 TLS 与反代。
+
+Caddy 示意（把 `app:3000` 换成你的容器服务名与端口；`your.example.com` 换成你的域名）：
+
+```caddy
+your.example.com {
+  reverse_proxy app:3000
+}
+```
+
+若源站只经 Cloudflare 回源，且应用端口不对公网开放，才可设置：
+
+```bash
+SUBHUB_TRUSTED_IP_HEADER=cf-connecting-ip
+```
+
+**风险**：对该请求头不可信时（例如任何人能直连应用端口并伪造头），按 IP 的登录减速
+与访问日志会被绕过或污染。未设置时始终只用 TCP socket 对端 IP（与代码默认一致）。
+更多说明见上文「管理后台登录」。
+
+### 环境变量与首次管理员密码
+
+生产至少设置：
+
+```bash
+SUBHUB_ADMIN_PASSWORD=<强随机密码>
+SUBHUB_SECRET=<强随机密钥>
+SUBHUB_DB_PATH=/data/subhub.sqlite
+```
+
+- 首次启动后打开管理后台 `/login`，用 `SUBHUB_ADMIN_PASSWORD` 登录。
+- 密码存在环境变量里（当前无独立「设密」接口）；改密 = 改环境变量并重启容器。
+  轮换 `SUBHUB_SECRET` 会使已有会话全部失效（需重新登录），并影响已加密入库的
+  订阅源 URL（轮换前请确认有备份与迁移计划）。
+- 生产未配置 `SUBHUB_ADMIN_PASSWORD` / `SUBHUB_SECRET` 时会 fail closed（无法登录 /
+  无法签发会话），不会回退到开发用固定值。
+
+登录防爆破行为与上文一致：超限后**减速**（最长约 3s、串行排队），**不是** 429 永久锁死；
+正确密码在减速后仍可登录成功。
+
+### 示例：`docker run`
+
+```bash
+docker run -d --name subhub --restart unless-stopped \
+  -e NODE_ENV=production \
+  -e SUBHUB_ADMIN_PASSWORD=change-me \
+  -e SUBHUB_SECRET=change-me-too \
+  -e SUBHUB_DB_PATH=/data/subhub.sqlite \
+  -v subhub-data:/data \
+  --network <internal-or-proxy-network> \
+  ghcr.io/imstardye/subhub:latest
+```
+
+将 `change-me` / `change-me-too` 换成真实密钥（只放在宿主机环境或密钥管理里，
+不要提交进仓库）。通过反代网络访问容器，而不是 `-p 3000:3000` 暴露到公网。
+
+### 健康检查
+
+当前仓库**没有**单独的 `/health` 接口。探活可用：
+
+- TCP：确认容器内 `3000` 在听；
+- HTTP：对反代或内网地址请求公开页 `GET /login`，期望 `200`。
+
+说明：`GET /api/admin/me` 受管理 API 中间件保护，未带有效会话时返回 **401**，
+不适合作为匿名探活。编排层（Docker / Compose / K8s）可把 TCP 或 `/login`
+配成 `healthcheck` / liveness probe。
+
+### 自建镜像（可选）
+
+若不用 GHCR，可在含 `Dockerfile` 的仓库根目录构建：
+
+```bash
+docker build -t subhub:local .
+```
 
 仓库中不会提交任何真实订阅链接、token、密码或私人域名；测试数据一律使用
 `example.com` 和假凭据。
