@@ -146,8 +146,8 @@ async function handleLogout() {
   height: 1.85rem;
   border-radius: var(--radius);
   background: var(--accent-soft);
-  border: 1px solid rgba(34, 197, 94, 0.35);
-  color: var(--accent-muted);
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  color: var(--primary);
 }
 
 .brand-mark svg {
@@ -210,21 +210,9 @@ nav {
 
 .nav-link.active {
   background: var(--accent-soft);
-  border-color: rgba(34, 197, 94, 0.3);
-  color: var(--accent-muted);
+  border-color: transparent;
+  color: var(--primary);
   font-weight: 600;
-}
-
-.nav-link.active::before {
-  content: '';
-  position: absolute;
-  left: calc(var(--space-3) * -1);
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 1.1rem;
-  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
-  background: var(--accent);
 }
 
 .nav-link:focus-visible {
@@ -317,16 +305,6 @@ nav {
 
   .brand-name {
     display: none;
-  }
-
-  .nav-link.active::before {
-    left: 50%;
-    top: auto;
-    bottom: -2px;
-    transform: translateX(-50%);
-    width: 1.1rem;
-    height: 2px;
-    border-radius: var(--radius-pill);
   }
 
   .logout {

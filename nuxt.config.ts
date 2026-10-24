@@ -17,7 +17,7 @@ export default defineNuxtConfig({
           name: 'description',
           content: 'Subscription hub — core parsers, producers and rules.',
         },
-        { name: 'theme-color', content: '#0F172A' },
+        { name: 'theme-color', content: '#F8FAFC' },
       ],
       link: [
         { rel: 'preconnect', href: 'https://fonts.googleapis.com' },

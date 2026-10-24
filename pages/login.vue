@@ -91,8 +91,8 @@ async function handleSubmit() {
   min-height: 100vh;
   padding: var(--space-4);
   background:
-    radial-gradient(60rem 30rem at 50% -10%, rgba(34, 197, 94, 0.08), transparent 70%),
-    var(--background);
+    radial-gradient(60rem 30rem at 50% -10%, rgba(37, 99, 235, 0.07), transparent 70%),
+    linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
   font-family: var(--font-sans);
   color: var(--foreground);
 }
@@ -116,10 +116,10 @@ async function handleSubmit() {
   justify-content: center;
   width: 2.1rem;
   height: 2.1rem;
-  border: 1px solid rgba(34, 197, 94, 0.35);
+  border: 1px solid rgba(37, 99, 235, 0.18);
   border-radius: var(--radius);
   background: var(--accent-soft);
-  color: var(--accent-muted);
+  color: var(--primary);
 }
 .brand-mark svg {
   width: 1.15rem;

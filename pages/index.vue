@@ -130,10 +130,10 @@ onMounted(load);
   justify-content: center;
   width: 1.9rem;
   height: 1.9rem;
-  border: 1px solid rgba(34, 197, 94, 0.3);
+  border: 1px solid rgba(37, 99, 235, 0.18);
   border-radius: var(--radius);
   background: var(--accent-soft);
-  color: var(--accent-muted);
+  color: var(--primary);
 }
 .stat-icon svg {
   width: 1rem;
@@ -181,7 +181,7 @@ onMounted(load);
   transition: transform var(--transition-fast);
 }
 .hint:hover {
-  color: var(--accent-muted);
+  color: var(--primary);
 }
 .hint:hover svg {
   transform: translateX(2px);
