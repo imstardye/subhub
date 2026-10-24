@@ -647,6 +647,7 @@ export function buildRules(
       ruleProviders[providerName] = {
         type: 'http',
         behavior: 'classical',
+        format: 'text',
         url: entry.source,
         path: `./ruleset/${providerName}.list`,
         interval,

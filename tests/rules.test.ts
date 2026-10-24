@@ -155,6 +155,7 @@ describe('Clash rule builder', () => {
     expect(built.ruleProviders[providerNames[0]]).toMatchObject({
       type: 'http',
       behavior: 'classical',
+      format: 'text',
       path: `./ruleset/${providerNames[0]}.list`,
       interval: 86400,
     });
@@ -163,6 +164,31 @@ describe('Clash rule builder', () => {
     expect(built.rules).toContain('GEOIP,CN,🎯 全球直连,no-resolve');
     expect(built.rules.at(-1)).toBe('MATCH,🐟 漏网之鱼');
     expect(built.skipped).toHaveLength(0);
+  });
+
+  it.each([
+    { name: 'without a cache resolver', options: {} },
+    {
+      name: 'when a cache resolver misses',
+      options: { expandRemote: () => undefined },
+    },
+  ])('emits text format for plain-text rule providers $name', ({ options }) => {
+    const built = buildRules(
+      parseIni('ruleset=G,https://example.com/rules.list'),
+      options,
+    );
+
+    expect(built.ruleProviders).toEqual({
+      rs_1: {
+        type: 'http',
+        behavior: 'classical',
+        format: 'text',
+        url: 'https://example.com/rules.list',
+        path: './ruleset/rs_1.list',
+        interval: 86400,
+      },
+    });
+    expect(built.rules).toEqual(['RULE-SET,rs_1,G']);
   });
 
   it('expands legacy rules and never emits rule-providers', () => {

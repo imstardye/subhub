@@ -103,6 +103,7 @@ export interface ClashProxyGroup {
 export interface ClashRuleProvider {
   type: 'http';
   behavior: 'classical';
+  format: 'text';
   url: string;
   path: string;
   interval: number;
