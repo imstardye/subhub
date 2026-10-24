@@ -116,6 +116,38 @@ P1 共 187 个单测，覆盖：
     并且 app 端口不暴露在宿主机/公网上（只能经 Cloudflare 访问）。否则任何客户端
     都能自行伪造该请求头，绕过按 IP 的限流。未设置该变量时行为与之前完全一致。
 
+## 隐藏入口（管理员路径）
+
+站点根路径不再展示任何内容：管理后台只能通过自定义的**入口路径**进入，入口由
+环境变量 `SUBHUB_ADMIN_PATH` 配置（默认 `admin`，即 `/admin`）。
+
+- 访问入口 `GET /<路径>`（必须精确匹配，不能带后续路径）会下发 httpOnly
+  `subhub_gate` cookie（`SameSite=Lax`、`Path=/`、30 天，生产环境 `Secure`）
+  并 **302** 跳转到 `/login`，之后由现有登录流程处理。
+- cookie 的值是由 `SUBHUB_SECRET` 签名的 token，**不包含路径**：猜测或伪造
+  `subhub_gate=<路径>` 无效。生产环境未配置 `SUBHUB_SECRET` 时入口只返回空白页
+  （fail closed），不会退回开发密钥。
+- 未携带该 cookie 时，管理后台页面（`/`、`/login`、`/users`、`/sources`、
+  `/profiles`、`/logs`、`/preview`）和除登录/登出以外的 `/api/admin/*` 一律返回
+  **空白页**（HTTP 200、空 body、`text/html`），**不会**跳转 —— 跳转等于告诉别人
+  入口存在。
+- 订阅链接 `/s/*` 永不受影响（公开设计，字节级不变）；`/api/admin/login`、
+  `/api/admin/logout` 也无需入口 cookie（浏览器刚通过入口跳到 `/login`，登录失败
+  后还要能再次提交）。登录本身仍由会话中间件校验。
+- 该入口**始终生效**：新浏览器直接打开 `/` 只会看到空白页，直到访问过入口路径。
+  这与是否登录无关 —— 换浏览器 / 清 cookie 后都要重新走一次入口。
+
+路径规则：先 trim，去掉首尾 `/`，合并重复 `/`；允许 `hx/panel` 这样的多段路径；
+每段必须匹配 `^[a-z0-9][a-z0-9_-]*$`（小写）；首段不能是 `s`、`api`、`_nuxt`
+（会与真实路由冲突）。未设置 / 空值 → `admin`；非法值 → 回退 `admin` 并在服务端
+日志打印一条警告。
+
+```bash
+# Docker
+docker run ... -e SUBHUB_ADMIN_PATH=hx/panel ...
+# 之后浏览器访问 https://your.example.com/hx/panel 一次，再正常登录
+```
+
 ## 环境变量
 
 所有可配置项使用 `SUBHUB_*` 前缀。仓库与镜像说明中只放占位符；**切勿**把真实
@@ -126,6 +158,7 @@ secret、管理员密码或内网/生产域名写进 Git。
 | `SUBHUB_ADMIN_PASSWORD` | 是 | （开发态有固定测试密码；生产未设则拒绝登录） | 管理后台登录密码 |
 | `SUBHUB_SECRET` | 是 | （开发态有测试密钥；生产未设则拒绝签发会话） | 会话 HMAC 与订阅源 URL 加密 |
 | `SUBHUB_DB_PATH` | 强烈建议显式设置 | `.data/subhub.sqlite` | SQLite 文件路径 |
+| `SUBHUB_ADMIN_PATH` | 否 | `admin`（即 `/admin`） | 管理后台隐藏入口路径，如 `hx/panel`；见上文「隐藏入口」 |
 | `SUBHUB_TRUSTED_IP_HEADER` | 否 | 未设置（只用 socket IP） | 仅当源站只经可信代理（如 Cloudflare）时再设，例如 `cf-connecting-ip` |
 
 本地开发可参考 [`.env.example`](./.env.example)：
@@ -134,6 +167,8 @@ secret、管理员密码或内网/生产域名写进 Git。
 SUBHUB_ADMIN_PASSWORD=change-me
 SUBHUB_SECRET=change-me-too
 SUBHUB_DB_PATH=./.data/subhub.sqlite
+# 可选：管理后台隐藏入口路径，未设置时为 /admin
+# SUBHUB_ADMIN_PATH=hx/panel
 # 可选：仅在「可信代理」安全前提满足时才设置
 # SUBHUB_TRUSTED_IP_HEADER=cf-connecting-ip
 ```
@@ -203,7 +238,9 @@ SUBHUB_SECRET=<强随机密钥>
 SUBHUB_DB_PATH=/data/subhub.sqlite
 ```
 
-- 首次启动后打开管理后台 `/login`，用 `SUBHUB_ADMIN_PASSWORD` 登录。
+- 首次启动后先访问隐藏入口（默认 `https://<域名>/admin`，或
+  `SUBHUB_ADMIN_PATH` 配置的路径），再在 `/login` 用 `SUBHUB_ADMIN_PASSWORD` 登录。
+  直接打开 `/` 只会看到空白页。
 - 密码存在环境变量里（当前无独立「设密」接口）；改密 = 改环境变量并重启容器。
   轮换 `SUBHUB_SECRET` 会使已有会话全部失效（需重新登录），并影响已加密入库的
   订阅源 URL（轮换前请确认有备份与迁移计划）。
@@ -221,12 +258,14 @@ docker run -d --name subhub --restart unless-stopped \
   -e SUBHUB_ADMIN_PASSWORD=change-me \
   -e SUBHUB_SECRET=change-me-too \
   -e SUBHUB_DB_PATH=/data/subhub.sqlite \
+  -e SUBHUB_ADMIN_PATH=change-me-path \
   -v subhub-data:/data \
   --network <internal-or-proxy-network> \
   ghcr.io/imstardye/subhub:latest
 ```
 
-将 `change-me` / `change-me-too` 换成真实密钥（只放在宿主机环境或密钥管理里，
+将 `change-me` / `change-me-too` / `change-me-path` 换成真实密钥与入口路径
+（只放在宿主机环境或密钥管理里，
 不要提交进仓库）。通过反代网络访问容器，而不是 `-p 3000:3000` 暴露到公网。
 
 ### 健康检查
@@ -234,7 +273,9 @@ docker run -d --name subhub --restart unless-stopped \
 当前仓库**没有**单独的 `/health` 接口。探活可用：
 
 - TCP：确认容器内 `3000` 在听；
-- HTTP：对反代或内网地址请求公开页 `GET /login`，期望 `200`。
+- HTTP：请求 `GET /`，任何情况都应返回 `200`（带入口 cookie 的正常页面，
+  或不带 cookie 的空白页）—— 注意它无法区分「应用健康」与「被门禁拦住」；
+  `GET /login` 不带入口 cookie 时也是空白 `200`，同样不再是有效探活。
 
 说明：`GET /api/admin/me` 受管理 API 中间件保护，未带有效会话时返回 **401**，
 不适合作为匿名探活。编排层（Docker / Compose / K8s）可把 TCP 或 `/login`
