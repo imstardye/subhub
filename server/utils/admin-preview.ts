@@ -16,12 +16,7 @@
 import { eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { users } from '../db/schema';
-import {
-  collectUserNodes,
-  loadUserProfile,
-  renderTargetBody,
-  targetProxyNames,
-} from './export-nodes';
+import { collectUserNodes, loadUserProfile, renderTargetBody } from './export-nodes';
 import {
   contentTypeForTarget,
   EXPORT_TARGETS,
@@ -86,9 +81,10 @@ export async function previewSubscription(
 
   const target = parsePreviewTarget(body.target);
   const nodes = collectUserNodes(db, user.id);
-  const nodeNames = targetProxyNames(target, nodes);
-  const profile = await loadUserProfile(db, user.id, target, undefined, nodeNames);
-  const rendered = renderTargetBody(target, nodes, {}, profile);
+  // Same single-pass profile load as the public export: `exclude_remarks` is
+  // applied to `nodes` before the groups are expanded.
+  const loaded = await loadUserProfile(db, user.id, target, nodes);
+  const rendered = renderTargetBody(target, loaded?.nodes ?? nodes, {}, loaded?.profile ?? null);
   const { body: text, truncated } = truncateBody(rendered);
 
   return {

@@ -31,6 +31,7 @@ import {
   buildRules,
   buildShadowrocketSubscription,
   buildSurgeProxies,
+  excludeRemarkNodes,
   parseIni,
   parseSubscription,
   produceLoon,
@@ -282,22 +283,36 @@ export function targetProxyNames(target: ExportTarget, nodes: ProxyNode[]): stri
 }
 
 /**
- * Load and parse the rule profile assigned to a user. Missing user, missing
- * profileId, missing/removed profile row, unreadable INI or an unexpected
- * error all yield `null` (today's nodes-only behaviour).
+ * Result of `loadUserProfile`: the profile to render with, plus the node list
+ * to render it for. `nodes` is the input minus the nodes matched by the
+ * profile's `[common] exclude_remarks` (identical when there is no such
+ * pattern), so callers must render with these nodes — never the raw ones.
+ */
+export interface LoadedUserProfile {
+  profile: ExportProfile;
+  nodes: ProxyNode[];
+}
+
+/**
+ * Load and parse the rule profile assigned to a user, applying its
+ * `[common] exclude_remarks` filter to `nodes`.
  *
- * What the export does with it depends on the target
- * (`exportProfileCapability`): shadowrocket ignores profiles entirely (its
- * subscription is nodes-only), surge/loon use the proxy groups only, and
- * mihomo/clash use groups + rules + rule-providers.
+ * Missing user, missing profileId, missing/removed profile row, unreadable INI
+ * or an unexpected error all yield `null` (today's nodes-only behaviour, no
+ * filtering).
+ *
+ * What the export does with the profile depends on the target
+ * (`exportProfileCapability`): shadowrocket ignores profiles' groups/rules
+ * (its subscription is nodes-only) but still honours `exclude_remarks`, which
+ * is a node filter rather than a Clash feature.
  */
 export async function loadUserProfile(
   db: SubhubDb,
   userId: number,
   exportTarget: ExportTarget,
+  nodes: ProxyNode[],
   resolveIni: ProfileIniResolver = fetchProfileIni,
-  nodeNames: string[] = [],
-): Promise<ExportProfile | null> {
+): Promise<LoadedUserProfile | null> {
   try {
     // users.profileId -> profiles.id; a disabled export path only reaches an
     // enabled user, but the lookup works for any existing user id.
@@ -315,6 +330,12 @@ export async function loadUserProfile(
     if (!iniText) return null;
 
     const ini = parseIni(iniText);
+    // `[common] exclude_remarks` is applied here, on the raw parsed nodes,
+    // *before* the group regexes are expanded: groups (`.*`, `((?i)hk)`, ...)
+    // must only ever see the nodes the export will emit. Doing it here keeps
+    // the INI fetch single-pass (the pattern lives in the same profile).
+    const visibleNodes = excludeRemarkNodes(nodes, ini);
+    const nodeNames = targetProxyNames(exportTarget, visibleNodes);
     // The profile variant decides which Clash dialect the rules target; the
     // export target only picks the node producer (see `withProfile`).
     const ruleTarget = (row.variant ?? 'mihomo') === 'legacy' ? 'legacy' : 'mihomo';
@@ -326,17 +347,21 @@ export async function loadUserProfile(
     if (built.proxyGroups.length === 0 && built.rules.length === 0) return null;
 
     const capability = exportProfileCapability(exportTarget);
-    if (capability === 'none') return null;
+    if (capability === 'none' && built.proxyGroups.length === 0) return null;
     if (capability === 'groups' && built.proxyGroups.length === 0) return null;
 
     return {
-      ruleProviders: built.ruleProviders,
-      rules: built.rules,
-      proxyGroups: built.proxyGroups,
-      groupNames: ini.groups.map((group: ProxyGroupEntry) => group.name),
-      // Raw text only: the core parses it at render time and silently falls
-      // back to the built-in DNS section when it is not a YAML mapping.
-      dnsTemplate: row.dnsTemplate ?? null,
+      profile: {
+        ruleProviders: built.ruleProviders,
+        rules: built.rules,
+        proxyGroups: built.proxyGroups,
+        groupNames: ini.groups.map((group: ProxyGroupEntry) => group.name),
+        // Raw text only: the core parses it at render time and silently falls
+        // back to the built-in DNS section when it is not a YAML mapping.
+        dnsTemplate: row.dnsTemplate ?? null,
+      },
+      // Same nodes when there is no usable `exclude_remarks`.
+      nodes: visibleNodes,
     };
   } catch {
     return null;

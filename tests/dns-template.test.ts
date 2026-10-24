@@ -440,10 +440,10 @@ describe('export path: profile dnsTemplate', () => {
 
   it('surfaces the profile template on ExportProfile', async () => {
     attachProfile('nameserver:\n  - https://dns.example.net/dns-query');
-    const profile = await loadUserProfile(db, userId, 'mihomo', async () => PROFILE_INI, ['fixture-ss']);
-    expect(profile?.dnsTemplate).toBe('nameserver:\n  - https://dns.example.net/dns-query');
+    const loaded = await loadUserProfile(db, userId, 'mihomo', [node()], async () => PROFILE_INI);
+    expect(loaded?.profile.dnsTemplate).toBe('nameserver:\n  - https://dns.example.net/dns-query');
 
-    const body = renderTargetBody('mihomo', [node()], {}, profile);
+    const body = renderTargetBody('mihomo', loaded?.nodes ?? [node()], {}, loaded?.profile ?? null);
     expect((parseYaml(body) as MihomoDocument).dns).toEqual({
       nameserver: ['https://dns.example.net/dns-query'],
     });
