@@ -26,6 +26,16 @@ export const REFRESH_MINUTES_DEFAULT = 60;
 export const SOURCE_TYPES = ['remote', 'local'] as const;
 export type SourceType = (typeof SOURCE_TYPES)[number];
 
+/** Rule profile output flavour; `mihomo` is the default. */
+export const PROFILE_VARIANTS = ['mihomo', 'legacy'] as const;
+export type ProfileVariant = (typeof PROFILE_VARIANTS)[number];
+
+/** Inline INI body cap (subconverter profiles are a few KiB at most). */
+export const INI_TEXT_MAX_LENGTH = 64 * 1024;
+export const DNS_TEMPLATE_MAX_LENGTH = 2048;
+/** Serialised `options` JSON cap; keeps a hostile body from bloating the row. */
+export const OPTIONS_MAX_LENGTH = 16 * 1024;
+
 /** Validation failure carrying the HTTP status the route should answer. */
 export class ValidationError extends Error {
   constructor(
@@ -147,6 +157,83 @@ export function parseRefreshMinutes(value: unknown): number {
     );
   }
   return minutes;
+}
+
+/**
+ * Validate an optional http(s) URL (same rules as source URLs). `null`/absent/
+ * empty means "not set". Returns the canonical `url.toString()` form.
+ */
+export function parseOptionalHttpUrl(value: unknown, field: string): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string' && !value.trim()) return null;
+  if (typeof value !== 'string') throw new ValidationError(`${field} must be a string`);
+  const raw = value.trim();
+  if (raw.length > URL_MAX_LENGTH) {
+    throw new ValidationError(`${field} must be at most ${URL_MAX_LENGTH} characters`);
+  }
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new ValidationError(`${field} is not a valid URL`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new ValidationError(`${field} must use http or https`);
+  }
+  if (url.username || url.password) {
+    throw new ValidationError(`${field} must not contain credentials`);
+  }
+  if (!url.hostname) throw new ValidationError(`${field} must contain a host`);
+  return url.toString();
+}
+
+/** Rule profile variant (`mihomo` by default). */
+export function parseProfileVariant(value: unknown): ProfileVariant {
+  if (value === undefined || value === null || value === '') return 'mihomo';
+  if (typeof value === 'string' && (PROFILE_VARIANTS as readonly string[]).includes(value)) {
+    return value as ProfileVariant;
+  }
+  throw new ValidationError(`variant must be one of: ${PROFILE_VARIANTS.join(', ')}`);
+}
+
+/** Optional inline INI text; stored verbatim (trimmed), empty becomes null. */
+export function parseOptionalIniText(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw new ValidationError('iniText must be a string');
+  const text = value.trim();
+  if (!text) return null;
+  if (text.length > INI_TEXT_MAX_LENGTH) {
+    throw new ValidationError(`iniText must be at most ${INI_TEXT_MAX_LENGTH} characters`);
+  }
+  return text;
+}
+
+/**
+ * Optional free-form JSON object for producer options. Accepts an object or a
+ * JSON string that decodes to one; arrays and scalars are rejected.
+ */
+export function parseProfileOptions(
+  value: unknown,
+): Record<string, unknown> | null {
+  if (value === undefined || value === null || value === '') return null;
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    if (value.length > OPTIONS_MAX_LENGTH) {
+      throw new ValidationError(`options must be at most ${OPTIONS_MAX_LENGTH} characters`);
+    }
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new ValidationError('options must be valid JSON');
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new ValidationError('options must be a JSON object');
+  }
+  if (JSON.stringify(parsed).length > OPTIONS_MAX_LENGTH) {
+    throw new ValidationError(`options must be at most ${OPTIONS_MAX_LENGTH} characters`);
+  }
+  return parsed as Record<string, unknown>;
 }
 
 /** Positive integer id from a path segment or body field. */

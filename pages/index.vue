@@ -1,29 +1,65 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
- * Dashboard placeholder for the P3 admin skeleton. User/source/rules pages
- * land in later slices; this only proves the protected shell works.
+ * Dashboard: real counters from GET /api/admin/stats.
+ *
+ * Shows users / sources / rule profiles and the access-log volume of the last
+ * 24 hours. Values render as `…` while loading; a failed request shows an
+ * error line but keeps the cards (with `—`) so the layout stays stable.
  */
 definePageMeta({ layout: 'admin', middleware: 'admin' });
 
-const cards = [
-  { label: '用户', value: '—', hint: '占位：用户列表待实现' },
-  { label: '订阅源', value: '—', hint: '占位：订阅源管理待实现' },
-  { label: '规则档', value: '—', hint: '占位：规则档管理待实现' },
+import type { AdminStats } from '~/server/utils/admin-stats';
+
+const stats = ref<AdminStats | null>(null);
+const loading = ref(true);
+const error = ref('');
+
+type CardKey = keyof AdminStats;
+
+const cards: Array<{ key: CardKey; label: string; hint: string; to: string }> = [
+  { key: 'users', label: '用户', hint: '查看用户列表', to: '/users' },
+  { key: 'sources', label: '订阅源', hint: '管理订阅源', to: '/sources' },
+  { key: 'profiles', label: '规则档', hint: '管理规则档', to: '/profiles' },
+  { key: 'accessLogs24h', label: '24h 访问', hint: '查看访问日志', to: '/logs' },
 ];
+
+function errorMessage(err: unknown): string {
+  const data = (err as { data?: { error?: string } }).data;
+  if (data?.error) return data.error;
+  return '请求失败，请稍后再试';
+}
+
+function display(key: CardKey): string {
+  if (loading.value) return '…';
+  if (error.value) return '—';
+  return String(stats.value?.[key] ?? 0);
+}
+
+async function load() {
+  loading.value = true;
+  error.value = '';
+  try {
+    stats.value = await $fetch<AdminStats>('/api/admin/stats');
+  } catch (err) {
+    error.value = errorMessage(err);
+  } finally {
+    loading.value = false;
+  }
+}
+
+onMounted(load);
 </script>
 
 <template>
   <section>
     <h1>仪表盘</h1>
-    <p class="lead">
-      P3 管理后台骨架已就绪：登录、会话与受保护布局可用，业务页面随后逐步补齐。
-    </p>
+    <p v-if="error" class="error" role="alert">统计数据加载失败：{{ error }}</p>
     <div class="cards">
-      <article v-for="card in cards" :key="card.label" class="card">
+      <article v-for="card in cards" :key="card.key" class="card">
         <div class="label">{{ card.label }}</div>
-        <div class="value">{{ card.value }}</div>
-        <div class="hint">{{ card.hint }}</div>
+        <div class="value">{{ display(card.key) }}</div>
+        <NuxtLink class="hint" :to="card.to">{{ card.hint }} →</NuxtLink>
       </article>
     </div>
   </section>
@@ -34,9 +70,9 @@ h1 {
   margin: 0 0 0.5rem;
   font-size: 1.4rem;
 }
-.lead {
-  margin: 0 0 1.5rem;
-  color: #4b5563;
+.error {
+  margin: 0 0 1rem;
+  color: #b42318;
 }
 .cards {
   display: grid;
@@ -60,6 +96,9 @@ h1 {
 }
 .hint {
   font-size: 0.8rem;
-  color: #88929e;
+  color: #6b7785;
+}
+.hint:hover {
+  color: #1d4ed8;
 }
 </style>
