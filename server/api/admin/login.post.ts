@@ -6,7 +6,9 @@
  * cookie and returns `{ ok: true }`; a wrong password is a generic 401 that
  * reveals nothing about the configured value. The token is returned solely in
  * the httpOnly cookie. In production without SUBHUB_SECRET no session is ever
- * signed: the route answers 500 instead.
+ * signed: the route answers a generic 500 (the detail goes to the server log).
+ * Failed attempts are throttled per client IP and globally (login-throttle.ts);
+ * over the limit answers 429 with `Retry-After`.
  *
  * The JSON body is read straight off the node request rather than through
  * h3's `readBody`: Nitro's router consumes the stream first and keeps no node
@@ -15,6 +17,7 @@
  * The cap keeps a hostile payload from being buffered unbounded.
  */
 import { isSessionSigningUnavailable, login } from '../../utils/admin-auth';
+import { adminLoginThrottle, type LoginThrottle } from '../../utils/login-throttle';
 
 /** Login bodies are tiny; anything bigger is rejected before parsing. */
 export const MAX_LOGIN_BODY_BYTES = 4 * 1024;
@@ -22,6 +25,7 @@ export const MAX_LOGIN_BODY_BYTES = 4 * 1024;
 interface LoginRequest {
   headers: Record<string, string | string[] | undefined>;
   body?: unknown;
+  socket?: { remoteAddress?: string };
   on?: (event: string, listener: (...args: unknown[]) => void) => unknown;
 }
 
@@ -34,6 +38,7 @@ type LoginEvent = {
   node: { req: LoginRequest; res: LoginResponse };
   _requestBody?: unknown;
   web?: { request?: { body?: unknown } };
+  context?: { clientAddress?: string };
 };
 
 type BodySource = Record<string | symbol, unknown>;
@@ -101,7 +106,31 @@ async function readPassword(event: LoginEvent): Promise<unknown> {
   }
 }
 
-export default async function adminLoginHandler(event: LoginEvent) {
+/**
+ * Client address used as the throttle key: Nitro's `clientAddress` when the
+ * event carries one (it honours the trusted proxy config), else the socket
+ * peer. Only used as an opaque bucket key, never logged.
+ */
+export function clientAddress(event: LoginEvent): string {
+  const fromContext = event.context?.clientAddress;
+  if (typeof fromContext === 'string' && fromContext.length > 0) return fromContext;
+  const remote = event.node.req.socket?.remoteAddress;
+  return typeof remote === 'string' && remote.length > 0 ? remote : '';
+}
+
+export interface LoginHandlerOptions {
+  /** Throttle override (tests); defaults to the process-wide limiter. */
+  throttle?: LoginThrottle;
+}
+
+/** Generic 500 body; the missing-config detail stays in the server log. */
+export const LOGIN_MISCONFIGURED_ERROR = 'server error';
+
+export default async function adminLoginHandler(
+  event: LoginEvent,
+  options: LoginHandlerOptions = {},
+) {
+  const throttle = options.throttle ?? adminLoginThrottle;
   const password = await readPassword(event);
 
   if (typeof password !== 'string' || password.length === 0) {
@@ -114,13 +143,25 @@ export default async function adminLoginHandler(event: LoginEvent) {
     return { error: 'password too long' };
   }
 
+  const decision = throttle.consume(clientAddress(event));
+  if (!decision.allowed) {
+    event.node.res.statusCode = 429;
+    event.node.res.setHeader('cache-control', 'no-store');
+    if (decision.retryAfter !== undefined) {
+      event.node.res.setHeader('retry-after', String(decision.retryAfter));
+    }
+    return { error: 'too many attempts' };
+  }
+
   if (isSessionSigningUnavailable()) {
     // Fail closed: a production deployment without SUBHUB_SECRET must not issue
-    // sessions signed with the public development key. 500 + server log, never
-    // a cookie.
+    // sessions signed with the public development key. The client only learns
+    // that the server failed; which setting is missing is a configuration
+    // detail (and must not be probed from the outside).
+    console.error('[admin/login] SUBHUB_SECRET is required in production; refusing to sign a session');
     event.node.res.statusCode = 500;
     event.node.res.setHeader('cache-control', 'no-store');
-    return { error: 'server misconfigured: SUBHUB_SECRET is required in production' };
+    return { error: LOGIN_MISCONFIGURED_ERROR };
   }
 
   const result = login(password);
@@ -129,6 +170,8 @@ export default async function adminLoginHandler(event: LoginEvent) {
     return { error: 'invalid password' };
   }
 
+  // Successful login: the freshly counted attempt was not a failure.
+  throttle.refund(clientAddress(event));
   event.node.res.setHeader('set-cookie', result.cookie);
   event.node.res.setHeader('cache-control', 'no-store');
   return { ok: true };

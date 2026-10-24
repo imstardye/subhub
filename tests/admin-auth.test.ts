@@ -30,6 +30,13 @@ import {
   verifyAdminPassword,
   verifySessionToken,
 } from '../server/utils/admin-auth';
+import { LOGIN_MISCONFIGURED_ERROR } from '../server/api/admin/login.post';
+import {
+  createLoginThrottle,
+  LOGIN_GLOBAL_KEY,
+  LOGIN_MAX_FAILURES_PER_IP,
+  LOGIN_UNKNOWN_IP_KEY,
+} from '../server/utils/login-throttle';
 
 const PASSWORD = 'correct-horse-battery';
 
@@ -64,6 +71,8 @@ function makeEvent(
     body?: unknown;
     /** Skip sending any body / content-length (stream case). */
     noBody?: boolean;
+    /** Socket peer used as the login throttle key. */
+    remoteAddress?: string;
   } = {},
 ) {
   const headers: Record<string, string> = {
@@ -82,6 +91,7 @@ function makeEvent(
     method: options.method ?? 'GET',
     url: '/',
     headers,
+    socket: options.remoteAddress ? { remoteAddress: options.remoteAddress } : undefined,
   });
 
   const responseHeaders: HeaderStore = {};
@@ -266,7 +276,9 @@ describe('missing SUBHUB_SECRET in production', () => {
     const { event, headers } = makeEvent({ method: 'POST', body: { password: PASSWORD } });
     const body = await adminLoginHandler(event as never);
     expect(event.node.res.statusCode).toBe(500);
-    expect(body).toMatchObject({ error: expect.stringContaining('SUBHUB_SECRET') });
+    // Generic message: the missing setting is a server-side detail only.
+    expect(body).toEqual({ error: LOGIN_MISCONFIGURED_ERROR });
+    expect(JSON.stringify(body)).not.toContain('SUBHUB_SECRET');
     expect(headers['set-cookie']).toBeUndefined();
     expect(headers['cache-control']).toBe('no-store');
   });
@@ -352,5 +364,118 @@ describe('/api/admin handlers', () => {
     expect(adminLogoutHandler(event as never)).toEqual({ ok: true });
     expect(headers['set-cookie']).toContain(`${ADMIN_COOKIE}=;`);
     expect(headers['set-cookie']).toContain('Max-Age=0');
+  });
+});
+
+describe('login brute-force throttle', () => {
+  function freshThrottle() {
+    let clock = 1_000_000;
+    const throttle = createLoginThrottle({ now: () => clock });
+    return { throttle, advance: (ms: number) => (clock += ms) };
+  }
+
+  function attempt(
+    throttle: ReturnType<typeof createLoginThrottle>,
+    password: unknown,
+    remoteAddress = '203.0.113.7',
+  ) {
+    const { event, headers } = makeEvent({
+      method: 'POST',
+      body: { password },
+      remoteAddress,
+    });
+    return adminLoginHandler(event as never, { throttle }).then((body) => ({
+      body,
+      status: event.node.res.statusCode,
+      headers,
+    }));
+  }
+
+  it('answers 429 after 5 failures from one IP and sets no cookie', async () => {
+    const { throttle } = freshThrottle();
+    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
+      expect(await attempt(throttle, 'wrong')).toMatchObject({
+        body: { error: 'invalid password' },
+        status: 401,
+      });
+    }
+    const blocked = await attempt(throttle, 'wrong');
+    expect(blocked.status).toBe(429);
+    expect(blocked.body).toEqual({ error: 'too many attempts' });
+    expect(blocked.headers['retry-after']).toMatch(/^\d+$/);
+    expect(blocked.headers['cache-control']).toBe('no-store');
+    expect(blocked.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('blocks the correct password too while the IP is over the limit', async () => {
+    const { throttle } = freshThrottle();
+    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) await attempt(throttle, 'wrong');
+    expect(await attempt(throttle, PASSWORD)).toMatchObject({ status: 429 });
+  });
+
+  it('does not count successful logins and refunds their attempt', async () => {
+    const { throttle } = freshThrottle();
+    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP - 1; i += 1) {
+      await attempt(throttle, 'wrong');
+    }
+    const ok = await attempt(throttle, PASSWORD);
+    expect(ok.status).toBe(200);
+    expect(ok.headers['set-cookie']).toContain(`${ADMIN_COOKIE}=`);
+    // One failure left, then blocked: success did not consume it.
+    expect((await attempt(throttle, 'wrong')).status).toBe(401);
+    expect((await attempt(throttle, 'wrong')).status).toBe(429);
+  });
+
+  it('keeps IP buckets independent', async () => {
+    const { throttle } = freshThrottle();
+    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
+      await attempt(throttle, 'wrong', '198.51.100.1');
+    }
+    expect((await attempt(throttle, 'wrong', '198.51.100.1')).status).toBe(429);
+    expect((await attempt(throttle, 'wrong', '198.51.100.2')).status).toBe(401);
+  });
+
+  it('shares one bucket for requests without a client address', async () => {
+    const { throttle } = freshThrottle();
+    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
+      expect(throttle.consume('').allowed).toBe(true);
+    }
+    expect(throttle.consume('')).toMatchObject({ allowed: false });
+    expect(throttle.consume(LOGIN_UNKNOWN_IP_KEY)).toMatchObject({ allowed: false });
+  });
+
+  it('enforces the global failure cap across many IPs', async () => {
+    let clock = 0;
+    const throttle = createLoginThrottle({ now: () => clock, maxGlobal: 3, maxPerIp: 2 });
+    for (let i = 0; i < 3; i += 1) {
+      expect(throttle.consume(`ip-${i}`).allowed).toBe(true);
+    }
+    const blocked = throttle.consume('ip-3');
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.retryAfter).toBe(15 * 60);
+    // The refused IP still owns an (unused) bucket, but the map stays bounded.
+    expect(throttle.size()).toBe(4 + 1);
+    clock += 15 * 60 * 1000;
+    expect(throttle.consume('ip-3').allowed).toBe(true);
+  });
+
+  it('opens a new window after 15 minutes', () => {
+    const { throttle, advance } = freshThrottle();
+    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
+      expect(throttle.consume('203.0.113.9').allowed).toBe(true);
+    }
+    expect(throttle.consume('203.0.113.9').allowed).toBe(false);
+    advance(15 * 60 * 1000 - 1);
+    expect(throttle.consume('203.0.113.9').allowed).toBe(false);
+    advance(1);
+    expect(throttle.consume('203.0.113.9').allowed).toBe(true);
+  });
+
+  it('bounds the map of tracked IPs', () => {
+    const throttle = createLoginThrottle({ maxPerIp: 1, maxKeys: 4, maxGlobal: 1_000_000 });
+    for (let i = 0; i < 1_000; i += 1) throttle.consume(`10.0.0.${i}`);
+    // 4 IP buckets + the single global bucket.
+    expect(throttle.size()).toBe(4 + 1);
+    expect(LOGIN_GLOBAL_KEY).toBe('global');
   });
 });

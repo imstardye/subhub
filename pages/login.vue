@@ -7,19 +7,14 @@
  */
 definePageMeta({ layout: false });
 
+import { safeRedirectPath } from '~/server/utils/safe-redirect';
+
 const route = useRoute();
 const password = ref('');
 const error = ref('');
 const submitting = ref(false);
 
-const requested = computed(() => {
-  const redirect = route.query.redirect;
-  const value = Array.isArray(redirect) ? redirect[0] : redirect;
-  // Only follow local paths, never an absolute URL.
-  return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
-    ? value
-    : '/';
-});
+const requested = computed(() => safeRedirectPath(route.query.redirect));
 
 onMounted(async () => {
   const state = await $fetch<{ authenticated: boolean }>('/api/admin/me').catch(() => ({
@@ -43,8 +38,16 @@ async function handleSubmit() {
     });
     password.value = '';
     await navigateTo(requested.value);
-  } catch {
-    error.value = '密码错误';
+  } catch (err) {
+    const status = (err as { statusCode?: number; status?: number }).statusCode
+      ?? (err as { status?: number }).status;
+    if (status === 429) {
+      error.value = '尝试过于频繁，请稍后再试';
+    } else if (status !== undefined && status >= 500) {
+      error.value = '服务器错误，请稍后再试';
+    } else {
+      error.value = '密码错误';
+    }
   } finally {
     submitting.value = false;
   }
