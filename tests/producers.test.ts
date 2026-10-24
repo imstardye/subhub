@@ -191,7 +191,7 @@ describe('legacy Clash producer', () => {
         password: 'fake-password',
       }),
       node({ type: 'vmess', uuid: UUID, cipher: 'auto', alterId: 0 }),
-      node({ type: 'vless', uuid: UUID }),
+      node({ type: 'vless', name: 'vless-plain', uuid: UUID }),
       node({
         type: 'vless',
         name: 'vless-reality',
@@ -218,14 +218,19 @@ describe('legacy Clash producer', () => {
       'test',
       'test',
       'test',
-      'test',
     ]);
-    expect(proxies.map((proxy) => proxy.type)).toEqual([
-      'ss',
-      'vmess',
-      'vless',
-      'trojan',
+    expect(proxies.map((proxy) => proxy.type)).toEqual(['ss', 'vmess', 'trojan']);
+  });
+
+  it('filters plain VLESS nodes, not only flow/reality ones', () => {
+    const proxies = buildLegacyProxies([
+      node({ type: 'vless', name: 'vless-plain', uuid: UUID }),
+      node({ type: 'vless', name: 'vless-tls', uuid: UUID, tls: true }),
+      node({ type: 'vless', name: 'vless-ws', uuid: UUID, network: 'ws' }),
+      node({ type: 'ss', name: 'ss', cipher: 'aes-256-gcm', password: 'fake-password' }),
     ]);
+
+    expect(proxies.map((proxy) => proxy.type)).toEqual(['ss']);
   });
 
   it('uses servername for vmess/vless and drops reality/flow fields', () => {
@@ -262,14 +267,12 @@ describe('legacy Clash producer', () => {
     expect(trojan.tls).toBeUndefined();
   });
 
-  it('keeps tls for VMess and VLESS nodes', () => {
-    const [vmess, vless] = buildLegacyProxies([
+  it('keeps tls for VMess nodes', () => {
+    const [vmess] = buildLegacyProxies([
       node({ type: 'vmess', uuid: UUID, cipher: 'auto', alterId: 0, tls: true }),
-      node({ type: 'vless', name: 'vless', uuid: UUID, tls: true }),
     ]);
 
     expect(vmess.tls).toBe(true);
-    expect(vless.tls).toBe(true);
   });
 
   it('emits parseable YAML and excludes unsupported nodes by default', () => {

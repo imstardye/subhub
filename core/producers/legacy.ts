@@ -55,9 +55,9 @@ function isSupported(node: ProxyNode): boolean {
   if (node.type === 'ss' && !SUPPORTED_SS_CIPHERS.has(String(node.cipher))) {
     return false;
   }
-  if (node.type === 'vless' && (node.flow !== undefined || node['reality-opts'])) {
-    return false;
-  }
+  // Legacy Clash has no usable VLESS support (no XTLS flow / Reality), so drop
+  // every VLESS node rather than only the ones using those features.
+  if (node.type === 'vless') return false;
   if (node.type === 'snell' && Number(node.version ?? 0) >= 4) return false;
   if (node.network === 'ws') {
     const opts = node['ws-opts'] as Record<string, unknown> | undefined;
