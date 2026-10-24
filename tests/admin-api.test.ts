@@ -29,7 +29,7 @@ import sourceRefreshHandler from '../server/api/admin/sources/[id]/refresh.post'
 import adminApiMiddleware, {
   adminApiAuth,
   isPublicAdminApiPath,
-} from '../server/middleware/admin-auth';
+} from '../server/middleware/01-admin-auth';
 import {
   ADMIN_COOKIE,
   createSessionToken,

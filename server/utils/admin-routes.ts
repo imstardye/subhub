@@ -3,7 +3,7 @@
  * Shared plumbing for the admin CRUD routes (`/api/admin/users`, `/api/admin/sources`).
  *
  * Every handler is additionally protected by the global Nitro middleware
- * `server/middleware/admin-auth.ts`; `requireAdminOr401` repeats the check
+ * `server/middleware/01-admin-auth.ts`; `requireAdminOr401` repeats the check
  * inside the handler so a route is still guarded if it is mounted without that
  * middleware (defence in depth, and the unit test calls handlers directly).
  */
