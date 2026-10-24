@@ -17,7 +17,11 @@ import {
   trustedIpHeader,
 } from '../server/utils/client-ip';
 import { requestFromEvent } from '../server/utils/export-handler';
-import { createLoginThrottle, LOGIN_MAX_FAILURES_PER_IP } from '../server/utils/login-throttle';
+import {
+  createLoginThrottle,
+  LOGIN_MAX_FAILURES_PER_IP,
+  LOGIN_SLOWDOWN_BASE_MS,
+} from '../server/utils/login-throttle';
 
 const PASSWORD = 'correct-horse-battery';
 const ENV_KEYS = ['SUBHUB_ADMIN_PASSWORD', 'SUBHUB_SECRET', 'NODE_ENV', TRUSTED_IP_HEADER_ENV] as const;
@@ -134,6 +138,11 @@ describe('getClientIp', () => {
 });
 
 describe('login throttle uses the shared client IP', () => {
+  /** Fake slowdown: records delays instead of sleeping. */
+  function recordingSleep(waits: number[]) {
+    return async (ms: number) => void waits.push(ms);
+  }
+
   function loginEvent(headers: Record<string, string> = {}, remoteAddress?: string) {
     const req = Object.assign(new EventEmitter(), {
       method: 'POST',
@@ -173,9 +182,20 @@ describe('login throttle uses the shared client IP', () => {
     }
     expect(throttle.size()).toBe(3); // two IP buckets + the global bucket
 
-    const blocked = loginEvent({ 'cf-connecting-ip': '198.51.100.1' }, '10.0.0.1');
-    await adminLoginHandler(blocked as never, { throttle });
-    expect(blocked.node.res.statusCode).toBe(429);
+    const waits: number[] = [];
+    const slowed = loginEvent({ 'cf-connecting-ip': '198.51.100.1' }, '10.0.0.1');
+    await adminLoginHandler(slowed as never, { throttle, sleep: recordingSleep(waits) });
+    // Still a plain 401, only slower: no rejection.
+    expect(slowed.node.res.statusCode).toBe(401);
+    expect(waits).toEqual([LOGIN_SLOWDOWN_BASE_MS]);
+
+    // Both clients already used their budget, so this one is slowed as well
+    // (but answered 401, never rejected).
+    const second: number[] = [];
+    const other = loginEvent({ 'cf-connecting-ip': '198.51.100.2' }, '10.0.0.1');
+    await adminLoginHandler(other as never, { throttle, sleep: recordingSleep(second) });
+    expect(other.node.res.statusCode).toBe(401);
+    expect(second).toEqual([LOGIN_SLOWDOWN_BASE_MS]);
   });
 
   it('ignores the header when the switch is off (all clients share the socket IP)', async () => {
@@ -185,9 +205,11 @@ describe('login throttle uses the shared client IP', () => {
       await adminLoginHandler(event as never, { throttle });
       expect(event.node.res.statusCode).toBe(401);
     }
-    const blocked = loginEvent({ 'cf-connecting-ip': '198.51.100.99' }, '10.0.0.1');
-    await adminLoginHandler(blocked as never, { throttle });
-    expect(blocked.node.res.statusCode).toBe(429);
+    const waits: number[] = [];
+    const slowed = loginEvent({ 'cf-connecting-ip': '198.51.100.99' }, '10.0.0.1');
+    await adminLoginHandler(slowed as never, { throttle, sleep: recordingSleep(waits) });
+    expect(slowed.node.res.statusCode).toBe(401);
+    expect(waits).toEqual([LOGIN_SLOWDOWN_BASE_MS]);
     expect(throttle.size()).toBe(2); // socket bucket + global
   });
 });

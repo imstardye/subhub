@@ -8,7 +8,7 @@
  * disabled user, no rate limit, no access log line. Bodies above ~200 KiB come
  * back truncated (`truncated: true`).
  */
-definePageMeta({ layout: 'admin', middleware: 'admin' });
+definePageMeta({ layout: 'admin' });
 
 import type { AdminUser } from '~/server/utils/admin-users';
 import { EXPORT_TARGETS, type ExportTarget } from '~/server/utils/targets';

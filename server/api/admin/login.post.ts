@@ -7,8 +7,13 @@
  * reveals nothing about the configured value. The token is returned solely in
  * the httpOnly cookie. In production without SUBHUB_SECRET no session is ever
  * signed: the route answers a generic 500 (the detail goes to the server log).
- * Failed attempts are throttled per client IP and globally (login-throttle.ts);
- * over the limit answers 429 with `Retry-After`.
+ * Failed attempts are throttled per client IP and globally (login-throttle.ts).
+ * Over a limit the request is not rejected: it is slowed down (a bounded
+ * delay before the password check, `Retry-After` advertises the window), so
+ * brute force is impractical while a correct password is never locked out.
+ * The delays are serialized per IP (and globally when the global bucket is
+ * exhausted), so concurrent over-limit requests queue up instead of all
+ * sleeping at once and then checking passwords in the same instant.
  *
  * The JSON body is read straight off the node request rather than through
  * h3's `readBody`: Nitro's router consumes the stream first and keeps no node
@@ -18,7 +23,12 @@
  */
 import { isSessionSigningUnavailable, login } from '../../utils/admin-auth';
 import { getClientIp } from '../../utils/client-ip';
-import { adminLoginThrottle, type LoginThrottle } from '../../utils/login-throttle';
+import {
+  adminLoginThrottle,
+  awaitLoginThrottle,
+  defaultSleep,
+  type LoginThrottle,
+} from '../../utils/login-throttle';
 
 /** Login bodies are tiny; anything bigger is rejected before parsing. */
 export const MAX_LOGIN_BODY_BYTES = 4 * 1024;
@@ -120,6 +130,8 @@ export function clientAddress(event: LoginEvent): string {
 export interface LoginHandlerOptions {
   /** Throttle override (tests); defaults to the process-wide limiter. */
   throttle?: LoginThrottle;
+  /** Delay override (tests); defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** Generic 500 body; the missing-config detail stays in the server log. */
@@ -143,13 +155,16 @@ export default async function adminLoginHandler(
   }
 
   const decision = throttle.consume(clientAddress(event));
-  if (!decision.allowed) {
-    event.node.res.statusCode = 429;
+  if (decision.throttled) {
+    // Never reject: slow the attempt down before any password work. The
+    // response still advertises when the counter window resets.
     event.node.res.setHeader('cache-control', 'no-store');
     if (decision.retryAfter !== undefined) {
       event.node.res.setHeader('retry-after', String(decision.retryAfter));
     }
-    return { error: 'too many attempts' };
+    // Serialized per IP (and globally): the wait starts only once the earlier
+    // slowed requests are done, so a burst cannot defeat the slowdown.
+    await awaitLoginThrottle(decision, options.sleep ?? defaultSleep);
   }
 
   if (isSessionSigningUnavailable()) {
@@ -169,8 +184,10 @@ export default async function adminLoginHandler(
     return { error: 'invalid password' };
   }
 
-  // Successful login: the freshly counted attempt was not a failure.
-  throttle.refund(clientAddress(event));
+  // Successful login: give back the attempt — but only if it was counted in
+  // any bucket. Refunding an over-limit request would hand a slot to someone
+  // who legitimately used it and would reset the slowdown ladder.
+  if (decision.counted) throttle.refund(clientAddress(event));
   event.node.res.setHeader('set-cookie', result.cookie);
   event.node.res.setHeader('cache-control', 'no-store');
   return { ok: true };

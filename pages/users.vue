@@ -7,7 +7,7 @@
  * it) and feeds the public subscription URL /s/:token. Pages are demo-editable
  * only through the real API — there is no client-side fake store.
  */
-definePageMeta({ layout: 'admin', middleware: 'admin' });
+definePageMeta({ layout: 'admin' });
 
 import type { AdminUser } from '~/server/utils/admin-users';
 
