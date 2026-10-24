@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseAnyTLS,
+  parseClashNode,
   parseClashYaml,
   parseHysteria2,
   parseShadowsocks,
@@ -17,6 +18,56 @@ import {
 import { encodeBase64, parseQuery } from '../core/utils';
 
 const UUID = '11111111-2222-3333-4444-555555555555';
+
+describe('URI host and port validation (B6)', () => {
+  it.each([
+    'trojan://pw@:443',
+    'trojan://pw@ :443',
+    'trojan://pw@example.com:0',
+    'trojan://pw@example.com:65536',
+    'trojan://pw@example.com:443junk',
+    'hy2://pw@example.com:0',
+    'hy2://pw@example.com:65536',
+    'hy2://pw@example.com:-1',
+    'hy2://pw@example.com:1.5',
+    'hy2://pw@example.com:443junk',
+    'hy2://pw@example.com:0-443',
+    'hy2://pw@example.com:443-65536',
+    'hy2://pw@example.com:443?mport=443,65536',
+    'hysteria2://pw@example.com:0',
+    'hysteria2://pw@example.com:65536',
+    'hy2://pw@ :443',
+    'ss://aes-128-gcm:pw@:443',
+    `vless://${UUID}@:443`,
+    `vmess://${UUID}@:443`,
+    `tuic://${UUID}:pw@:443`,
+    'anytls://pw@:443',
+    `ssr://${encodeBase64(' :443:origin:aes-128-cfb:plain:cHc=')}`,
+    `vmess://${encodeBase64(JSON.stringify({ add: '', port: 443, id: UUID }))}`,
+    `vmess://${encodeBase64(JSON.stringify({ add: '   ', port: 443, id: UUID }))}`,
+  ])('rejects invalid endpoints through URI and subscription parsing: %s', (uri) => {
+    expect(() => parseUri(uri)).toThrow();
+    const result = parseSubscriptionDetailed(uri);
+    expect(result.nodes).toEqual([]);
+    expect(result.errors).toHaveLength(1);
+  });
+
+  it.each(['trojan', 'hy2', 'hysteria2'])(
+    'accepts port boundaries and defaults an omitted port for %s',
+    (scheme) => {
+      for (const port of [1, 65535]) {
+        expect(parseUri(`${scheme}://pw@example.com:${port}`)).toMatchObject({
+          server: 'example.com',
+          port,
+        });
+      }
+      expect(parseUri(`${scheme}://pw@example.com`)).toMatchObject({
+        server: 'example.com',
+        port: 443,
+      });
+    },
+  );
+});
 
 describe('Shadowsocks parser', () => {
   it('parses SIP002 links with base64 user info and URI fragment', () => {
@@ -359,6 +410,13 @@ describe('Hysteria2 parser', () => {
     });
   });
 
+  it('accepts port hopping at both port boundaries', () => {
+    expect(parseHysteria2('hy2://pw@example.com:1-65535')).toMatchObject({
+      port: 1,
+      ports: '1-65535',
+    });
+  });
+
   it('parses obfuscation, port hopping and bandwidth limits', () => {
     const node = parseHysteria2(
       'hysteria2://fake-password@hy2.example.com:8443?obfs=salamander&obfs-password=fake-obfs&sni=hy2.example.com&insecure=1&mport=8443-8445&upmbps=50&downmbps=100#HY2',
@@ -465,6 +523,23 @@ describe('query parsing', () => {
 });
 
 describe('Clash YAML parser', () => {
+  it.each([
+    { server: '', port: 443 },
+    { server: '   ', port: 443 },
+    { server: 'example.com', port: 0 },
+    { server: 'example.com', port: 65536 },
+    { server: 'example.com', port: 1.5 },
+    { server: 'example.com', port: '443junk' },
+  ])('rejects invalid endpoints and skips them in subscriptions: %j', (endpoint) => {
+    const invalid = { type: 'trojan', password: 'pw', ...endpoint };
+    const valid = { type: 'trojan', password: 'pw', server: 'example.com', port: 443 };
+
+    expect(() => parseClashNode(JSON.stringify(invalid))).toThrow();
+    expect(parseClashYaml(JSON.stringify({ proxies: [invalid, valid] }))).toEqual([
+      expect.objectContaining(valid),
+    ]);
+  });
+
   it('parses proxies from a full config', () => {
     const nodes = parseClashYaml(`
 mixed-port: 7890

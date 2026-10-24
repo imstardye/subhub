@@ -179,7 +179,7 @@ export function parseSsr(line: string): ProxyNode {
   const protocol = fields.pop() ?? '';
   const portRaw = fields.pop() ?? '';
   const server = stripIpv6Brackets(fields.join(':'));
-  if (!server || !cipher || !protocol || !obfs) {
+  if (!server.trim() || !cipher || !protocol || !obfs) {
     throw new Error('Invalid SSR URI: malformed payload');
   }
 
@@ -357,6 +357,7 @@ export function parseVmess(line: string): ProxyNode {
   }
 
   const server = String(params.add ?? params.server ?? '');
+  if (!server.trim()) throw new Error('Invalid VMess URI: missing server');
   const port = parsePort(params.port as string | number | undefined);
   const name = normalizeLoopbackName(
     fragment ??
@@ -523,13 +524,14 @@ export function parseHysteria2(line: string): ProxyNode {
   if (!match) throw new Error('Invalid Hysteria2 URI: invalid server');
 
   const host = stripIpv6Brackets(match[1]);
+  if (!host.trim()) throw new Error('Invalid Hysteria2 URI: missing server');
   const rawPort = match[2];
   let port: number;
   let ports: string | undefined;
   if (!rawPort) {
     port = 443;
   } else if (/^\d+$/.test(rawPort)) {
-    port = Number.parseInt(rawPort, 10);
+    port = parsePort(rawPort);
   } else {
     ports = rawPort;
     const first = rawPort.match(/\d+/)?.[0];
@@ -537,6 +539,9 @@ export function parseHysteria2(line: string): ProxyNode {
   }
 
   if (params.mport) ports = params.mport;
+  if (ports) {
+    for (const value of ports.split(/[,-]/)) parsePort(value);
+  }
 
   const node: ProxyNode = {
     type: 'hysteria2',

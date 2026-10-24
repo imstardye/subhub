@@ -113,29 +113,34 @@ export function stripIpv6Brackets(host: string): string {
 /** Split `host:port`, returning IPv6 hosts without their URI brackets. */
 export function parseHostPort(value: string): { host: string; port?: number } {
   const trimmed = value.trim().replace(/\/$/, '');
-  if (!trimmed) return { host: '' };
+  if (!trimmed) throw new Error('Invalid server: host must not be empty');
 
   if (trimmed.startsWith('[')) {
     const end = trimmed.indexOf(']');
     if (end !== -1) {
       const host = stripIpv6Brackets(trimmed.slice(0, end + 1));
-      const rest = trimmed.slice(end + 1).replace(/^:/, '');
-      const port = rest ? Number.parseInt(rest, 10) : undefined;
-      return { host, port: Number.isFinite(port) ? port : undefined };
+      if (!host.trim()) throw new Error('Invalid server: host must not be empty');
+      const rest = trimmed.slice(end + 1);
+      if (rest && !rest.startsWith(':')) throw new Error('Invalid server port');
+      return { host, port: rest ? parsePort(rest.slice(1)) : undefined };
     }
   }
 
   const lastColon = trimmed.lastIndexOf(':');
   if (lastColon === -1) return { host: trimmed };
-  const port = Number.parseInt(trimmed.slice(lastColon + 1), 10);
-  if (!Number.isFinite(port)) return { host: trimmed };
-  return { host: trimmed.slice(0, lastColon), port };
+  const host = trimmed.slice(0, lastColon);
+  if (!host.trim()) throw new Error('Invalid server: host must not be empty');
+  return { host, port: parsePort(trimmed.slice(lastColon + 1)) };
 }
 
 export function parsePort(value: string | number | undefined, fallback = 443): number {
+  if (value === undefined) return fallback;
   const parsed =
-    typeof value === 'number' ? value : Number.parseInt(`${value ?? ''}`, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    typeof value === 'number' ? value : /^\d+$/.test(value) ? Number(value) : NaN;
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error('Invalid port: must be an integer between 1 and 65535');
+  }
+  return parsed;
 }
 
 export function isTruthyFlag(value: unknown): boolean {

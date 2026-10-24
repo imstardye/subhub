@@ -38,10 +38,15 @@ function normalizeNode(raw: unknown): ProxyNode | null {
   if (typeof record.type !== 'string' || !SUPPORTED_NODE_TYPES.has(record.type)) {
     return null;
   }
-  if (typeof record.server !== 'string' || !record.server) return null;
+  if (typeof record.server !== 'string' || !record.server.trim()) return null;
   if (!('port' in record)) return null;
 
-  const port = parsePort(record.port as string | number | undefined, 0);
+  let port: number;
+  try {
+    port = parsePort(record.port as string | number | undefined, 0);
+  } catch {
+    return null;
+  }
   if (!port) return null;
 
   return {
