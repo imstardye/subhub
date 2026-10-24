@@ -13,6 +13,7 @@
  */
 // Relative imports (not `~/…`): the root `tsc --noEmit` runs without the Nuxt
 // alias table, and type-only imports still resolve at build time.
+import { decodeBase64 } from './index';
 import type { AdminSource } from '../../server/utils/admin-sources';
 import type { AdminAccessLog } from '../../server/utils/admin-logs';
 import type { AdminUser } from '../../server/utils/admin-users';
@@ -279,4 +280,35 @@ export function profileUsers(
 /** A profile field truncated for a dense card (keeps the head readable). */
 export function truncate(value: string, max = 60): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+/** The targets whose body is a base64 share-link list instead of YAML/text. */
+const BASE64_LINK_TARGETS = new Set(['shadowrocket']);
+
+/**
+ * What the preview should show for a rendered body.
+ *
+ * Surge/Loon/Clash bodies are already readable config text, so they are shown
+ * verbatim. A Shadowrocket subscription is base64 of newline-joined share
+ * links: showing the base64 alone tells an admin nothing, so it is decoded to
+ * one link per line (undecodable base64 falls back to the raw body). The raw
+ * body stays available for copying either way — the page copies
+ * `previewBodyText`.
+ */
+export function previewBodyText(
+  target: string,
+  body: string,
+  truncated = false,
+): { text: string; decoded: boolean } {
+  if (!BASE64_LINK_TARGETS.has(target) || body === '') return { text: body, decoded: false };
+  // A cut-off payload cannot be decoded (and a partial line would be a lie).
+  if (truncated) return { text: body, decoded: false };
+  let decoded: string;
+  try {
+    decoded = decodeBase64(body);
+  } catch {
+    return { text: body, decoded: false };
+  }
+  if (!decoded || decoded.includes('\u0000')) return { text: body, decoded: false };
+  return { text: decoded, decoded: true };
 }

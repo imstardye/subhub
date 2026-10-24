@@ -16,6 +16,32 @@ export {
   QUIC_BLOCK_RULE,
   stringifyMihomoConfig,
 } from './mihomo';
-export { stringifyProxiesSection, stringifyYamlBlocks, toYamlProxies } from './common';
+export {
+  cleanupValue,
+  prepareNode,
+  stringifyProxiesSection,
+  stringifyYamlBlocks,
+  toYamlProxies,
+} from './common';
 export { buildLegacyProxies, produceLegacy } from './legacy';
 export type { ProxyNode, ProduceOptions } from '../types';
+export {
+  buildLoonGroups,
+  buildLoonProxies,
+  loonProxyLine,
+  produceLoon,
+} from './loon';
+export {
+  buildSurgeGroups,
+  buildSurgeProxies,
+  produceSurge,
+  surgeProxyLine,
+} from './surge';
+export {
+  buildShadowrocketLinks,
+  buildShadowrocketSubscription,
+  produceShadowrocket,
+  shadowrocketLink,
+} from './shadowrocket';
+export { buildLineGroups, lineGroup, joinSections } from './groups';
+export type { LineGroup } from './groups';

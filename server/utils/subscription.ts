@@ -4,10 +4,9 @@
  * thin wrapper and the behaviour is unit-testable.
  *
  * P2 scope: user lookup, per-token rate limiting, cache-backed source
- * aggregation (the refresh task fills `cache_blob`) and access logging. The
- * remaining targeted producers (shadowrocket/singbox/surge/loon/uri) are still
- * missing; unsupported targets fall back to the mihomo YAML (see P4 note
- * below).
+ * aggregation (the refresh task fills `cache_blob`) and access logging.
+ * shadowrocket/surge/loon have real producers; sing-box and the generic URI
+ * list still fall back to the mihomo YAML (see the P4 note in export-nodes).
  *
  * The user's rule profile (`users.profileId`) is applied on top of the nodes:
  * its proxy groups, rules and rule-providers are appended to the rendered YAML.
@@ -17,13 +16,18 @@ import { and, eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { accessLogs, users } from '../db/schema';
 import {
-  buildTargetProxies,
   collectUserNodes,
   loadUserProfile,
   renderTargetBody,
+  targetProxyNames,
   type ProfileIniResolver,
 } from './export-nodes';
-import { isExportTarget, type ExportTarget } from './targets';
+import {
+  exportContentType,
+  exportFileExtension,
+  isExportTarget,
+  type ExportTarget,
+} from './targets';
 import {
   createRateLimiter,
   RATE_LIMIT_MAX,
@@ -136,7 +140,7 @@ export function resolveTarget(
 }
 
 function fileNameFor(target: ExportTarget, user: { id: number }): string {
-  return `subhub-${user.id}-${target}.yaml`;
+  return `subhub-${user.id}-${target}.${exportFileExtension(target)}`;
 }
 
 function logAccess(
@@ -272,9 +276,7 @@ export async function handleSubscriptionExport(
     const nodes = collectUserNodes(db, user.id);
     // Group regexes (`.*`, `((?i)hk)`, ...) are expanded against the names the
     // producer will emit, i.e. after transformation/filtering.
-    const nodeNames = buildTargetProxies(target, nodes)
-      .map((node) => node.name)
-      .filter(Boolean);
+    const nodeNames = targetProxyNames(target, nodes);
     const profile = await loadUserProfile(db, user.id, target, deps.resolveProfileIni, nodeNames);
     body = renderTargetBody(target, nodes, {}, profile);
   } catch {
@@ -303,7 +305,7 @@ export async function handleSubscriptionExport(
     headers: {
       // Same hardening as the text error paths (notably `cache-control: no-store`).
       ...TEXT_HEADERS,
-      'content-type': 'text/yaml; charset=utf-8',
+      'content-type': exportContentType(target),
       'content-disposition': `attachment; filename="${fileNameFor(target, user)}"`,
       'profile-update-interval': '24',
       'profile-web-page-url': 'https://github.com/imstardye/subhub',

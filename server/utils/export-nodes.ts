@@ -27,14 +27,22 @@
 import { and, eq, exists, isNull, or } from 'drizzle-orm';
 import {
   buildLegacyProxies,
+  buildLoonProxies,
   buildMihomoProxies,
   buildRules,
+  buildShadowrocketSubscription,
+  buildSurgeProxies,
   parseIni,
   parseSubscription,
   produceLegacy,
+  produceLoon,
   produceMihomo,
   produceMihomoProxiesOnly,
+  produceShadowrocket,
+  produceSurge,
+  prepareNode,
   stringifyMihomoConfig,
+  type ClashProxyGroup,
   type ProxyNode,
   type ProduceOptions,
   type ProxyGroupEntry,
@@ -170,7 +178,12 @@ export const fetchProfileIni: ProfileIniResolver = async (profile) => {
 export interface ExportProfile {
   ruleProviders: Record<string, unknown>;
   rules: string[];
-  proxyGroups: unknown[];
+  /**
+   * Proxy groups. For surge/loon these are passed through `buildProxyGroups`
+   * and only their members (remapped with loon group types) matter, so they
+   * are read as the loose client shape; mihomo/clash serialise them as-is.
+   */
+  proxyGroups: ClashProxyGroup[];
   /** Group names declared by the profile, in order. */
   groupNames: string[];
   /**
@@ -186,6 +199,20 @@ function isLegacyTarget(target: ExportTarget): boolean {
   return target === 'clash';
 }
 
+/** Which subset of `ExportProfile` a target's producer consumes. */
+export type ProfileCapability = 'groups' | 'rules' | 'none';
+
+/**
+ * Rules and rule-providers are mihomo/Clash syntax and mean nothing to the
+ * line-based clients; they own their rules. Shadowrocket subscriptions carry
+ * nodes only. Surge and loon consume the profile's proxy groups.
+ */
+export function exportProfileCapability(target: ExportTarget): ProfileCapability {
+  if (target === 'shadowrocket') return 'none';
+  if (target === 'surge' || target === 'loon') return 'groups';
+  return 'rules';
+}
+
 /**
  * Nodes exactly as the target's producer will emit them (transformed and, for
  * legacy Clash, filtered). Profile group members are expanded against *these*
@@ -198,15 +225,44 @@ export function buildTargetProxies(
   nodes: ProxyNode[],
   options: ProduceOptions = {},
 ): ProxyNode[] {
-  return isLegacyTarget(target)
-    ? buildLegacyProxies(nodes, options)
-    : buildMihomoProxies(nodes, options);
+  if (isLegacyTarget(target)) return buildLegacyProxies(nodes, options);
+  if (target === 'shadowrocket' || target === 'surge' || target === 'loon') {
+    // These producers drop what the client cannot load; expand the profile
+    // group regexes against what actually survives (`targetProxyNames`).
+    return nodes.map((node) => prepareNode(node));
+  }
+  return buildMihomoProxies(nodes, options);
+}
+
+/**
+ * Names a target's producer will emit, in order. Profile group regexes are
+ * expanded against exactly these, so a group never points at a node the
+ * output dropped (e.g. a VLESS node in a Surge export).
+ */
+export function targetProxyNames(target: ExportTarget, nodes: ProxyNode[]): string[] {
+  switch (target) {
+    case 'shadowrocket':
+      return buildShadowrocketSubscription(nodes).names;
+    case 'surge':
+      return buildSurgeProxies(nodes).names;
+    case 'loon':
+      return buildLoonProxies(nodes).names;
+    default:
+      return buildTargetProxies(target, nodes)
+        .map((node) => node.name)
+        .filter(Boolean);
+  }
 }
 
 /**
  * Load and parse the rule profile assigned to a user. Missing user, missing
  * profileId, missing/removed profile row, unreadable INI or an unexpected
  * error all yield `null` (today's nodes-only behaviour).
+ *
+ * What the export does with it depends on the target
+ * (`exportProfileCapability`): shadowrocket ignores profiles entirely (its
+ * subscription is nodes-only), surge/loon use the proxy groups only, and
+ * mihomo/clash use groups + rules + rule-providers.
  */
 export async function loadUserProfile(
   db: SubhubDb,
@@ -242,6 +298,10 @@ export async function loadUserProfile(
     // empty-rule config; keep today's nodes-only output instead.
     if (built.proxyGroups.length === 0 && built.rules.length === 0) return null;
 
+    const capability = exportProfileCapability(exportTarget);
+    if (capability === 'none') return null;
+    if (capability === 'groups' && built.proxyGroups.length === 0) return null;
+
     return {
       ruleProviders: built.ruleProviders,
       rules: built.rules,
@@ -257,14 +317,20 @@ export async function loadUserProfile(
 }
 
 /**
- * Render nodes for an export target. Targets without a dedicated producer yet
- * (P4) fall back to the mihomo YAML, but keep the historical nodes-only body:
- * the DNS/QUIC template is a mihomo (Clash.Meta) feature and those clients
- * cannot load it.
+ * Render nodes for an export target.
  *
- * `profile` (from `loadUserProfile`) is optional: with it the body also carries
- * the profile's proxy groups, rules and mihomo rule-providers. Without one the
- * output is the nodes-only/`dns`+`proxies`+QUIC body.
+ * - mihomo / clash: YAML with the anti-leak DNS/QUIC template and the profile's
+ *   groups, rules and rule-providers.
+ * - shadowrocket: base64 of newline-joined share links (nodes only).
+ * - surge / loon: `[Proxy]` + `[Proxy Group]` text; the profile contributes the
+ *   groups only (rules belong to the client's own template) and references to
+ *   nodes the client cannot load are pruned.
+ * - everything else (sing-box, uri) still falls back to the historical mihomo
+ *   nodes-only YAML: the DNS/QUIC template is a mihomo (Clash.Meta) feature
+ *   those clients cannot load.
+ *
+ * `profile` (from `loadUserProfile`) is optional; without one the output is the
+ * bare nodes document.
  *
  * Emitted section order (mihomo): `dns`, `proxies`, `rule-providers`,
  * `proxy-groups`, `rules`. The QUIC block is always the first entry of `rules`
@@ -278,9 +344,12 @@ export function renderTargetBody(
   profile: ExportProfile | null = null,
 ): string {
   if (isLegacyTarget(target)) return renderLegacyBody(nodes, options, profile);
+  if (target === 'shadowrocket') return produceShadowrocket(nodes);
+  if (target === 'surge') return produceSurge(nodes, profile?.proxyGroups ?? []);
+  if (target === 'loon') return produceLoon(nodes, profile?.proxyGroups ?? []);
 
-  // A future target (P4) still falls back to mihomo YAML; it must stay exactly
-  // what it produced before this template existed.
+  // The remaining targets (P4) still fall back to mihomo YAML; they must stay
+  // exactly what they produced before this template existed.
   if (target !== 'mihomo') return renderMihomoFallbackBody(nodes, options, profile);
 
   const dnsOptions: ProduceOptions = {
