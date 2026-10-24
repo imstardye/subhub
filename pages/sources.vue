@@ -188,7 +188,13 @@ onMounted(load);
   <section class="page">
     <header class="page-head">
       <h1>订阅源</h1>
-      <button class="primary" type="button" @click="openCreate">新建订阅源</button>
+      <button class="primary" type="button" @click="openCreate">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 5v14" />
+          <path d="M5 12h14" />
+        </svg>
+        新建订阅源
+      </button>
     </header>
 
     <p v-if="error" class="error" role="alert">{{ error }}</p>
@@ -242,56 +248,67 @@ onMounted(load);
       </div>
     </form>
 
-    <p v-if="loading" class="muted">加载中…</p>
-    <p v-else-if="sources.length === 0" class="muted">暂无订阅源。</p>
+    <p v-if="loading" class="muted empty">加载中…</p>
+    <p v-else-if="sources.length === 0" class="muted empty">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 11a9 9 0 0 1 9 9" />
+        <path d="M4 4a16 16 0 0 1 16 16" />
+        <circle cx="5" cy="19" r="1" />
+      </svg>
+      暂无订阅源。
+    </p>
 
-    <table v-else class="list">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>名称</th>
-          <th>类型</th>
-          <th>URL（已脱敏）</th>
-          <th>刷新</th>
-          <th>上次成功</th>
-          <th>缓存</th>
-          <th>最近错误</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="source in sources" :key="source.id">
-          <td>{{ source.id }}</td>
-          <td>
-            <div>{{ source.name }}</div>
-            <div v-if="source.ua" class="sub">UA: {{ source.ua }}</div>
-          </td>
-          <td>{{ source.type }}</td>
-          <td><code>{{ source.urlMasked }}</code></td>
-          <td>{{ source.refreshMinutes }} 分钟</td>
-          <td>{{ formatTime(source.lastOkAt) }}</td>
-          <td>
-            <span :class="['badge', source.hasCache ? 'on' : 'off']">
-              {{ source.hasCache ? '有' : '无' }}
-            </span>
-          </td>
-          <td class="err">{{ source.lastError ?? '—' }}</td>
-          <td class="row-actions">
-            <button type="button" class="small" :disabled="busyId !== null" @click="openEdit(source)">
-              编辑
-            </button>
-            <button
-              type="button"
-              class="small danger"
-              :disabled="busyId !== null"
-              @click="deleting = source"
-            >
-              删除
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else class="table-wrap">
+      <table class="list">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>名称</th>
+            <th>类型</th>
+            <th>URL（已脱敏）</th>
+            <th>刷新</th>
+            <th>上次成功</th>
+            <th>缓存</th>
+            <th>最近错误</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="source in sources" :key="source.id">
+            <td class="id-cell">{{ source.id }}</td>
+            <td>
+              <div>{{ source.name }}</div>
+              <div v-if="source.ua" class="sub">UA: {{ source.ua }}</div>
+            </td>
+            <td>
+              <span class="type-tag">{{ source.type }}</span>
+            </td>
+            <td class="url-cell"><code>{{ source.urlMasked }}</code></td>
+            <td class="nowrap">{{ source.refreshMinutes }} 分钟</td>
+            <td class="nowrap">{{ formatTime(source.lastOkAt) }}</td>
+            <td>
+              <span :class="['badge', source.hasCache ? 'on' : 'off']">
+                {{ source.hasCache ? '有' : '无' }}
+              </span>
+            </td>
+            <td class="err">{{ source.lastError ?? '—' }}</td>
+            <td class="row-actions">
+              <button type="button" class="small" :disabled="busyId !== null" @click="openEdit(source)">
+                编辑
+              </button>
+              <button
+                type="button"
+                class="small danger"
+                :disabled="busyId !== null"
+                @click="deleting = source"
+              >
+                删除
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <div v-if="deleting" class="overlay" role="dialog" aria-modal="true">
       <div class="card dialog">
@@ -309,158 +326,29 @@ onMounted(load);
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
+.id-cell {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--muted-foreground);
 }
-.page-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.type-tag {
+  display: inline-flex;
+  padding: 0.1rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
-h1 {
-  margin: 0;
-  font-size: 1.3rem;
-}
-h2 {
-  margin: 0 0 0.25rem;
-  font-size: 1rem;
-}
-.card {
-  padding: 1rem;
-  background: #fff;
-  border: 1px solid #e1e6ec;
-  border-radius: 10px;
-}
-.form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  max-width: 32rem;
-}
-.form label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.9rem;
-}
-input,
-select {
-  padding: 0.45rem 0.55rem;
-  border: 1px solid #cfd7e0;
-  border-radius: 6px;
-  font: inherit;
-}
-.actions {
-  display: flex;
-  gap: 0.5rem;
-}
-button {
-  padding: 0.45rem 0.8rem;
-  border: 1px solid #d3dae2;
-  border-radius: 6px;
-  background: #fff;
-  font: inherit;
-  cursor: pointer;
-}
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-button.primary {
-  border-color: #2f6feb;
-  background: #2f6feb;
-  color: #fff;
-}
-button.danger {
-  border-color: #c0392b;
-  color: #c0392b;
-}
-button.danger:not(:disabled):hover {
-  background: #fdf1ef;
-}
-button.small {
-  padding: 0.25rem 0.5rem;
-  font-size: 0.85rem;
-}
-.list {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9rem;
-}
-.list th,
-.list td {
-  padding: 0.5rem 0.6rem;
-  border-bottom: 1px solid #e1e6ec;
-  text-align: left;
-  vertical-align: top;
-}
-.list th {
-  color: #6b7785;
-  font-weight: 600;
-}
-.list code {
+.url-cell {
+  max-width: 16rem;
   word-break: break-all;
-  font-size: 0.8rem;
-  color: #4a5663;
-}
-.sub {
-  color: #6b7785;
-  font-size: 0.8rem;
 }
 .err {
   max-width: 16rem;
   word-break: break-word;
-  color: #8a4b2a;
-}
-.row-actions {
-  display: flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-.badge {
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-}
-.badge.on {
-  background: #e6f4ea;
-  color: #1e7a3c;
-}
-.badge.off {
-  background: #f0f0f0;
-  color: #6b7785;
-}
-.error {
-  margin: 0;
-  color: #c0392b;
-  font-size: 0.9rem;
-}
-.notice {
-  margin: 0;
-  color: #1e7a3c;
-  font-size: 0.9rem;
-}
-.muted {
-  margin: 0;
-  color: #6b7785;
-}
-.overlay {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(31, 41, 51, 0.35);
-}
-.dialog {
-  width: min(24rem, calc(100vw - 2rem));
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-.dialog p {
-  margin: 0;
+  color: var(--warning-text);
+  font-size: var(--text-xs);
 }
 </style>

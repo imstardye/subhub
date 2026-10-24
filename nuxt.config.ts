@@ -5,6 +5,7 @@ import { defineNuxtConfig } from 'nuxt/config';
 export default defineNuxtConfig({
   compatibilityDate: '2025-01-01',
   devtools: { enabled: false },
+  css: ['~/assets/css/main.css'],
   typescript: {
     strict: true,
   },
@@ -15,6 +16,15 @@ export default defineNuxtConfig({
         {
           name: 'description',
           content: 'Subscription hub — core parsers, producers and rules.',
+        },
+        { name: 'theme-color', content: '#0F172A' },
+      ],
+      link: [
+        { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
+        { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' },
+        {
+          rel: 'stylesheet',
+          href: 'https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap',
         },
       ],
     },

@@ -54,8 +54,16 @@ async function handleSubmit() {
 
 <template>
   <main class="login">
-    <form class="card" @submit.prevent="handleSubmit">
-      <h1>subhub</h1>
+    <form class="card login-card" @submit.prevent="handleSubmit">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 17l6-5-6-5" />
+            <path d="M12 19h8" />
+          </svg>
+        </span>
+        <h1>subhub</h1>
+      </div>
       <p class="hint">管理后台登录</p>
       <label for="password">密码</label>
       <input
@@ -68,7 +76,7 @@ async function handleSubmit() {
         :disabled="submitting"
       >
       <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <button type="submit" :disabled="submitting">
+      <button class="primary" type="submit" :disabled="submitting">
         {{ submitting ? '登录中…' : '登录' }}
       </button>
     </form>
@@ -81,55 +89,67 @@ async function handleSubmit() {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
-  background: #f5f7fa;
-  font-family: ui-sans-serif, system-ui, sans-serif;
-  color: #1f2933;
+  padding: var(--space-4);
+  background:
+    radial-gradient(60rem 30rem at 50% -10%, rgba(34, 197, 94, 0.08), transparent 70%),
+    var(--background);
+  font-family: var(--font-sans);
+  color: var(--foreground);
 }
-.card {
+.login-card {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  width: min(22rem, calc(100vw - 2rem));
-  padding: 2rem;
-  background: #fff;
-  border: 1px solid #e1e6ec;
-  border-radius: 10px;
+  gap: var(--space-2);
+  width: min(23rem, 100%);
+  padding: var(--space-8);
+  box-shadow: var(--shadow-lg);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-1);
+}
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent-muted);
+}
+.brand-mark svg {
+  width: 1.15rem;
+  height: 1.15rem;
 }
 h1 {
   margin: 0;
-  font-size: 1.4rem;
+  font-size: var(--text-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 .hint {
-  margin: 0 0 0.75rem;
-  color: #6b7785;
-  font-size: 0.9rem;
+  margin: 0 0 var(--space-4);
+  color: var(--muted-foreground);
+  font-size: var(--text-sm);
 }
 label {
-  font-size: 0.9rem;
+  color: var(--muted-foreground);
+  font-size: var(--text-sm);
+  font-weight: 500;
 }
 input {
-  padding: 0.5rem 0.6rem;
-  border: 1px solid #cfd7e0;
-  border-radius: 6px;
-  font-size: 1rem;
+  margin-bottom: var(--space-1);
+  padding: 0.6rem 0.75rem;
+  font-size: var(--text-md);
 }
 button {
-  margin-top: 0.75rem;
-  padding: 0.55rem 0.6rem;
-  border: none;
-  border-radius: 6px;
-  background: #2f6feb;
-  color: #fff;
-  font-size: 1rem;
-  cursor: pointer;
-}
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.error {
-  margin: 0;
-  color: #c0392b;
-  font-size: 0.9rem;
+  margin-top: var(--space-3);
+  min-height: 2.6rem;
+  font-size: var(--text-md);
+  width: 100%;
 }
 </style>

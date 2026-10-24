@@ -116,13 +116,17 @@ onMounted(() => {
     <header class="page-head">
       <h1>访问日志</h1>
       <button type="button" :disabled="loading" @click="load">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+          <path d="M21 3v5h-5" />
+        </svg>
         {{ loading ? '刷新中…' : '刷新' }}
       </button>
     </header>
 
     <p v-if="error" class="error" role="alert">{{ error }}</p>
 
-    <form class="card form" @submit.prevent="applyFilters">
+    <form class="card form filters" @submit.prevent="applyFilters">
       <label>
         用户
         <select v-model="filterUserId" :disabled="loading">
@@ -142,151 +146,126 @@ onMounted(() => {
       </div>
     </form>
 
-    <p v-if="loading && !loaded" class="muted">加载中…</p>
-    <p v-else-if="loaded && items.length === 0" class="muted">暂无日志。</p>
+    <p v-if="loading && !loaded" class="muted empty">加载中…</p>
+    <p v-else-if="loaded && items.length === 0" class="muted empty">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M8 6h13" />
+        <path d="M8 12h13" />
+        <path d="M8 18h13" />
+        <path d="M3 6h.01" />
+        <path d="M3 12h.01" />
+        <path d="M3 18h.01" />
+      </svg>
+      暂无日志。
+    </p>
 
-    <table v-else-if="items.length > 0" class="list">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>时间</th>
-          <th>用户</th>
-          <th>target</th>
-          <th>IP</th>
-          <th>状态</th>
-          <th>耗时</th>
-          <th>UA</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="log in items" :key="log.id">
-          <td>{{ log.id }}</td>
-          <td class="nowrap">{{ formatTime(log.createdAt) }}</td>
-          <td>{{ userName(log) }}</td>
-          <td>{{ log.target ?? '—' }}</td>
-          <td class="mono">{{ log.ip ?? '—' }}</td>
-          <td>{{ log.status ?? '—' }}</td>
-          <td>{{ log.ms === null ? '—' : `${log.ms} ms` }}</td>
-          <td class="ua" :title="log.ua ?? ''">{{ log.ua ?? '—' }}</td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else-if="items.length > 0" class="table-wrap">
+      <table class="list">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>时间</th>
+            <th>用户</th>
+            <th>target</th>
+            <th>IP</th>
+            <th>状态</th>
+            <th>耗时</th>
+            <th>UA</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="log in items" :key="log.id">
+            <td class="id-cell">{{ log.id }}</td>
+            <td class="nowrap log-time">{{ formatTime(log.createdAt) }}</td>
+            <td>{{ userName(log) }}</td>
+            <td class="mono">{{ log.target ?? '—' }}</td>
+            <td class="mono">{{ log.ip ?? '—' }}</td>
+            <td class="mono status-cell">{{ log.status ?? '—' }}</td>
+            <td class="mono nowrap">{{ log.ms === null ? '—' : `${log.ms} ms` }}</td>
+            <td class="ua" :title="log.ua ?? ''">{{ log.ua ?? '—' }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <div class="pager">
       <span class="muted">共 {{ total }} 条 · 第 {{ offset + 1 }}–{{ Math.min(offset + PAGE_SIZE, total) }} 条</span>
       <div class="actions">
-        <button type="button" :disabled="!hasPrev || loading" @click="prevPage">上一页</button>
-        <button type="button" :disabled="!hasNext || loading" @click="nextPage">下一页</button>
+        <button type="button" :disabled="!hasPrev || loading" @click="prevPage">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m15 18-6-6 6-6" />
+          </svg>
+          上一页
+        </button>
+        <button type="button" :disabled="!hasNext || loading" @click="nextPage">
+          下一页
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m9 18 6-6-6-6" />
+          </svg>
+        </button>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-.page-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-h1 {
-  margin: 0;
-  font-size: 1.3rem;
-}
-.card {
-  padding: 1rem;
-  background: #fff;
-  border: 1px solid #e1e6ec;
-  border-radius: 10px;
-}
-.form {
-  display: flex;
-  flex-wrap: wrap;
+.filters {
+  flex-direction: row;
   align-items: flex-end;
-  gap: 0.75rem;
+  gap: var(--space-4);
+  max-width: none;
 }
-.form label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.9rem;
-  min-width: 10rem;
+.filters label {
+  width: 12rem;
+  align-self: flex-end;
 }
-input,
-select {
-  padding: 0.45rem 0.55rem;
-  border: 1px solid #cfd7e0;
-  border-radius: 6px;
-  background: #fff;
-  font: inherit;
+.filters .actions {
+  padding-bottom: 1px;
 }
-.actions {
-  display: flex;
-  gap: 0.5rem;
+.id-cell {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
-button {
-  padding: 0.45rem 0.8rem;
-  border: 1px solid #d3dae2;
-  border-radius: 6px;
-  background: #fff;
-  font: inherit;
-  cursor: pointer;
+.log-time {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-button.primary {
-  border-color: #2f6feb;
-  background: #2f6feb;
-  color: #fff;
-}
-.list {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9rem;
-}
-.list th,
-.list td {
-  padding: 0.5rem 0.6rem;
-  border-bottom: 1px solid #e1e6ec;
-  text-align: left;
-  vertical-align: top;
-}
-.list th {
-  color: #6b7785;
-  font-weight: 600;
-}
-.nowrap {
-  white-space: nowrap;
-}
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem;
+.status-cell {
+  font-variant-numeric: tabular-nums;
 }
 .ua {
   max-width: 18rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 .pager {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
 }
-.error {
-  margin: 0;
-  color: #c0392b;
-  font-size: 0.9rem;
-}
-.muted {
-  margin: 0;
-  color: #6b7785;
+
+@media (max-width: 640px) {
+  .filters {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filters label {
+    width: 100%;
+    align-self: stretch;
+  }
+
+  .pager {
+    justify-content: flex-start;
+  }
 }
 </style>

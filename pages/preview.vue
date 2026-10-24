@@ -114,6 +114,9 @@ onMounted(loadUsers);
       </label>
       <div class="actions">
         <button class="primary" type="submit" :disabled="generating || loadingUsers">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m5 3 14 9-14 9V3Z" />
+          </svg>
           {{ generating ? '生成中…' : '生成' }}
         </button>
       </div>
@@ -136,122 +139,40 @@ onMounted(loadUsers);
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-.page-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-h1 {
-  margin: 0;
-  font-size: 1.3rem;
-}
-h2 {
-  margin: 0;
-  font-size: 1rem;
-}
-.card {
-  padding: 1rem;
-  background: #fff;
-  border: 1px solid #e1e6ec;
-  border-radius: 10px;
-}
 .form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
   max-width: 32rem;
-}
-.form label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.9rem;
-}
-select {
-  padding: 0.45rem 0.55rem;
-  border: 1px solid #cfd7e0;
-  border-radius: 6px;
-  background: #fff;
-  font: inherit;
-}
-.actions {
-  display: flex;
-  gap: 0.5rem;
-}
-button {
-  padding: 0.45rem 0.8rem;
-  border: 1px solid #d3dae2;
-  border-radius: 6px;
-  background: #fff;
-  font: inherit;
-  cursor: pointer;
-}
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-button.primary {
-  border-color: #2f6feb;
-  background: #2f6feb;
-  color: #fff;
 }
 .result {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.result > h2 {
+  padding-bottom: 0;
+  border-bottom: none;
 }
 .result-head {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
-}
-.meta {
-  color: #6b7785;
-  font-size: 0.85rem;
+  gap: var(--space-2);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
 }
 .body {
   margin: 0;
   max-height: 60vh;
   overflow: auto;
-  padding: 0.75rem;
-  background: #f6f8fa;
-  border: 1px solid #e1e6ec;
-  border-radius: 8px;
-  font-size: 0.8rem;
-  line-height: 1.45;
+  padding: var(--space-4);
+  background: var(--subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.6;
   white-space: pre;
-}
-.badge {
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-}
-.badge.on {
-  background: #e6f4ea;
-  color: #1e7a3c;
-}
-.badge.off {
-  background: #f0f0f0;
-  color: #6b7785;
-}
-.badge.warn {
-  background: #fff4e5;
-  color: #9a5b00;
-}
-.error {
-  margin: 0;
-  color: #c0392b;
-  font-size: 0.9rem;
-}
-.notice {
-  margin: 0;
-  color: #1e7a3c;
-  font-size: 0.9rem;
+  tab-size: 2;
 }
 </style>

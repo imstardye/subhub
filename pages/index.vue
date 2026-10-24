@@ -52,53 +52,138 @@ onMounted(load);
 </script>
 
 <template>
-  <section>
-    <h1>仪表盘</h1>
+  <section class="page">
+    <header class="page-head">
+      <h1>仪表盘</h1>
+    </header>
     <p v-if="error" class="error" role="alert">统计数据加载失败：{{ error }}</p>
     <div class="cards">
-      <article v-for="card in cards" :key="card.key" class="card">
-        <div class="label">{{ card.label }}</div>
+      <article v-for="card in cards" :key="card.key" class="card stat">
+        <div class="stat-head">
+          <span class="stat-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <template v-if="card.key === 'users'">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </template>
+              <template v-else-if="card.key === 'sources'">
+                <path d="M4 11a9 9 0 0 1 9 9" />
+                <path d="M4 4a16 16 0 0 1 16 16" />
+                <circle cx="5" cy="19" r="1" />
+              </template>
+              <template v-else-if="card.key === 'profiles'">
+                <path d="m12 2 9 5-9 5-9-5 9-5Z" />
+                <path d="m3 12 9 5 9-5" />
+                <path d="m3 17 9 5 9-5" />
+              </template>
+              <template v-else>
+                <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+                <path d="m7 15 4-4 3 3 5-6" />
+              </template>
+            </svg>
+          </span>
+          <span class="label">{{ card.label }}</span>
+        </div>
         <div class="value">{{ display(card.key) }}</div>
-        <NuxtLink class="hint" :to="card.to">{{ card.hint }} →</NuxtLink>
+        <NuxtLink class="hint" :to="card.to">
+          {{ card.hint }}
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 12h14" />
+            <path d="m12 5 7 7-7 7" />
+          </svg>
+        </NuxtLink>
       </article>
     </div>
   </section>
 </template>
 
 <style scoped>
-h1 {
-  margin: 0 0 0.5rem;
-  font-size: 1.4rem;
-}
-.error {
-  margin: 0 0 1rem;
-  color: #b42318;
-}
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+  gap: var(--space-4);
 }
-.card {
-  padding: 1rem;
-  background: #fff;
-  border: 1px solid #e1e6ec;
-  border-radius: 8px;
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-5);
+  transition:
+    border-color var(--transition),
+    box-shadow var(--transition),
+    transform var(--transition);
+}
+.stat:hover {
+  border-color: var(--muted-foreground);
+  box-shadow: var(--shadow-md);
+}
+.stat-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.stat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent-muted);
+}
+.stat-icon svg {
+  width: 1rem;
+  height: 1rem;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .label {
-  font-size: 0.85rem;
-  color: #6b7785;
+  font-size: var(--text-sm);
+  color: var(--muted-foreground);
+  font-weight: 500;
 }
 .value {
-  margin: 0.25rem 0;
-  font-size: 1.5rem;
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xl);
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
 }
 .hint {
-  font-size: 0.8rem;
-  color: #6b7785;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-xs);
+  color: var(--muted-foreground);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color var(--transition-fast);
+}
+.hint svg {
+  width: 0.85rem;
+  height: 0.85rem;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform var(--transition-fast);
 }
 .hint:hover {
-  color: #1d4ed8;
+  color: var(--accent-muted);
+}
+.hint:hover svg {
+  transform: translateX(2px);
 }
 </style>

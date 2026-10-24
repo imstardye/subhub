@@ -198,7 +198,13 @@ onMounted(load);
   <section class="page">
     <header class="page-head">
       <h1>规则档</h1>
-      <button class="primary" type="button" @click="openCreate">新建规则档</button>
+      <button class="primary" type="button" @click="openCreate">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 5v14" />
+          <path d="M5 12h14" />
+        </svg>
+        新建规则档
+      </button>
     </header>
 
     <p v-if="error" class="error" role="alert">{{ error }}</p>
@@ -261,57 +267,66 @@ onMounted(load);
       </div>
     </form>
 
-    <p v-if="loading" class="muted">加载中…</p>
-    <p v-else-if="profiles.length === 0" class="muted">暂无规则档。</p>
+    <p v-if="loading" class="muted empty">加载中…</p>
+    <p v-else-if="profiles.length === 0" class="muted empty">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m12 2 9 5-9 5-9-5 9-5Z" />
+        <path d="m3 12 9 5 9-5" />
+        <path d="m3 17 9 5 9-5" />
+      </svg>
+      暂无规则档。
+    </p>
 
-    <table v-else class="list">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>名称</th>
-          <th>变体</th>
-          <th>INI 来源</th>
-          <th>DNS 模板</th>
-          <th>options</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="profile in profiles" :key="profile.id">
-          <td>{{ profile.id }}</td>
-          <td>{{ profile.name }}</td>
-          <td>
-            <span :class="['badge', profile.variant === 'mihomo' ? 'on' : 'off']">
-              {{ profile.variant }}
-            </span>
-          </td>
-          <td class="source">
-            <code v-if="profile.iniUrl">{{ profile.iniUrl }}</code>
-            <span v-if="profile.iniUrl && profile.iniText" class="sub">+ </span>
-            <span v-if="profile.iniText" class="sub">内联 INI（{{ profile.iniText.length }} 字符）</span>
-            <span v-if="!profile.iniUrl && !profile.iniText" class="sub">—</span>
-          </td>
-          <td class="source">
-            <span v-if="profile.dnsTemplate" class="sub">{{ profile.dnsTemplate }}</span>
-            <span v-else class="sub">—</span>
-          </td>
-          <td class="sub">{{ optionsSummary(profile) }}</td>
-          <td class="row-actions">
-            <button type="button" class="small" :disabled="busyId !== null" @click="openEdit(profile)">
-              编辑
-            </button>
-            <button
-              type="button"
-              class="small danger"
-              :disabled="busyId !== null"
-              @click="deleting = profile"
-            >
-              删除
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else class="table-wrap">
+      <table class="list">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>名称</th>
+            <th>变体</th>
+            <th>INI 来源</th>
+            <th>DNS 模板</th>
+            <th>options</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="profile in profiles" :key="profile.id">
+            <td class="id-cell">{{ profile.id }}</td>
+            <td>{{ profile.name }}</td>
+            <td>
+              <span :class="['badge', profile.variant === 'mihomo' ? 'on' : 'off']">
+                {{ profile.variant }}
+              </span>
+            </td>
+            <td class="source">
+              <code v-if="profile.iniUrl">{{ profile.iniUrl }}</code>
+              <span v-if="profile.iniUrl && profile.iniText" class="sub">+ </span>
+              <span v-if="profile.iniText" class="sub">内联 INI（{{ profile.iniText.length }} 字符）</span>
+              <span v-if="!profile.iniUrl && !profile.iniText" class="sub">—</span>
+            </td>
+            <td class="source">
+              <span v-if="profile.dnsTemplate" class="sub">{{ profile.dnsTemplate }}</span>
+              <span v-else class="sub">—</span>
+            </td>
+            <td class="sub mono">{{ optionsSummary(profile) }}</td>
+            <td class="row-actions">
+              <button type="button" class="small" :disabled="busyId !== null" @click="openEdit(profile)">
+                编辑
+              </button>
+              <button
+                type="button"
+                class="small danger"
+                :disabled="busyId !== null"
+                @click="deleting = profile"
+              >
+                删除
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <div v-if="deleting" class="overlay" role="dialog" aria-modal="true">
       <div class="card dialog">
@@ -329,168 +344,17 @@ onMounted(load);
 </template>
 
 <style scoped>
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-.page-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-h1 {
-  margin: 0;
-  font-size: 1.3rem;
-}
-h2 {
-  margin: 0 0 0.25rem;
-  font-size: 1rem;
-}
-.card {
-  padding: 1rem;
-  background: #fff;
-  border: 1px solid #e1e6ec;
-  border-radius: 10px;
-}
-.form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  max-width: 40rem;
-}
-.form label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  font-size: 0.9rem;
-}
-input,
-select,
-textarea {
-  padding: 0.45rem 0.55rem;
-  border: 1px solid #cfd7e0;
-  border-radius: 6px;
-  font: inherit;
-}
-textarea {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.85rem;
-  resize: vertical;
-}
-.hint {
-  margin: -0.25rem 0 0;
-  color: #6b7785;
-  font-size: 0.8rem;
-}
-.actions {
-  display: flex;
-  gap: 0.5rem;
-}
-button {
-  padding: 0.45rem 0.8rem;
-  border: 1px solid #d3dae2;
-  border-radius: 6px;
-  background: #fff;
-  font: inherit;
-  cursor: pointer;
-}
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-button.primary {
-  border-color: #2f6feb;
-  background: #2f6feb;
-  color: #fff;
-}
-button.danger {
-  border-color: #c0392b;
-  color: #c0392b;
-}
-button.danger:not(:disabled):hover {
-  background: #fdf1ef;
-}
-button.small {
-  padding: 0.25rem 0.5rem;
-  font-size: 0.85rem;
-}
-.list {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9rem;
-}
-.list th,
-.list td {
-  padding: 0.5rem 0.6rem;
-  border-bottom: 1px solid #e1e6ec;
-  text-align: left;
-  vertical-align: top;
-}
-.list th {
-  color: #6b7785;
-  font-weight: 600;
-}
-.list code {
-  word-break: break-all;
-  font-size: 0.8rem;
-  color: #4a5663;
+.id-cell {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--muted-foreground);
 }
 .source {
   max-width: 18rem;
   word-break: break-word;
 }
-.sub {
-  color: #6b7785;
-  font-size: 0.8rem;
-}
-.row-actions {
-  display: flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-.badge {
-  padding: 0.1rem 0.45rem;
-  border-radius: 999px;
-  font-size: 0.8rem;
-}
-.badge.on {
-  background: #e6f4ea;
-  color: #1e7a3c;
-}
-.badge.off {
-  background: #f0f0f0;
-  color: #6b7785;
-}
-.error {
-  margin: 0;
-  color: #c0392b;
-  font-size: 0.9rem;
-}
-.notice {
-  margin: 0;
-  color: #1e7a3c;
-  font-size: 0.9rem;
-}
-.muted {
-  margin: 0;
-  color: #6b7785;
-}
-.overlay {
-  position: fixed;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(31, 41, 51, 0.35);
-}
-.dialog {
-  width: min(24rem, calc(100vw - 2rem));
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-.dialog p {
-  margin: 0;
+.source code {
+  display: block;
+  color: var(--foreground);
 }
 </style>
