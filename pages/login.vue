@@ -41,9 +41,7 @@ async function handleSubmit() {
   } catch (err) {
     const status = (err as { statusCode?: number; status?: number }).statusCode
       ?? (err as { status?: number }).status;
-    if (status === 429) {
-      error.value = '尝试过于频繁，请稍后再试';
-    } else if (status !== undefined && status >= 500) {
+    if (status !== undefined && status >= 500) {
       error.value = '服务器错误，请稍后再试';
     } else {
       error.value = '密码错误';

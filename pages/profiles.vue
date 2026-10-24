@@ -7,7 +7,7 @@
  * `iniUrl` / `iniText` verbatim; the API requires at least one of them and an
  * http(s) `iniUrl`. `options` is edited as JSON text and only parsed on save.
  */
-definePageMeta({ layout: 'admin', middleware: 'admin' });
+definePageMeta({ layout: 'admin' });
 
 import type { AdminProfile } from '~/server/utils/admin-profiles';
 import type { ProfileVariant } from '~/server/utils/admin-validation';

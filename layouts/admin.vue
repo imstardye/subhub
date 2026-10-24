@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
- * Admin shell: fixed sidebar plus the page content. Protected by the
- * `admin` route middleware (also declared in pages via `definePageMeta`).
+ * Admin shell: fixed sidebar plus the page content. Every page is protected
+ * by the global `admin.global.ts` route middleware.
  */
 const links = [
   { to: '/', label: '仪表盘' },

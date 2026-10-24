@@ -88,14 +88,20 @@ P1 共 187 个单测，覆盖：
 - `/login` 提交密码，`POST /api/admin/login` 校验后下发 httpOnly
   `subhub_admin` cookie（HMAC-SHA256 签名，7 天，生产环境 `Secure`）；
   密码错误返回 401 且不写 cookie。
-- `GET /api/admin/me` 返回 `{ authenticated }`；`admin` 路由中间件在服务端
-  透传 cookie 查询该接口，未登录跳转 `/login?redirect=...`。
+- `GET /api/admin/me` 返回 `{ authenticated }`；全局路由中间件
+  `middleware/admin.global.ts` 对所有页面在服务端透传 cookie 查询该接口，未登录
+  跳转 `/login?redirect=...`。`/login` 是唯一公开页面，新增页面默认受保护。
 - `POST /api/admin/logout` 删除 cookie。
 - 生产环境（`NODE_ENV=production`）未配置 `SUBHUB_SECRET` 时拒绝签发会话
   （登录返回 500，已有 token 也无法验证），不会退回公开的开发密钥。
 
-- 登录防爆破：同一 IP 15 分钟内失败 5 次、全局失败 100 次即返回 429（只计失败，成功清零该 IP）。
-  - 注意：全局上限可被恶意刷满，届时正确密码也会暂时收到 429，窗口过后恢复。
+- 登录防爆破：同一 IP 15 分钟内失败 5 次、全局失败 100 次后**只减速、不拒绝**
+  （只计失败，成功回退该次计数）。
+  - 超过上限后在**校验密码前**先等待一段延迟：首次 1s，同一桶内继续超限则翻倍，
+    最长 3s；随后仍正常校验密码，错误依旧返回 401、正确依旧登录成功（不受永久锁死）。
+    响应带 `Retry-After` 表示窗口重置时间，不会再出现登录限流 429。
+  - 注意：全局上限被恶意刷满时，所有人都会变慢（最多 3s），但正确密码依然可用；
+    窗口过后恢复正常速度。
   - 客户端 IP 默认只取 TCP 连接本身（socket），不读 `X-Forwarded-For` 等请求头。
     部署在反向代理后时，请让代理直连传递真实来源（或仅在内网/VPN 暴露后台），
     否则所有请求共用代理 IP，5 次失败会锁住所有人。

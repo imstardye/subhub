@@ -8,7 +8,7 @@
  * (which is cleared as soon as the request settles). When editing, leaving the
  * URL field empty means "keep the stored URL unchanged".
  */
-definePageMeta({ layout: 'admin', middleware: 'admin' });
+definePageMeta({ layout: 'admin' });
 
 import type { AdminSource } from '~/server/utils/admin-sources';
 import type { SourceType } from '~/server/utils/admin-validation';

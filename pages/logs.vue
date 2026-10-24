@@ -7,7 +7,7 @@
  * server-side; "上一页"/"下一页" move by one page and the total decides whether
  * "下一页" is offered.
  */
-definePageMeta({ layout: 'admin', middleware: 'admin' });
+definePageMeta({ layout: 'admin' });
 
 import type { AdminAccessLog } from '~/server/utils/admin-logs';
 import type { AdminUser } from '~/server/utils/admin-users';

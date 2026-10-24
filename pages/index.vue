@@ -7,7 +7,7 @@
  * 24 hours. Values render as `…` while loading; a failed request shows an
  * error line but keeps the cards (with `—`) so the layout stays stable.
  */
-definePageMeta({ layout: 'admin', middleware: 'admin' });
+definePageMeta({ layout: 'admin' });
 
 import type { AdminStats } from '~/server/utils/admin-stats';
 

@@ -7,8 +7,10 @@
  * reveals nothing about the configured value. The token is returned solely in
  * the httpOnly cookie. In production without SUBHUB_SECRET no session is ever
  * signed: the route answers a generic 500 (the detail goes to the server log).
- * Failed attempts are throttled per client IP and globally (login-throttle.ts);
- * over the limit answers 429 with `Retry-After`.
+ * Failed attempts are throttled per client IP and globally (login-throttle.ts).
+ * Over a limit the request is not rejected: it is slowed down (a bounded
+ * delay before the password check, `Retry-After` advertises the window), so
+ * brute force is impractical while a correct password is never locked out.
  *
  * The JSON body is read straight off the node request rather than through
  * h3's `readBody`: Nitro's router consumes the stream first and keeps no node
@@ -120,7 +122,12 @@ export function clientAddress(event: LoginEvent): string {
 export interface LoginHandlerOptions {
   /** Throttle override (tests); defaults to the process-wide limiter. */
   throttle?: LoginThrottle;
+  /** Delay override (tests); defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+/** Real timer used for the login slowdown. */
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Generic 500 body; the missing-config detail stays in the server log. */
 export const LOGIN_MISCONFIGURED_ERROR = 'server error';
@@ -143,13 +150,14 @@ export default async function adminLoginHandler(
   }
 
   const decision = throttle.consume(clientAddress(event));
-  if (!decision.allowed) {
-    event.node.res.statusCode = 429;
+  if (decision.throttled) {
+    // Never reject: slow the attempt down before any password work. The
+    // response still advertises when the counter window resets.
     event.node.res.setHeader('cache-control', 'no-store');
     if (decision.retryAfter !== undefined) {
       event.node.res.setHeader('retry-after', String(decision.retryAfter));
     }
-    return { error: 'too many attempts' };
+    await (options.sleep ?? sleep)(decision.delayMs);
   }
 
   if (isSessionSigningUnavailable()) {

@@ -35,6 +35,8 @@ import {
   createLoginThrottle,
   LOGIN_GLOBAL_KEY,
   LOGIN_MAX_FAILURES_PER_IP,
+  LOGIN_SLOWDOWN_BASE_MS,
+  LOGIN_SLOWDOWN_MAX_MS,
   LOGIN_UNKNOWN_IP_KEY,
 } from '../server/utils/login-throttle';
 
@@ -374,56 +376,98 @@ describe('login brute-force throttle', () => {
     return { throttle, advance: (ms: number) => (clock += ms) };
   }
 
-  function attempt(
+  /** Fake slowdown: records the requested delays instead of waiting. */
+  function makeSleeper() {
+    const waits: number[] = [];
+    return { waits, sleep: async (ms: number) => void waits.push(ms) };
+  }
+
+  async function attempt(
     throttle: ReturnType<typeof createLoginThrottle>,
     password: unknown,
     remoteAddress = '203.0.113.7',
+    sleep: (ms: number) => Promise<void> = async () => {},
   ) {
     const { event, headers } = makeEvent({
       method: 'POST',
       body: { password },
       remoteAddress,
     });
-    return adminLoginHandler(event as never, { throttle }).then((body) => ({
-      body,
-      status: event.node.res.statusCode,
-      headers,
-    }));
+    const body = await adminLoginHandler(event as never, { throttle, sleep });
+    return { body, status: event.node.res.statusCode, headers };
   }
 
-  it('answers 429 after 5 failures from one IP and sets no cookie', async () => {
+  it('slows down instead of answering 429 after 5 failures from one IP', async () => {
     const { throttle } = freshThrottle();
+    const sleeper = makeSleeper();
     for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
-      expect(await attempt(throttle, 'wrong')).toMatchObject({
-        body: { error: 'invalid password' },
-        status: 401,
-      });
+      const res = await attempt(throttle, 'wrong', '203.0.113.7', sleeper.sleep);
+      expect(res).toMatchObject({ body: { error: 'invalid password' }, status: 401 });
     }
-    const blocked = await attempt(throttle, 'wrong');
-    expect(blocked.status).toBe(429);
-    expect(blocked.body).toEqual({ error: 'too many attempts' });
-    expect(blocked.headers['retry-after']).toMatch(/^\d+$/);
-    expect(blocked.headers['cache-control']).toBe('no-store');
-    expect(blocked.headers['set-cookie']).toBeUndefined();
+    expect(sleeper.waits).toEqual([]);
+
+    const slowed = await attempt(throttle, 'wrong', '203.0.113.7', sleeper.sleep);
+    // Still a normal password failure, never a rejection.
+    expect(slowed.status).toBe(401);
+    expect(slowed.body).toEqual({ error: 'invalid password' });
+    expect(slowed.headers['set-cookie']).toBeUndefined();
+    expect(slowed.headers['cache-control']).toBe('no-store');
+    expect(slowed.headers['retry-after']).toMatch(/^\d+$/);
+    expect(sleeper.waits).toHaveLength(1);
+    expect(sleeper.waits[0]).toBeGreaterThanOrEqual(LOGIN_SLOWDOWN_BASE_MS);
   });
 
-  it('blocks the correct password too while the IP is over the limit', async () => {
+  it('never locks out the correct password while the IP is over the limit', async () => {
     const { throttle } = freshThrottle();
-    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) await attempt(throttle, 'wrong');
-    expect(await attempt(throttle, PASSWORD)).toMatchObject({ status: 429 });
+    const sleeper = makeSleeper();
+    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP + 3; i += 1) {
+      await attempt(throttle, 'wrong', '203.0.113.7', sleeper.sleep);
+    }
+    const ok = await attempt(throttle, PASSWORD, '203.0.113.7', sleeper.sleep);
+    expect(ok.status).toBe(200);
+    expect(ok.body).toEqual({ ok: true });
+    expect(ok.headers['set-cookie']).toContain(`${ADMIN_COOKIE}=`);
+    // The successful attempt was slowed too, but it still went through.
+    expect(sleeper.waits.length).toBeGreaterThan(0);
+    expect(Math.max(...sleeper.waits)).toBeLessThanOrEqual(LOGIN_SLOWDOWN_MAX_MS);
+  });
+
+  it('keeps slowing down with a capped, growing delay', async () => {
+    const { throttle } = freshThrottle();
+    const delays: number[] = [];
+    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
+      delays.push(throttle.consume('203.0.113.7').delayMs);
+    }
+    expect(delays.every((ms) => ms === 0)).toBe(true);
+    // Enough over-limit requests to reach the capped delay.
+    for (let i = 0; i < 12; i += 1) {
+      const decision = throttle.consume('203.0.113.7');
+      expect(decision.allowed).toBe(true);
+      expect(decision.throttled).toBe(true);
+      expect(decision.delayMs).toBeGreaterThanOrEqual(LOGIN_SLOWDOWN_BASE_MS);
+      expect(decision.delayMs).toBeLessThanOrEqual(LOGIN_SLOWDOWN_MAX_MS);
+      delays.push(decision.delayMs);
+    }
+    const slowed = delays.filter((ms) => ms > 0);
+    expect(slowed[0]).toBe(LOGIN_SLOWDOWN_BASE_MS);
+    expect(slowed.at(-1)).toBe(LOGIN_SLOWDOWN_MAX_MS);
   });
 
   it('does not count successful logins and refunds their attempt', async () => {
     const { throttle } = freshThrottle();
+    const sleeper = makeSleeper();
     for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP - 1; i += 1) {
-      await attempt(throttle, 'wrong');
+      await attempt(throttle, 'wrong', '203.0.113.7', sleeper.sleep);
     }
-    const ok = await attempt(throttle, PASSWORD);
+    const ok = await attempt(throttle, PASSWORD, '203.0.113.7', sleeper.sleep);
     expect(ok.status).toBe(200);
     expect(ok.headers['set-cookie']).toContain(`${ADMIN_COOKIE}=`);
-    // One failure left, then blocked: success did not consume it.
-    expect((await attempt(throttle, 'wrong')).status).toBe(401);
-    expect((await attempt(throttle, 'wrong')).status).toBe(429);
+    // One failure left without a slowdown, then the next one is slowed:
+    // success did not consume the budget.
+    expect((await attempt(throttle, 'wrong', '203.0.113.7', sleeper.sleep)).status).toBe(401);
+    expect(sleeper.waits).toEqual([]);
+    expect((await attempt(throttle, 'wrong', '203.0.113.7', sleeper.sleep)).status).toBe(401);
+    expect(sleeper.waits).toHaveLength(1);
   });
 
   it('keeps IP buckets independent', async () => {
@@ -431,8 +475,13 @@ describe('login brute-force throttle', () => {
     for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
       await attempt(throttle, 'wrong', '198.51.100.1');
     }
-    expect((await attempt(throttle, 'wrong', '198.51.100.1')).status).toBe(429);
-    expect((await attempt(throttle, 'wrong', '198.51.100.2')).status).toBe(401);
+    expect((await attempt(throttle, 'wrong', '198.51.100.1')).status).toBe(401);
+    const sleeper = makeSleeper();
+    expect((await attempt(throttle, 'wrong', '198.51.100.1', sleeper.sleep)).status).toBe(401);
+    expect(sleeper.waits).toHaveLength(1);
+    const other = makeSleeper();
+    expect((await attempt(throttle, 'wrong', '198.51.100.2', other.sleep)).status).toBe(401);
+    expect(other.waits).toEqual([]);
   });
 
   it('shares one bucket for requests without a client address', async () => {
@@ -440,8 +489,11 @@ describe('login brute-force throttle', () => {
     for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
       expect(throttle.consume('').allowed).toBe(true);
     }
-    expect(throttle.consume('')).toMatchObject({ allowed: false });
-    expect(throttle.consume(LOGIN_UNKNOWN_IP_KEY)).toMatchObject({ allowed: false });
+    expect(throttle.consume('')).toMatchObject({ allowed: true, throttled: true });
+    expect(throttle.consume(LOGIN_UNKNOWN_IP_KEY)).toMatchObject({
+      allowed: true,
+      throttled: true,
+    });
   });
 
   it('enforces the global failure cap across many IPs', async () => {
@@ -451,9 +503,12 @@ describe('login brute-force throttle', () => {
       expect(throttle.consume(`ip-${i}`).allowed).toBe(true);
     }
     const blocked = throttle.consume('ip-3');
-    expect(blocked.allowed).toBe(false);
+    // Never rejected: the request is only slowed down.
+    expect(blocked.allowed).toBe(true);
+    expect(blocked.throttled).toBe(true);
+    expect(blocked.delayMs).toBe(LOGIN_SLOWDOWN_BASE_MS);
     expect(blocked.retryAfter).toBe(15 * 60);
-    // The refused IP still owns an (unused) bucket, but the map stays bounded.
+    // The slowed IP still owns a bucket, but the map stays bounded.
     expect(throttle.size()).toBe(4 + 1);
     clock += 15 * 60 * 1000;
     expect(throttle.consume('ip-3').allowed).toBe(true);
@@ -464,11 +519,11 @@ describe('login brute-force throttle', () => {
     for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
       expect(throttle.consume('203.0.113.9').allowed).toBe(true);
     }
-    expect(throttle.consume('203.0.113.9').allowed).toBe(false);
+    expect(throttle.consume('203.0.113.9')).toMatchObject({ throttled: true });
     advance(15 * 60 * 1000 - 1);
-    expect(throttle.consume('203.0.113.9').allowed).toBe(false);
+    expect(throttle.consume('203.0.113.9')).toMatchObject({ throttled: true });
     advance(1);
-    expect(throttle.consume('203.0.113.9').allowed).toBe(true);
+    expect(throttle.consume('203.0.113.9')).toMatchObject({ throttled: false, delayMs: 0 });
   });
 
   it('bounds the map of tracked IPs', () => {
