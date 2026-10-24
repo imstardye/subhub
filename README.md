@@ -83,6 +83,17 @@ P1 共 187 个单测，覆盖：
 加密后入库，密钥为 `SUBHUB_SECRET`；未设置且非 production 时仅使用开发用
 测试密钥，生产环境必须显式配置。
 
+## 管理后台登录（P3 骨架）
+
+- `/login` 提交密码，`POST /api/admin/login` 校验后下发 httpOnly
+  `subhub_admin` cookie（HMAC-SHA256 签名，7 天，生产环境 `Secure`）；
+  密码错误返回 401 且不写 cookie。
+- `GET /api/admin/me` 返回 `{ authenticated }`；`admin` 路由中间件在服务端
+  透传 cookie 查询该接口，未登录跳转 `/login?redirect=...`。
+- `POST /api/admin/logout` 删除 cookie。
+- 生产环境（`NODE_ENV=production`）未配置 `SUBHUB_SECRET` 时拒绝签发会话
+  （登录返回 500，已有 token 也无法验证），不会退回公开的开发密钥。
+
 ## 环境变量
 
 ```bash
