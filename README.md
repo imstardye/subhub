@@ -96,7 +96,15 @@ P1 共 187 个单测，覆盖：
 
 - 登录防爆破：同一 IP 15 分钟内失败 5 次、全局失败 100 次即返回 429（只计失败，成功清零该 IP）。
   - 注意：全局上限可被恶意刷满，届时正确密码也会暂时收到 429，窗口过后恢复。
-  - 客户端 IP 取自连接本身，不读 `X-Forwarded-For`。部署在反向代理后时，请让代理直连传递真实来源（或仅在内网/VPN 暴露后台），否则所有请求共用代理 IP，5 次失败会锁住所有人。
+  - 客户端 IP 默认只取 TCP 连接本身（socket），不读 `X-Forwarded-For` 等请求头。
+    部署在反向代理后时，请让代理直连传递真实来源（或仅在内网/VPN 暴露后台），
+    否则所有请求共用代理 IP，5 次失败会锁住所有人。
+  - 若确实需要从代理提供的请求头取 IP，可设置 `SUBHUB_TRUSTED_IP_HEADER`
+    （例如 `cf-connecting-ip`）：此时读取该请求头的第一个值并 trim，非法时回退到
+    socket。登录限流、订阅导出的访问日志等所有取 IP 的地方统一使用同一规则。
+    **安全前提（必须同时满足才能开启）**：源站只放行 Cloudflare 的 IP 段，
+    并且 app 端口不暴露在宿主机/公网上（只能经 Cloudflare 访问）。否则任何客户端
+    都能自行伪造该请求头，绕过按 IP 的限流。未设置该变量时行为与之前完全一致。
 
 ## 环境变量
 
@@ -104,7 +112,17 @@ P1 共 187 个单测，覆盖：
 SUBHUB_ADMIN_PASSWORD=change-me
 SUBHUB_SECRET=change-me-too
 SUBHUB_DB_PATH=./.data/subhub.sqlite
+# 可选：仅在上面「安全前提」满足时才设置，例如 cf-connecting-ip
+# SUBHUB_TRUSTED_IP_HEADER=cf-connecting-ip
 ```
+
+### 生产部署注意事项
+
+- **必须挂载数据卷并显式设置 `SUBHUB_DB_PATH`** 指向该卷，例如
+  `SUBHUB_DB_PATH=/data/subhub.sqlite`。默认值仍是 `.data/subhub.sqlite`
+  （相对工作目录），不加改动；容器重建后若不挂卷，用户、订阅源与访问日志会
+  随容器一起丢失。
+- `SUBHUB_SECRET` 在生产环境必须设置（用于会话签名与订阅源 URL 加密）。
 
 仓库中不会提交任何真实订阅链接、token、密码或私人域名；测试数据一律使用
 `example.com` 和假凭据。

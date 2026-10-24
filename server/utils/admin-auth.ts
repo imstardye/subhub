@@ -16,10 +16,20 @@
  * objects (like `refresh-sources.post.ts`) and h3 is only imported as a type,
  * so this module and its tests need neither auto-imports nor the generated
  * `.nuxt` types. Session payloads are signed, not encrypted, and carry nothing
- * but a version marker and an expiry timestamp.
+ * but a version marker, the session id (`jti`) and an expiry timestamp.
+ *
+ * The payload is `v2.<sessionId>.<expiresAtSeconds>.<hmac>`. The random id lets
+ * logout revoke exactly that session (`session-revocation.ts`); v1 tokens
+ * without an id are no longer accepted.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { DEV_SECRET } from '../db/crypto';
+import {
+  adminSessionRevocations,
+  newSessionId,
+  REVOCATION_GRACE_MS,
+  type SessionRevocationStore,
+} from './session-revocation';
 
 /** Cookie name carrying the signed admin session. */
 export const ADMIN_COOKIE = 'subhub_admin';
@@ -38,7 +48,7 @@ export const DEV_ADMIN_PASSWORD = 'subhub-dev-admin';
 const DEV_SIGNING_KEY = DEV_SECRET;
 
 /** Bumped when the payload format changes, invalidating old cookies. */
-const SESSION_VERSION = 'v1';
+const SESSION_VERSION = 'v2';
 
 /** Fixed key for the length-normalising comparison hash. */
 const COMPARE_KEY = 'subhub/admin/compare';
@@ -54,6 +64,8 @@ export interface AdminAuthOptions {
   allowDevDefault?: boolean;
   /** Clock override for tests. */
   now?: () => number;
+  /** Revocation store override (tests); defaults to the process-wide one. */
+  revocations?: SessionRevocationStore;
 }
 
 /** Minimal node request view shared by Nitro events and test doubles. */
@@ -145,40 +157,80 @@ export function verifyAdminPassword(
   return safeEqual(submitted, expected);
 }
 
+/** Payload fields of a verified session token. */
+export interface SessionPayload {
+  /** Random session id used for logout revocation. */
+  sessionId: string;
+  /** Expiry as epoch milliseconds. */
+  expiresAtMs: number;
+}
+
+function revocationsOf(opts: AdminAuthOptions): SessionRevocationStore {
+  return opts.revocations ?? adminSessionRevocations;
+}
+
 /**
- * Build a signed session token `v1.<expiresAtSeconds>.<hmac>`.
+ * Build a signed session token `v2.<sessionId>.<expiresAtSeconds>.<hmac>` and
+ * return it together with the payload (logout needs the id).
  *
  * Throws when NODE_ENV is production and SUBHUB_SECRET is unset: a session must
  * never be signed with the public development key on a real deployment.
  */
-export function createSessionToken(opts: AdminAuthOptions = {}): string {
+export function issueSessionToken(
+  opts: AdminAuthOptions = {},
+): { token: string; payload: SessionPayload } {
   if (isSessionSigningUnavailable(opts)) {
     throw new Error('SUBHUB_SECRET is required in production');
   }
   const now = (opts.now ?? Date.now)();
   const expiresAt = Math.floor(now / 1000) + ADMIN_SESSION_TTL_SECONDS;
-  const payload = `${SESSION_VERSION}.${expiresAt}`;
-  return `${payload}.${sign(payload, opts)}`;
+  const sessionId = newSessionId();
+  const payload = `${SESSION_VERSION}.${sessionId}.${expiresAt}`;
+  return {
+    token: `${payload}.${sign(payload, opts)}`,
+    payload: { sessionId, expiresAtMs: expiresAt * 1000 },
+  };
 }
 
-/** Verify signature and expiry of a session token. */
+/** Build a signed session token; see `issueSessionToken`. */
+export function createSessionToken(opts: AdminAuthOptions = {}): string {
+  return issueSessionToken(opts).token;
+}
+
+/**
+ * Verify signature, expiry and revocation of a session token. Returns the
+ * payload on success, `null` otherwise.
+ */
+export function verifySession(
+  token: string | null | undefined,
+  opts: AdminAuthOptions = {},
+): SessionPayload | null {
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 4) return null;
+  const [version, sessionId, expiresRaw, signature] = parts;
+  if (version !== SESSION_VERSION) return null;
+  if (!sessionId || sessionId.length > 128) return null;
+  const expiresAt = Number(expiresRaw);
+  if (!Number.isInteger(expiresAt) || expiresAt <= 0) return null;
+  const expected = sign(`${version}.${sessionId}.${expiresRaw}`, opts);
+  // No key in production -> nothing verifies (fail closed).
+  if (expected === null || !safeEqual(signature, expected)) return null;
+
+  // A logged-out session is dead even though the signature and expiry are fine.
+  if (revocationsOf(opts).isRevoked(sessionId)) return null;
+
+  const now = Math.floor((opts.now ?? Date.now)() / 1000);
+  if (expiresAt <= now) return null;
+  return { sessionId, expiresAtMs: expiresAt * 1000 };
+}
+
+/** Verify signature, expiry and revocation of a session token. */
 export function verifySessionToken(
   token: string | null | undefined,
   opts: AdminAuthOptions = {},
 ): boolean {
-  if (!token) return false;
-  const parts = token.split('.');
-  if (parts.length !== 3) return false;
-  const [version, expiresRaw, signature] = parts;
-  if (version !== SESSION_VERSION) return false;
-  const expiresAt = Number(expiresRaw);
-  if (!Number.isInteger(expiresAt) || expiresAt <= 0) return false;
-  const expected = sign(`${version}.${expiresRaw}`, opts);
-  // No key in production -> nothing verifies (fail closed).
-  if (expected === null || !safeEqual(signature, expected)) return false;
-
-  const now = Math.floor((opts.now ?? Date.now)() / 1000);
-  return expiresAt > now;
+  return verifySession(token, opts) !== null;
 }
 
 function headerValue(
@@ -215,9 +267,23 @@ export function readCookie(event: AdminEvent, name: string): string | undefined 
   return undefined;
 }
 
-/** True when the request carries a valid admin session cookie. */
+/** True when the request carries a valid, non-revoked admin session cookie. */
 export function isAdmin(event: AdminEvent, opts: AdminAuthOptions = {}): boolean {
   return verifySessionToken(readCookie(event, ADMIN_COOKIE), opts);
+}
+
+/**
+ * Revoke the session carried by the request (logout). Idempotent and best
+ * effort: a missing, malformed or unknown token simply does nothing. The
+ * cookie itself is cleared separately via `logoutCookieHeader`.
+ */
+export function revokeSession(event: AdminEvent, opts: AdminAuthOptions = {}): void {
+  const payload = verifySession(readCookie(event, ADMIN_COOKIE), opts);
+  if (!payload) return;
+  revocationsOf(opts).revoke(
+    payload.sessionId,
+    payload.expiresAtMs + REVOCATION_GRACE_MS,
+  );
 }
 
 /** Error shape Nitro renders as a 401 response. */
@@ -268,11 +334,11 @@ export function logoutCookieHeader(): string {
 export function login(
   password: unknown,
   opts: AdminAuthOptions = {},
-): { token: string; cookie: string } | null {
+): { token: string; cookie: string; sessionId: string } | null {
   if (!verifyAdminPassword(password, opts)) return null;
   if (isSessionSigningUnavailable(opts)) return null;
-  const token = createSessionToken(opts);
-  return { token, cookie: sessionCookieHeader(token, opts) };
+  const { token, payload } = issueSessionToken(opts);
+  return { token, cookie: sessionCookieHeader(token, opts), sessionId: payload.sessionId };
 }
 
 /** Minimal view of the current admin session for GET /api/admin/me. */
