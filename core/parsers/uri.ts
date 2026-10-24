@@ -23,6 +23,7 @@ import {
   parsePort,
   parseQuery,
   splitFragment,
+  stripIpv6Brackets,
   tryDecodeBase64,
 } from '../utils';
 
@@ -177,7 +178,7 @@ export function parseSsr(line: string): ProxyNode {
   const cipher = fields.pop() ?? '';
   const protocol = fields.pop() ?? '';
   const portRaw = fields.pop() ?? '';
-  const server = fields.join(':');
+  const server = stripIpv6Brackets(fields.join(':'));
   if (!server || !cipher || !protocol || !obfs) {
     throw new Error('Invalid SSR URI: malformed payload');
   }
@@ -521,7 +522,7 @@ export function parseHysteria2(line: string): ProxyNode {
   const match = /^(\[[^\]]+\]|[^:/]+)(?::([^/]+))?\/?$/.exec(serverPart);
   if (!match) throw new Error('Invalid Hysteria2 URI: invalid server');
 
-  const host = match[1];
+  const host = stripIpv6Brackets(match[1]);
   const rawPort = match[2];
   let port: number;
   let ports: string | undefined;

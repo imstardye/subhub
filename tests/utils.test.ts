@@ -1,6 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { decodeBase64 } from '../core/utils';
+import { decodeBase64, parseHostPort } from '../core/utils';
+
+describe('host and port parsing', () => {
+  it.each([
+    ['[2001:db8::1]:443', { host: '2001:db8::1', port: 443 }],
+    ['[2001:db8::1]', { host: '2001:db8::1', port: undefined }],
+    [' [2001:db8::1]:8388/ ', { host: '2001:db8::1', port: 8388 }],
+    ['example.com:443', { host: 'example.com', port: 443 }],
+    ['example.com', { host: 'example.com' }],
+    ['192.0.2.1:8388', { host: '192.0.2.1', port: 8388 }],
+  ])('parses %s without IPv6 brackets', (input, expected) => {
+    expect(parseHostPort(input)).toEqual(expected);
+  });
+});
 
 describe.each(['Buffer', 'atob'])('base64 decoding with %s', (decoder) => {
   beforeEach(() => {

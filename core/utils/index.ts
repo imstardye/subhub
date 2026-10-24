@@ -106,7 +106,11 @@ export function parseQuery(query: string | undefined): Record<string, string> {
   return result;
 }
 
-/** Split `host:port` while supporting bracketed IPv6 addresses. */
+export function stripIpv6Brackets(host: string): string {
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+}
+
+/** Split `host:port`, returning IPv6 hosts without their URI brackets. */
 export function parseHostPort(value: string): { host: string; port?: number } {
   const trimmed = value.trim().replace(/\/$/, '');
   if (!trimmed) return { host: '' };
@@ -114,7 +118,7 @@ export function parseHostPort(value: string): { host: string; port?: number } {
   if (trimmed.startsWith('[')) {
     const end = trimmed.indexOf(']');
     if (end !== -1) {
-      const host = trimmed.slice(0, end + 1);
+      const host = stripIpv6Brackets(trimmed.slice(0, end + 1));
       const rest = trimmed.slice(end + 1).replace(/^:/, '');
       const port = rest ? Number.parseInt(rest, 10) : undefined;
       return { host, port: Number.isFinite(port) ? port : undefined };

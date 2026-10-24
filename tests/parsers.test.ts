@@ -144,21 +144,24 @@ describe('SSR parser', () => {
     },
   );
 
-  it('keeps bracketed IPv6 servers and drops (null) params', () => {
-    const main = `[2001:db8::1]:8388:origin:aes-128-cfb:plain:${encodeBase64('fake-pw')}`;
-    const node = parseSsr(
-      `ssr://${encodeBase64(
-        `${main}/?remarks=${encodeBase64('SSR6')}&obfsparam=(null)&protoparam=(null)&group=(null)`,
-      )}`,
-    );
+  it.each(['[2001:db8::1]', '2001:db8::1'])(
+    'normalizes IPv6 server %s and drops (null) params',
+    (server) => {
+      const main = `${server}:8388:origin:aes-128-cfb:plain:${encodeBase64('fake-pw')}`;
+      const node = parseSsr(
+        `ssr://${encodeBase64(
+          `${main}/?remarks=${encodeBase64('SSR6')}&obfsparam=(null)&protoparam=(null)&group=(null)`,
+        )}`,
+      );
 
-    expect(node.server).toBe('[2001:db8::1]');
-    expect(node.port).toBe(8388);
-    expect(node.name).toBe('SSR6');
-    expect(node['obfs-param']).toBeUndefined();
-    expect(node['protocol-param']).toBeUndefined();
-    expect(node.group).toBeUndefined();
-  });
+      expect(node.server).toBe('2001:db8::1');
+      expect(node.port).toBe(8388);
+      expect(node.name).toBe('SSR6');
+      expect(node['obfs-param']).toBeUndefined();
+      expect(node['protocol-param']).toBeUndefined();
+      expect(node.group).toBeUndefined();
+    },
+  );
 });
 
 describe('VMess parser', () => {
@@ -295,7 +298,7 @@ describe('VLESS parser', () => {
       `vless://${UUID}@[2001:db8::10]:443?security=tls#VLESS-IPV6`,
     );
 
-    expect(node.server).toBe('[2001:db8::10]');
+    expect(node.server).toBe('2001:db8::10');
     expect(node.port).toBe(443);
   });
 
@@ -313,6 +316,15 @@ describe('VLESS parser', () => {
 });
 
 describe('Trojan parser', () => {
+  it('strips IPv6 brackets through the URI entry point', () => {
+    expect(parseUri('trojan://pw@[2001:db8::1]:443')).toMatchObject({
+      type: 'trojan',
+      server: '2001:db8::1',
+      port: 443,
+      password: 'pw',
+    });
+  });
+
   it('parses TLS + websocket links', () => {
     const node = parseTrojan(
       'trojan://fake-password@trojan.example.com:443?security=tls&sni=sni.example.com&type=ws&host=cdn.example.com&path=%2Ft#Trojan-WS',
@@ -336,6 +348,17 @@ describe('Trojan parser', () => {
 });
 
 describe('Hysteria2 parser', () => {
+  it.each(['hysteria2', 'hy2'])('strips IPv6 brackets for %s port ranges', (scheme) => {
+    const node = parseHysteria2(`${scheme}://pw@[2001:db8::1]:9000-9010`);
+
+    expect(node).toMatchObject({
+      type: 'hysteria2',
+      server: '2001:db8::1',
+      port: 9000,
+      ports: '9000-9010',
+    });
+  });
+
   it('parses obfuscation, port hopping and bandwidth limits', () => {
     const node = parseHysteria2(
       'hysteria2://fake-password@hy2.example.com:8443?obfs=salamander&obfs-password=fake-obfs&sni=hy2.example.com&insecure=1&mport=8443-8445&upmbps=50&downmbps=100#HY2',
