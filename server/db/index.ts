@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS sources (
   type TEXT NOT NULL DEFAULT 'remote',
   ua TEXT,
   refresh_minutes INTEGER NOT NULL DEFAULT 60,
+  enabled INTEGER,
   last_ok_at INTEGER,
   last_error TEXT,
   cache_blob TEXT,
@@ -79,6 +80,17 @@ CREATE TABLE IF NOT EXISTS user_sources (
   PRIMARY KEY (user_id, source_id)
 );
 CREATE INDEX IF NOT EXISTS user_sources_user_sort_idx ON user_sources (user_id, sort);
+
+-- Per-user inclusion override for public/shared sources (user center).
+-- No row means included; 0 excludes the source for that user only.
+CREATE TABLE IF NOT EXISTS user_source_choices (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  included INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY (user_id, source_id)
+);
+CREATE INDEX IF NOT EXISTS user_source_choices_source_idx
+  ON user_source_choices (source_id);
 
 CREATE TABLE IF NOT EXISTS profiles (
   id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -147,6 +159,11 @@ function ensureAddedColumns(sqlite: Database.Database): void {
   // `subscription-userinfo` passthrough: parsed parts of the last successful
   // refresh. Nullable on purpose — providers that omit the header (or send it
   // in an unparseable form) must not look like "0 bytes / never expires".
+  // Owner-pausable sources (user center): NULL = enabled, so every row written
+  // before this column existed keeps today's behaviour.
+  if (!columns.some((column) => column.name === 'enabled')) {
+    sqlite.exec('ALTER TABLE sources ADD COLUMN enabled INTEGER');
+  }
   const userinfoColumns: Array<[string, string]> = [
     ['userinfo_upload', 'INTEGER'],
     ['userinfo_download', 'INTEGER'],

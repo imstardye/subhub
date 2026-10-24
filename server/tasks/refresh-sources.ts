@@ -20,6 +20,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { decrypt } from '../db/crypto';
 import type { SubhubDb } from '../db';
 import { sources, type Source } from '../db/schema';
+import { isSourceDisabled } from '../utils/export-nodes';
 import { parseUserInfo, USERINFO_HEADER, type SubscriptionUserInfo } from '../utils/userinfo';
 
 /** Default response cap; remote sources above this are rejected as too large. */
@@ -328,6 +329,13 @@ export async function refreshAllDueSources(
   const summary: RefreshAllResult = { checked: 0, refreshed: 0, failed: 0, skipped: 0, results: [] };
   for (const row of rows) {
     summary.checked += 1;
+    // A source its owner paused in the user center is not refreshed: the cache
+    // (and the export that already ignores it) stays exactly as it was.
+    if (isSourceDisabled(row)) {
+      summary.skipped += 1;
+      summary.results.push({ sourceId: row.id, outcome: 'skipped' });
+      continue;
+    }
     if (!options.force && !isSourceDue(row, now)) {
       summary.skipped += 1;
       summary.results.push({ sourceId: row.id, outcome: 'skipped' });

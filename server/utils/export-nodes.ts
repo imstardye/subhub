@@ -20,6 +20,11 @@
  * allowlist), ordered dedicated-first, then shared/public by source id. The
  * legacy `user_sources` join table is unrelated and never read here.
  *
+ * Inclusion override (user center, `user_source_choices`): a public/shared
+ * source is included unless this user explicitly set `included = false` for it.
+ * Dedicated sources are never choosable and never filtered. With no rows the
+ * result is exactly the pre-override set.
+ *
  * Profiles: when the user has a rule profile (`users.profileId`), the rendered
  * body also carries the profile's proxy groups, rules and rule-providers, so a
  * client gets a complete config instead of a bare `proxies` list.
@@ -50,7 +55,7 @@ import {
 } from '../../core';
 import { stringify as stringifyYaml } from 'yaml';
 import type { SubhubDb } from '../db';
-import { profiles, sourceAllowedUsers, sources, users } from '../db/schema';
+import { profiles, sourceAllowedUsers, sources, userSourceChoices, users } from '../db/schema';
 import { isFallbackTarget, type ExportTarget } from './targets';
 import { aggregateUserInfo, type SubscriptionUserInfo } from './userinfo';
 
@@ -59,6 +64,14 @@ interface CachedSource {
   cacheBlob: string | null;
   /** Stored `subscription-userinfo` parts (see `userinfo.ts`). */
   userinfo?: SubscriptionUserInfo | null;
+}
+
+/**
+ * True when a source was paused (`sources.enabled` 0/false). NULL, 1 and `true`
+ * are enabled — the column was added after the fact and must not hide rows.
+ */
+export function isSourceDisabled(row: { enabled?: boolean | number | null }): boolean {
+  return row.enabled === false || row.enabled === 0;
 }
 
 /**
@@ -84,12 +97,25 @@ export function loadUserSourceCaches(db: SubhubDb, userId: number): CachedSource
         ),
       ),
   );
+  // Explicit "do not include" choices of this user (only public/shared sources
+  // can have a row; a dedicated source is always in).
+  const excluded = new Set(
+    db
+      .select({ sourceId: userSourceChoices.sourceId })
+      .from(userSourceChoices)
+      .where(and(eq(userSourceChoices.userId, userId), eq(userSourceChoices.included, false)))
+      .all()
+      .map((row) => row.sourceId),
+  );
+
+
   const rows = db
     .select({
       id: sources.id,
       cacheBlob: sources.cacheBlob,
       ownerUserId: sources.ownerUserId,
       accessMode: sources.accessMode,
+      enabled: sources.enabled,
       userinfoUpload: sources.userinfoUpload,
       userinfoDownload: sources.userinfoDownload,
       userinfoTotal: sources.userinfoTotal,
@@ -114,7 +140,11 @@ export function loadUserSourceCaches(db: SubhubDb, userId: number): CachedSource
   // dedicated (0) < shared (1) < public (2), each by source id.
   const bucket = (row: (typeof rows)[number]) =>
     row.ownerUserId === null && row.accessMode === 'restricted' ? 1 : row.ownerUserId === null ? 2 : 0;
+  // A source its owner/admin PAUSED (user center toggle) leaves every export;
+  // NULL reads as enabled, so rows from before the column behave as before.
   return rows
+    .filter((row) => !isSourceDisabled(row))
+    .filter((row) => row.ownerUserId !== null || !excluded.has(row.id))
     .sort((a, b) => bucket(a) - bucket(b) || a.id - b.id)
     .map((row) => ({
       id: row.id,

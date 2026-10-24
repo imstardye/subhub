@@ -32,7 +32,8 @@
 import { eq, inArray } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { encrypt, decrypt } from '../db/crypto';
-import { sourceAllowedUsers, sources, users, type Source } from '../db/schema';
+import { sourceAllowedUsers, sources, userSourceChoices, users, type Source } from '../db/schema';
+import { isSourceDisabled } from './export-nodes';
 import { hasUserInfo } from './userinfo';
 import {
   maskUrl,
@@ -40,6 +41,7 @@ import {
   parseIdList,
   parseName,
   parseOptionalText,
+  parseEnabled,
   parseRefreshMinutes,
   parseSourceAccessMode,
   parseSourceType,
@@ -65,6 +67,8 @@ export interface AdminSource {
   type: SourceType;
   ua: string | null;
   refreshMinutes: number;
+  /** Paused by its owner (user center toggle) or the admin. */
+  enabled: boolean;
   lastOkAt: string | null;
   lastError: string | null;
   hasCache: boolean;
@@ -138,6 +142,7 @@ export function toAdminSource(row: Source, allowedUserIds: number[] = []): Admin
     type: row.type,
     ua: row.ua ?? null,
     refreshMinutes: row.refreshMinutes,
+    enabled: !isSourceDisabled(row),
     lastOkAt: row.lastOkAt ? row.lastOkAt.toISOString() : null,
     lastError: row.lastError ?? null,
     hasCache: Boolean(row.cacheBlob),
@@ -266,13 +271,14 @@ export function updateSource(
   if (!existing) throw new ValidationError('source not found', 404);
 
   const patch: Partial<
-    Pick<Source, 'name' | 'url' | 'type' | 'ua' | 'refreshMinutes' | 'ownerUserId' | 'accessMode'>
+    Pick<Source, 'name' | 'url' | 'type' | 'ua' | 'refreshMinutes' | 'ownerUserId' | 'accessMode' | 'enabled'>
   > = {};
   if ('name' in body) patch.name = parseName(body.name);
   if ('url' in body) patch.url = encrypt(parseSourceUrl(body.url));
   if ('type' in body) patch.type = parseSourceType(body.type);
   if ('ua' in body) patch.ua = parseOptionalText(body.ua, 'ua', UA_MAX_LENGTH);
   if ('refreshMinutes' in body) patch.refreshMinutes = parseRefreshMinutes(body.refreshMinutes);
+  if ('enabled' in body) patch.enabled = parseEnabled(body.enabled);
   if ('ownerUserId' in body) patch.ownerUserId = parseOwnerUserId(db, body.ownerUserId);
   // Parsed whenever present (not only when they take effect) so a malformed
   // mode or id list is always a 400, even on a dedicated source.
@@ -318,6 +324,8 @@ export function deleteSource(db: SubhubDb, rawId: unknown): { ok: true; id: numb
   // Explicit, so it works on migrated databases where the join table has no
   // FK cascade to sources (fresh databases cascade on their own).
   db.delete(sourceAllowedUsers).where(eq(sourceAllowedUsers.sourceId, id)).run();
+  // A user-center inclusion choice dies with its source.
+  db.delete(userSourceChoices).where(eq(userSourceChoices.sourceId, id)).run();
   db.delete(sources).where(eq(sources.id, id)).run();
   return { ok: true, id };
 }

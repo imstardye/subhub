@@ -51,6 +51,12 @@ export const sources = sqliteTable('sources', {
   type: text('type', { enum: ['remote', 'local'] }).notNull().default('remote'),
   ua: text('ua'),
   refreshMinutes: integer('refresh_minutes').notNull().default(60),
+  /**
+   * `0` = paused by its owner (or the admin): the cache stays, the refresh task
+   * skips it. NULL/1 = enabled, which is what every pre-existing row reads as
+   * (`hasOwn` in subscription/export-nodes treat "not disabled" as enabled).
+   */
+  enabled: integer('enabled', { mode: 'boolean' }),
   lastOkAt: integer('last_ok_at', { mode: 'timestamp_ms' }),
   lastError: text('last_error'),
   cacheBlob: text('cache_blob'),
@@ -94,6 +100,25 @@ export const sourceAllowedUsers = sqliteTable(
     primaryKey({ columns: [t.sourceId, t.userId] }),
     index('source_allowed_users_user_idx').on(t.userId, t.sourceId),
   ],
+);
+
+/**
+ * Per-user inclusion override for a PUBLIC or SHARED source (user center).
+ *
+ * A user's export includes every public source and every shared source they are
+ * allowlisted for **by default**; a row with `included = false` excludes that
+ * source from *this* user's exports (and admin previews). No row = included, so
+ * a user who never made a choice sees exactly what they saw before the table
+ * existed. Dedicated sources are never choosable and never have rows here.
+ */
+export const userSourceChoices = sqliteTable(
+  'user_source_choices',
+  {
+    userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    sourceId: integer('source_id').notNull().references(() => sources.id, { onDelete: 'cascade' }),
+    included: integer('included', { mode: 'boolean' }).notNull().default(true),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.sourceId] })],
 );
 
 /** Rule profiles. Exactly one of iniUrl/iniText is expected to be set. */
@@ -148,6 +173,8 @@ export type NewSource = typeof sources.$inferInsert;
 export type UserSource = typeof userSources.$inferSelect;
 export type SourceAllowedUser = typeof sourceAllowedUsers.$inferSelect;
 export type NewSourceAllowedUser = typeof sourceAllowedUsers.$inferInsert;
+export type UserSourceChoice = typeof userSourceChoices.$inferSelect;
+export type NewUserSourceChoice = typeof userSourceChoices.$inferInsert;
 export type SourceAccessMode = NonNullable<Source['accessMode']>;
 export type Profile = typeof profiles.$inferSelect;
 export type NewProfile = typeof profiles.$inferInsert;

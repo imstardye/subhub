@@ -374,6 +374,21 @@ describe('admin gate middleware', () => {
     expect(event.ended).toBe(false);
   });
 
+  it('never gates the self-service user center (/my and /api/user)', () => {
+    // The token in the URL is the credential: no gate cookie is involved.
+    for (const path of ['/my', `/my/${'a'.repeat(32)}`, '/api/user', `/api/user/${'a'.repeat(32)}`,
+      `/api/user/${'a'.repeat(32)}/sources`, `/api/user/${'a'.repeat(32)}/refresh`]) {
+      const event = makeEvent(path);
+      expect(handleAdminGate(event), path).toBe(false);
+      expect(event.ended, path).toBe(false);
+      expect(event.body, path).toBeUndefined();
+    }
+    // ... while the admin surface stays blanked (no regression).
+    const users = makeEvent('/users');
+    handleAdminGate(users);
+    expect(users.body).toBe('');
+  });
+
   it('re-issues the cookie when the entrance is visited again', () => {
     const { token } = knock();
     const event = makeEvent('/admin', { cookies: { [GATE_COOKIE]: token } });
