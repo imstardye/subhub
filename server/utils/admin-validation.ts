@@ -48,7 +48,7 @@ export const OPTIONS_MAX_LENGTH = 16 * 1024;
 export class ValidationError extends Error {
   constructor(
     message: string,
-    readonly statusCode: 400 | 404 = 400,
+    readonly statusCode: 400 | 404 | 409 = 400,
   ) {
     super(message);
     this.name = 'ValidationError';
@@ -58,6 +58,37 @@ export class ValidationError extends Error {
 /** Random 32-byte hex subscription token. */
 export function generateUserToken(): string {
   return randomBytes(TOKEN_BYTES).toString('hex');
+}
+
+/** Custom token length bounds (a token appears in the URL). */
+export const CUSTOM_TOKEN_MIN_LENGTH = 8;
+export const CUSTOM_TOKEN_MAX_LENGTH = 64;
+
+/** Custom token alphabet: URL-safe, no dot/slash/space. */
+const CUSTOM_TOKEN_PATTERN = /^[a-z0-9][a-z0-9_-]*$/i;
+
+/**
+ * Validate an admin-supplied custom subscription token.
+ *
+ * 8–64 characters of /^[a-z0-9][a-z0-9_-]*$/i (case-sensitive as typed: it is
+ * the URL segment, so `AbC` and `abc` are different tokens). Uniqueness across
+ * users is checked by the caller (it owns the database handle).
+ */
+export function parseCustomToken(value: unknown): string {
+  if (typeof value !== 'string') throw new ValidationError('token is required');
+  const token = value.trim();
+  if (!token) throw new ValidationError('token is required');
+  if (token.length < CUSTOM_TOKEN_MIN_LENGTH || token.length > CUSTOM_TOKEN_MAX_LENGTH) {
+    throw new ValidationError(
+      `token must be ${CUSTOM_TOKEN_MIN_LENGTH}–${CUSTOM_TOKEN_MAX_LENGTH} characters`,
+    );
+  }
+  if (!CUSTOM_TOKEN_PATTERN.test(token)) {
+    throw new ValidationError(
+      'token may only contain letters, digits, - and _, and must start with a letter or digit',
+    );
+  }
+  return token;
 }
 
 /** Normalise a name: trimmed, non-empty, bounded. */

@@ -5,7 +5,24 @@
  * (page title + primary action) is rendered inside the page via
  * `<PageTopbar>`. Every page is protected by the global `admin.global.ts`
  * route middleware.
+ *
+ * The effective subscription prefix (`sub_path` site setting) rides on
+ * `/api/admin/me` and is put into the `admin-sub-path` state here — the
+ * layout is mounted on every admin page, so copy-link buttons on /users get
+ * the live prefix without each page fetching the settings itself. A settings
+ * save updates the same state immediately (pages/settings.vue).
  */
+const subPathState = useState<string>('admin-sub-path', () => 's');
+const requestFetch = useRequestFetch();
+
+onMounted(async () => {
+  try {
+    const me = await requestFetch<{ authenticated: boolean; subPath?: string }>('/api/admin/me');
+    if (me.subPath) subPathState.value = me.subPath;
+  } catch {
+    // The prefix stays at the built-in default; links still work then.
+  }
+});
 const links = [
   { to: '/', label: '仪表盘', icon: 'dashboard' },
   { to: '/users', label: '用户', icon: 'users' },
@@ -13,6 +30,7 @@ const links = [
   { to: '/profiles', label: '规则档', icon: 'layers' },
   { to: '/preview', label: '预览', icon: 'eye' },
   { to: '/logs', label: '日志', icon: 'list' },
+  { to: '/settings', label: '设置', icon: 'settings' },
 ];
 
 const loggingOut = ref(false);
@@ -76,13 +94,17 @@ async function handleLogout() {
               <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
               <circle cx="12" cy="12" r="3" />
             </template>
-            <template v-else>
+            <template v-else-if="link.icon === 'list'">
               <path d="M8 6h13" />
               <path d="M8 12h13" />
               <path d="M8 18h13" />
               <path d="M3 6h.01" />
               <path d="M3 12h.01" />
               <path d="M3 18h.01" />
+            </template>
+            <template v-else>
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
             </template>
           </svg>
           <span class="nav-label">{{ link.label }}</span>

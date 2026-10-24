@@ -250,7 +250,12 @@ describe('logout revokes the session server-side', () => {
       expect(verifySessionToken(token)).toBe(true);
 
       const authed = makeApiEvent({ url: '/api/admin/me', sessionToken: token });
-      expect(adminMeHandler(authed.event as never)).toEqual({ authenticated: true });
+      // Authenticated answers also carry the runtime settings (`subPath`, the
+      // effective subscription prefix, read by the layout for link building).
+      expect(adminMeHandler(authed.event as never)).toEqual({
+        authenticated: true,
+        subPath: 's',
+      });
 
       const { event: logoutEvent, headers: logoutHeaders } = makeApiEvent({
         method: 'POST',

@@ -175,8 +175,52 @@ export function maskToken(token: string): string {
 
 /** Public subscription URL for a token; `origin` from `window.location.origin`. */
 export function subscriptionUrl(origin: string, token: string, target?: string): string {
+  return subscriptionUrlWithPrefix(origin, SUB_PATH_DEFAULT_UI, token, target);
+}
+
+/**
+ * Prefix used when the payload carries none (older server, offline fixture).
+ * The built-in default of the `sub_path` setting (server/utils/settings.ts).
+ */
+export const SUB_PATH_DEFAULT_UI = 's';
+
+/** Normalise a prefix segment list for URL building (`/dl/`, `dl` -> `dl`). */
+export function normalizeSubPathForUrl(prefix: string | null | undefined): string {
+  const value = (prefix ?? '')
+    .trim()
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join('/');
+  return value || SUB_PATH_DEFAULT_UI;
+}
+
+/**
+ * Subscription URL under the *effective* prefix (`/dl/<token>/clash`).
+ *
+ * Every copy-link / quick-open button goes through this: the prefix is the
+ * `sub_path` site setting, exposed as `settings.subPath` on the stats payload
+ * (`/api/admin/me` carries it too, see the layout). A missing prefix falls back
+ * to `s`, which is what the built-in default serves.
+ */
+export function subscriptionUrlWithPrefix(
+  origin: string,
+  prefix: string | null | undefined,
+  token: string,
+  target?: string,
+): string {
   const base = origin.replace(/\/+$/, '');
-  return target ? `${base}/s/${token}/${target}` : `${base}/s/${token}`;
+  const root = `${base}/${normalizeSubPathForUrl(prefix)}`;
+  return target ? `${root}/${token}/${target}` : `${root}/${token}`;
+}
+
+/**
+ * Display form of a user's subscription path, e.g. `/dl/ab12c3d4…89ef`
+ * (the token is masked — the row/dialog shows it, the real value is only ever
+ * copied via `subscriptionUrlWithPrefix`).
+ */
+export function subscriptionPathLabel(prefix: string | null | undefined, token: string): string {
+  return `/${normalizeSubPathForUrl(prefix)}/${maskToken(token)}`;
 }
 
 /** Quick-open targets offered next to the subscription link. */
@@ -354,4 +398,51 @@ export function previewBodyText(
   }
   if (!decoded || decoded.includes('\u0000')) return { text: body, decoded: false };
   return { text: decoded, decoded: true };
+}
+
+/* -------------------------------------------------------------- settings -- */
+
+/** Settings payload as returned by GET/PUT /api/admin/settings. */
+export interface SettingsView {
+  subPath: string;
+  defaultSubPath: string;
+  reservedRoots: string[];
+  adminPath: string;
+}
+
+/**
+ * Client-side check of a 订阅链接前缀 before saving. The server repeats every
+ * rule (it is the authority); this only spares the admin a round trip for the
+ * obvious mistakes. Mirrors `validateSubPath` in `server/utils/settings.ts`:
+ * normalised, 1–4 segments of /^[a-z0-9][a-z0-9_-]*$/, not the admin path and
+ * not a reserved root.
+ */
+export function validateSubPathInput(
+  raw: string,
+  settings: Pick<SettingsView, 'reservedRoots' | 'adminPath'>,
+): { ok: true; value: string } | { ok: false; error: string } {
+  const value = (raw ?? '')
+    .trim()
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join('/')
+    .toLowerCase();
+  if (!value) return { ok: false, error: '订阅链接前缀不能为空' };
+  if (value.length > 64) return { ok: false, error: '订阅链接前缀最长 64 个字符' };
+  const segments = value.split('/');
+  if (segments.length > 4) return { ok: false, error: '订阅链接前缀最多 4 段' };
+  for (const segment of segments) {
+    if (!/^[a-z0-9][a-z0-9_-]*$/.test(segment)) {
+      return { ok: false, error: '只能使用小写字母、数字、- 和 _，且每段以字母或数字开头' };
+    }
+  }
+  const admin = (settings.adminPath ?? 'login').replace(/^\/+|\/+$/g, '').toLowerCase();
+  if (value === admin || segments[0] === admin) {
+    return { ok: false, error: `不能与后台入口路径「${admin}」相同` };
+  }
+  if (settings.reservedRoots.includes(segments[0]!)) {
+    return { ok: false, error: `不能使用系统保留路径「${segments[0]}」` };
+  }
+  return { ok: true, value };
 }
