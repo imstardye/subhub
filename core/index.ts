@@ -8,6 +8,12 @@
  */
 
 export * from './types';
+export {
+  decodeBase64,
+  encodeBase64,
+  normalizeBase64,
+  tryDecodeBase64,
+} from './utils';
 export * from './dns';
 export * from './parsers';
 export * from './producers';

@@ -32,6 +32,8 @@ import {
   parseSubscription,
   produceMihomo,
   produceMihomoProxiesOnly,
+  produceSingbox,
+  produceUri,
   stringifyMihomoConfig,
   type ProxyNode,
   type ProduceOptions,
@@ -40,7 +42,7 @@ import {
 import { stringify as stringifyYaml } from 'yaml';
 import type { SubhubDb } from '../db';
 import { profiles, sourceAllowedUsers, sources, users } from '../db/schema';
-import type { ExportTarget } from './targets';
+import { isFallbackTarget, type ExportTarget } from './targets';
 import { aggregateUserInfo, type SubscriptionUserInfo } from './userinfo';
 
 interface CachedSource {
@@ -285,9 +287,10 @@ export async function loadUserProfile(
  * Render nodes for an export target. `mihomo` and `clash` render identically:
  * Clash subscribers run mihomo-based clients (Clash Verge/Meta, ClashX Meta),
  * so `clash` gets the full node set plus the built-in DNS section and QUIC rule.
- *
- * Targets without a dedicated producer yet (P4) fall back to the mihomo YAML,
- * but keep the historical nodes-only body: the DNS/QUIC template is a mihomo
+ * `uri` and `singbox` have real producers (see `core/producers/uri.ts` and
+ * `core/producers/singbox.ts`); targets without a dedicated producer yet (P4)
+ * fall back to the mihomo YAML, but keep the historical nodes-only body: the
+ * DNS/QUIC template is a mihomo
  * (Clash.Meta) feature and those clients cannot load it.
  *
  * `profile` (from `loadUserProfile`) is optional: with it the body also carries
@@ -305,11 +308,18 @@ export function renderTargetBody(
   options: ProduceOptions = {},
   profile: ExportProfile | null = null,
 ): string {
-  // A future target (P4) still falls back to mihomo YAML; it must stay exactly
-  // what it produced before this template existed.
-  if (target !== 'mihomo' && target !== 'clash') {
-    return renderMihomoFallbackBody(nodes, options, profile);
-  }
+  // Real share-link subscription: base64 of newline-joined links. Proxy groups
+  // and rules are a Clash concept, so a rule profile is ignored here.
+  if (target === 'uri') return produceUri(nodes);
+
+  // sing-box v1: nodes only (`{ "outbounds": [...] }`). Groups/rules are out of
+  // scope, and an empty/missing node list is still a valid document.
+  if (target === 'singbox') return produceSingbox(nodes);
+
+  // A target whose producer is still missing (P4) falls back to mihomo YAML;
+  // it must stay exactly what it produced before the DNS template existed.
+  // (`mihomo` and `clash` fall through to the full render below.)
+  if (isFallbackTarget(target)) return renderMihomoFallbackBody(nodes, options, profile);
 
   const dnsOptions: ProduceOptions = {
     ...options,

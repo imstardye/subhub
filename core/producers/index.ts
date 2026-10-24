@@ -18,3 +18,17 @@ export {
 } from './mihomo';
 export { stringifyProxiesSection, stringifyYamlBlocks, toYamlProxies } from './common';
 export type { ProxyNode, ProduceOptions } from '../types';
+export {
+  buildShareLinks,
+  produceUri,
+  toShareLink,
+  URI_SUPPORTED_TYPES,
+} from './uri';
+export {
+  buildSingboxOutbounds,
+  produceSingbox,
+  singboxServerPorts,
+  SINGBOX_SUPPORTED_TYPES,
+  toSingboxOutbound,
+} from './singbox';
+export type { SingboxConfig, SingboxOutbound } from './singbox';

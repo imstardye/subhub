@@ -22,7 +22,12 @@ import {
   loadUserProfile,
   renderTargetBody,
 } from './export-nodes';
-import { EXPORT_TARGETS, isExportTarget, type ExportTarget } from './targets';
+import {
+  contentTypeForTarget,
+  EXPORT_TARGETS,
+  isExportTarget,
+  type ExportTarget,
+} from './targets';
 import { parseId, ValidationError } from './admin-validation';
 
 /** Hard cap on the returned body (~200 KiB); larger exports are cut off. */
@@ -94,8 +99,9 @@ export async function previewSubscription(
     enabled: user.enabled,
     target,
     status: 200,
-    // Every current target renders YAML (clash legacy or mihomo fallback).
-    contentType: 'text/yaml; charset=utf-8',
+    // json for sing-box, plain text for the share-link body and the (still
+    // YAML) legacy/fallback targets.
+    contentType: contentTypeForTarget(target),
     body: text,
     ...(truncated ? { truncated: true } : {}),
   };

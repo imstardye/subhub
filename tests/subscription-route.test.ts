@@ -16,7 +16,7 @@ import {
   resolveTarget,
 } from '../server/utils/subscription';
 import { RATE_LIMIT_MAX } from '../server/utils/rate-limit';
-import { BUILTIN_DNS_TEMPLATE, QUIC_BLOCK_RULE } from '../core';
+import { BUILTIN_DNS_TEMPLATE, parseSubscription, QUIC_BLOCK_RULE } from '../core';
 
 /** Test-only token; every fixture host below is example.com. */
 const TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -212,15 +212,69 @@ describe('GET /s/:token valid export', () => {
     expect(parseYaml(response.body)).toMatchObject({ proxies: [] });
   });
 
-  it('falls back to mihomo YAML for targets that are not implemented yet (P4)', async () => {
+  it('falls back to mihomo YAML only for targets that are not implemented yet (P4)', async () => {
     attachSource('proxies:\n  - {name: "fixture-ss", type: ss, server: example.com, port: 8388, cipher: aes-128-gcm, password: "fake"}\n');
-    for (const target of ['mihomo', 'shadowrocket', 'singbox', 'surge', 'loon', 'uri']) {
+    // `mihomo` is the real producer; `singbox`/`uri` have their own below.
+    for (const target of ['shadowrocket', 'surge', 'loon']) {
       const response = await call(TOKEN, target);
       expect(response.status).toBe(200);
       const yaml = parseYaml(response.body) as { proxies: Array<{ name: string }> };
       expect(yaml.proxies.map((proxy) => proxy.name)).toEqual(['fixture-ss']);
+      expect(response.headers['content-type']).toBe('text/yaml; charset=utf-8');
       expect(response.headers['content-disposition']).toContain(`-${target}.yaml`);
     }
+  });
+
+  it('serves a real sing-box JSON document (never the mihomo YAML fallback)', async () => {
+    attachSource('proxies:\n  - {name: "fixture-ss", type: ss, server: example.com, port: 8388, cipher: aes-128-gcm, password: "fake"}\n');
+    const response = await call(TOKEN, 'singbox');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('application/json; charset=utf-8');
+    expect(response.headers['content-disposition']).toBe(
+      `attachment; filename="subhub-${userId}-singbox.json"`,
+    );
+    expect(response.headers['content-disposition']).toContain('-singbox.json');
+    expect(JSON.parse(response.body)).toEqual({
+      outbounds: [
+        {
+          type: 'shadowsocks',
+          tag: 'fixture-ss',
+          server: 'example.com',
+          server_port: 8388,
+          method: 'aes-128-gcm',
+          password: 'fake',
+        },
+      ],
+    });
+  });
+
+  it('serves a base64 share-link subscription for the uri target', async () => {
+    attachSource('proxies:\n  - {name: "fixture-ss", type: ss, server: example.com, port: 8388, cipher: aes-128-gcm, password: "fake"}\n');
+    const response = await call(TOKEN, 'uri');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('text/plain; charset=utf-8');
+    expect(response.headers['content-disposition']).toContain('-uri.txt');
+    const links = Buffer.from(response.body, 'base64').toString('utf8').split('\n');
+    expect(links).toHaveLength(1);
+    expect(links[0]!.startsWith('ss://')).toBe(true);
+    // The repo's own subscription parser reads it back.
+    expect(parseSubscription(response.body)).toEqual([
+      expect.objectContaining({ type: 'ss', name: 'fixture-ss', server: 'example.com', port: 8388 }),
+    ]);
+  });
+
+  it('answers an empty-but-valid document when no node is representable', async () => {
+    attachSource('proxies:\n  - {name: "fixture-snell", type: snell, server: snell.example.com, port: 8388, psk: "fake"}\n');
+
+    const singbox = await call(TOKEN, 'singbox');
+    expect(singbox.status).toBe(200);
+    expect(JSON.parse(singbox.body)).toEqual({ outbounds: [] });
+
+    const uri = await call(TOKEN, 'uri');
+    expect(uri.status).toBe(200);
+    expect(uri.body).toBe('');
   });
 
   it('rejects an unknown explicit target without disclosing anything', async () => {

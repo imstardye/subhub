@@ -102,7 +102,7 @@ describe('clash target renders through the mihomo producer', () => {
   });
 
   it('leaves the unimplemented P4 targets on the nodes-only fallback', () => {
-    const document = parseYaml(renderTargetBody('singbox', [node()], {}, exportProfile())) as MihomoDocument;
+    const document = parseYaml(renderTargetBody('shadowrocket', [node()], {}, exportProfile())) as MihomoDocument;
     expect(document.dns).toBeUndefined();
     expect(document.rules).toEqual(['MATCH,🚀 节点选择']);
   });
