@@ -21,7 +21,7 @@ export default function adminSourcesCreateHandler(
 ) {
   return handleAdminRequest(
     event,
-    (db) => sendCreated(event, createSource(db, parseBody(event))),
+    async (db) => sendCreated(event, createSource(db, await parseBody(event))),
     options,
   );
 }

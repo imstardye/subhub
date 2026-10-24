@@ -20,7 +20,7 @@ export default function adminUsersCreateHandler(
 ) {
   return handleAdminRequest(
     event,
-    (db) => sendCreated(event, createUser(db, parseBody(event))),
+    async (db) => sendCreated(event, createUser(db, await parseBody(event))),
     options,
   );
 }

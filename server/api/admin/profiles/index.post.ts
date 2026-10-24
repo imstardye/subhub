@@ -21,7 +21,7 @@ export default function adminProfilesCreateHandler(
 ) {
   return handleAdminRequest(
     event,
-    (db) => sendCreated(event, createProfile(db, parseBody(event))),
+    async (db) => sendCreated(event, createProfile(db, await parseBody(event))),
     options,
   );
 }

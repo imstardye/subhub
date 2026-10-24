@@ -74,9 +74,14 @@ export async function handleAdminRequest<T>(
   }
 }
 
-/** Parse the JSON body of a write request, answering 400/415 on failure. */
-export function parseBody(event: AdminApiEvent): Record<string, unknown> {
-  const body = readJsonBody(event);
+/**
+ * Parse the JSON body of a write request, answering 400/415 on failure.
+ *
+ * Async because the body may only be available on the raw node request stream
+ * (see `readJsonBody`): route callbacks are awaited by `handleAdminRequest`.
+ */
+export async function parseBody(event: AdminApiEvent): Promise<Record<string, unknown>> {
+  const body = await readJsonBody(event);
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new ValidationError('invalid JSON body');
   }

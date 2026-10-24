@@ -20,9 +20,9 @@ export default function adminSourceUpdateHandler(
 ) {
   return handleAdminRequest(
     event,
-    (db) =>
+    async (db) =>
       sendJson(event, 200, {
-        item: updateSource(db, idFromPath(event, 'sources'), parseBody(event)),
+        item: updateSource(db, idFromPath(event, 'sources'), await parseBody(event)),
       }),
     options,
   );

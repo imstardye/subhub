@@ -20,9 +20,9 @@ export default function adminProfileUpdateHandler(
 ) {
   return handleAdminRequest(
     event,
-    (db) =>
+    async (db) =>
       sendJson(event, 200, {
-        item: updateProfile(db, idFromPath(event, 'profiles'), parseBody(event)),
+        item: updateProfile(db, idFromPath(event, 'profiles'), await parseBody(event)),
       }),
     options,
   );
