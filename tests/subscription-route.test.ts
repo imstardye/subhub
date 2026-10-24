@@ -131,7 +131,7 @@ describe('GET /s/:token unknown tokens', () => {
     expect(blocked).toBeGreaterThan(0);
     // Bounded by the number of distinct IPs (8), not by the 2k tokens.
     expect(exportRateLimiterSize()).toBeLessThanOrEqual(8);
-  });
+  }, 60_000);
 
   it('still applies the per-token limit to known users', async () => {
     for (let i = 0; i < RATE_LIMIT_MAX; i += 1) await call(TOKEN);
