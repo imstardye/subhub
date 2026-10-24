@@ -8,17 +8,23 @@
  * what `/s/:token` would, without going through token lookup, rate limiting or
  * access logging.
  *
- * Source sharing model: a source is either PUBLIC (`ownerUserId` null, included
- * for every user) or DEDICATED to exactly one user. A user's export is
- * dedicated sources of that user + all public sources, ordered dedicated-first
- * and then by source id. The legacy `user_sources` join table is no longer read
- * here.
+ * Source sharing model (v2): a source is exactly one of
+ * - DEDICATED (专属): `ownerUserId` set; included for that owner only;
+ * - PUBLIC (公共): `ownerUserId` null + `accessMode` 'all'; included for every
+ *   user;
+ * - SHARED (共享): `ownerUserId` null + `accessMode` 'restricted'; included only
+ *   for the users listed in `source_allowed_users` (an empty allowlist reaches
+ *   nobody).
+ *
+ * A user's export is therefore dedicated(owner=self) + public + shared(self in
+ * allowlist), ordered dedicated-first, then shared/public by source id. The
+ * legacy `user_sources` join table is unrelated and never read here.
  *
  * Profiles: when the user has a rule profile (`users.profileId`), the rendered
  * body also carries the profile's proxy groups, rules and rule-providers, so a
  * client gets a complete config instead of a bare `proxies` list.
  */
-import { asc, eq, isNull, or } from 'drizzle-orm';
+import { and, eq, exists, isNull, or } from 'drizzle-orm';
 import {
   buildLegacyProxies,
   buildMihomoProxies,
@@ -33,7 +39,7 @@ import {
 } from '../../core';
 import { stringify as stringifyYaml } from 'yaml';
 import type { SubhubDb } from '../db';
-import { profiles, sources, users } from '../db/schema';
+import { profiles, sourceAllowedUsers, sources, users } from '../db/schema';
 import type { ExportTarget } from './targets';
 
 interface CachedSource {
@@ -42,16 +48,57 @@ interface CachedSource {
 }
 
 /**
- * Sources visible to a user: their dedicated sources first, then every public
- * source; within each bucket by source id.
+ * Sources visible to a user: their dedicated sources first, then the shared
+ * ones whose allowlist contains them, then the public ones; within each bucket
+ * by source id.
+ *
+ * The predicate mirrors the access model exactly:
+ *   owner_user_id = :user
+ *   OR (owner_user_id IS NULL AND access_mode = 'all')
+ *   OR (owner_user_id IS NULL AND access_mode = 'restricted' AND user is
+ *       listed in source_allowed_users for this source)
  */
 export function loadUserSourceCaches(db: SubhubDb, userId: number): CachedSource[] {
-  return db
-    .select({ id: sources.id, cacheBlob: sources.cacheBlob })
+  const sharedWithUser = exists(
+    db
+      .select({ one: sourceAllowedUsers.sourceId })
+      .from(sourceAllowedUsers)
+      .where(
+        and(
+          eq(sourceAllowedUsers.sourceId, sources.id),
+          eq(sourceAllowedUsers.userId, userId),
+        ),
+      ),
+  );
+  const rows = db
+    .select({
+      id: sources.id,
+      cacheBlob: sources.cacheBlob,
+      ownerUserId: sources.ownerUserId,
+      accessMode: sources.accessMode,
+    })
     .from(sources)
-    .where(or(eq(sources.ownerUserId, userId), isNull(sources.ownerUserId)))
-    .orderBy(asc(sources.ownerUserId), asc(sources.id))
+    .where(
+      or(
+        eq(sources.ownerUserId, userId),
+        and(isNull(sources.ownerUserId), eq(sources.accessMode, 'all')),
+        and(
+          isNull(sources.ownerUserId),
+          eq(sources.accessMode, 'restricted'),
+          sharedWithUser,
+        ),
+      ),
+    )
     .all();
+
+  // Ordered here, not in SQL: SQLite sorts NULL before integers, so an
+  // `ORDER BY owner_user_id` would put the public/shared rows first. Buckets:
+  // dedicated (0) < shared (1) < public (2), each by source id.
+  const bucket = (row: (typeof rows)[number]) =>
+    row.ownerUserId === null && row.accessMode === 'restricted' ? 1 : row.ownerUserId === null ? 2 : 0;
+  return rows
+    .sort((a, b) => bucket(a) - bucket(b) || a.id - b.id)
+    .map((row) => ({ id: row.id, cacheBlob: row.cacheBlob }));
 }
 
 /**

@@ -12,7 +12,7 @@
  */
 import { eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
-import { sources, userSources, users, type User } from '../db/schema';
+import { sourceAllowedUsers, sources, userSources, users, type User } from '../db/schema';
 import {
   generateUserToken,
   parseEnabled,
@@ -134,7 +134,11 @@ export function resetUserToken(db: SubhubDb, rawId: unknown): AdminUser {
  * explicitly *before* the user row so it works on both fresh databases (FK with
  * ON DELETE CASCADE) and migrated ones (plain `owner_user_id` column without
  * FK), and removes the user's legacy `user_sources` links first for the same
- * reason. Public sources (ownerUserId null) are never touched.
+ * reason. Public and shared sources (ownerUserId null) are never touched.
+ *
+ * Shared sources: the deleted user is also removed from every allowlist
+ * (`source_allowed_users`), so a shared source they could see stops reaching a
+ * recycled account. The source itself stays for the remaining members.
  */
 export function deleteUser(db: SubhubDb, rawId: unknown): { ok: true; id: number } {
   const id = parseId(rawId);
@@ -142,6 +146,7 @@ export function deleteUser(db: SubhubDb, rawId: unknown): { ok: true; id: number
   if (!existing) throw new ValidationError('user not found', 404);
 
   try {
+    db.delete(sourceAllowedUsers).where(eq(sourceAllowedUsers.userId, id)).run();
     db.delete(userSources).where(eq(userSources.userId, id)).run();
     db.delete(sources).where(eq(sources.ownerUserId, id)).run();
     db.delete(users).where(eq(users.id, id)).run();
@@ -149,6 +154,7 @@ export function deleteUser(db: SubhubDb, rawId: unknown): { ok: true; id: number
     // Last resort for a foreign key we do not know about: detach what points at
     // the user instead of surfacing a raw FK error to the admin UI.
     if (!(error instanceof Error) || !/FOREIGN KEY/i.test(error.message)) throw error;
+    db.delete(sourceAllowedUsers).where(eq(sourceAllowedUsers.userId, id)).run();
     db.update(sources).set({ ownerUserId: null }).where(eq(sources.ownerUserId, id)).run();
     db.update(users).set({ profileId: null }).where(eq(users.id, id)).run();
     db.delete(users).where(eq(users.id, id)).run();

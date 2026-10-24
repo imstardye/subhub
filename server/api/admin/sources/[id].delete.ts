@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-/** DELETE /api/admin/sources/:id — delete a source and its user links (admin). */
+/** DELETE /api/admin/sources/:id — delete a source, its allowlist and user links (admin). */
 import { deleteSource } from '../../../utils/admin-sources';
 import { handleAdminRequest, idFromPath, type AdminRequestOptions } from '../../../utils/admin-routes';
 import { sendJson, type AdminApiEvent } from '../../../utils/admin-api';

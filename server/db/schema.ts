@@ -22,16 +22,30 @@ export const users = sqliteTable('users', {
 /**
  * Remote/local subscription sources. `url` is stored encrypted (ciphertext only).
  *
- * Sharing model: every source is either PUBLIC (`ownerUserId` null, shared by
- * every user) or DEDICATED to exactly one user. A user's export is the union of
- * their dedicated sources and all public ones. Dedicated sources are deleted
- * together with their owner (see `deleteUser` in `server/utils/admin-users.ts`).
+ * Sharing model (v2): every source is exactly one of
+ * - DEDICATED (专属): `ownerUserId` set — only that user's export carries it.
+ * - PUBLIC (公共): `ownerUserId` null + `accessMode` 'all' — every user gets it.
+ * - SHARED (共享): `ownerUserId` null + `accessMode` 'restricted' — only the
+ *   users listed in `source_allowed_users` get it.
+ *
+ * A user's export is the union of their dedicated sources, every public source
+ * and the shared sources whose allowlist contains them. Dedicated sources are
+ * deleted together with their owner (see `deleteUser` in
+ * `server/utils/admin-users.ts`); a dedicated source has no allowlist, and
+ * deleting a source removes its allowlist rows.
  */
 export const sources = sqliteTable('sources', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   name: text('name').notNull(),
-  /** Owning user for a dedicated source; null = public. */
+  /** Owning user for a dedicated source; null = public or shared. */
   ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
+  /**
+   * 'all' = public (ignored for a dedicated source); 'restricted' = shared with
+   * the `sourceAllowedUsers` allowlist. Existing rows default to 'all'.
+   */
+  accessMode: text('access_mode', { enum: ['all', 'restricted'] })
+    .notNull()
+    .default('all'),
   /** Encrypted URL, see crypto.ts. */
   url: text('url').notNull(),
   type: text('type', { enum: ['remote', 'local'] }).notNull().default('remote'),
@@ -51,6 +65,23 @@ export const userSources = sqliteTable(
     sort: integer('sort').notNull().default(0),
   },
   (t) => [primaryKey({ columns: [t.userId, t.sourceId] }), index('user_sources_user_sort_idx').on(t.userId, t.sort)],
+);
+
+/**
+ * Allowlist of a SHARED source (`accessMode` 'restricted'): the users whose
+ * export includes it. Legacy `user_sources` is unrelated and no longer read;
+ * this table is the source of truth for shared access.
+ */
+export const sourceAllowedUsers = sqliteTable(
+  'source_allowed_users',
+  {
+    sourceId: integer('source_id').notNull().references(() => sources.id, { onDelete: 'cascade' }),
+    userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.sourceId, t.userId] }),
+    index('source_allowed_users_user_idx').on(t.userId, t.sourceId),
+  ],
 );
 
 /** Rule profiles. Exactly one of iniUrl/iniText is expected to be set. */
@@ -88,6 +119,9 @@ export type NewUser = typeof users.$inferInsert;
 export type Source = typeof sources.$inferSelect;
 export type NewSource = typeof sources.$inferInsert;
 export type UserSource = typeof userSources.$inferSelect;
+export type SourceAllowedUser = typeof sourceAllowedUsers.$inferSelect;
+export type NewSourceAllowedUser = typeof sourceAllowedUsers.$inferInsert;
+export type SourceAccessMode = NonNullable<Source['accessMode']>;
 export type Profile = typeof profiles.$inferSelect;
 export type NewProfile = typeof profiles.$inferInsert;
 export type AccessLog = typeof accessLogs.$inferSelect;

@@ -54,8 +54,18 @@ CREATE TABLE IF NOT EXISTS sources (
   last_ok_at INTEGER,
   last_error TEXT,
   cache_blob TEXT,
-  owner_user_id INTEGER
+  owner_user_id INTEGER,
+  access_mode TEXT NOT NULL DEFAULT 'all'
 );
+
+-- SHARED (accessMode 'restricted') source allowlists.
+CREATE TABLE IF NOT EXISTS source_allowed_users (
+  source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  PRIMARY KEY (source_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS source_allowed_users_user_idx
+  ON source_allowed_users (user_id, source_id);
 
 CREATE TABLE IF NOT EXISTS user_sources (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -107,6 +117,18 @@ function ensureAddedColumns(sqlite: Database.Database): void {
   if (!hasOwner) {
     sqlite.exec('ALTER TABLE sources ADD COLUMN owner_user_id INTEGER');
   }
+  // v2 access model: 'all' (public, every user) or 'restricted' (shared with an
+  // allowlist). Existing rows must keep today's behaviour, hence the 'all'
+  // default; SQLite applies it to the existing rows during the ALTER below.
+  const hasAccessMode = columns.some((column) => column.name === 'access_mode');
+  if (!hasAccessMode) {
+    sqlite.exec("ALTER TABLE sources ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'all'");
+  }
+  // Rows written before the column existed (or by an older binary) may carry
+  // NULL/unknown values; normalise them to public.
+  sqlite.exec(
+    "UPDATE sources SET access_mode = 'all' WHERE access_mode IS NULL OR access_mode NOT IN ('all', 'restricted')",
+  );
   sqlite.exec(
     'CREATE INDEX IF NOT EXISTS sources_owner_id_idx ON sources (owner_user_id, id)',
   );

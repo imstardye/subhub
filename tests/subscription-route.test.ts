@@ -240,12 +240,12 @@ describe('GET /s/:token source aggregation', () => {
     const response = await call(TOKEN, 'mihomo');
     expect(response.status).toBe(200);
     const yaml = parseYaml(response.body) as { proxies: Array<{ name: string }> };
-    // SQLite sorts NULL first, so within one source list the public sources
-    // precede the dedicated ones; each bucket is ordered by source id.
+    // Access model v2: dedicated sources come first, then shared/public by
+    // source id (SQLite's NULL-first ordering is no longer relied on).
     expect(yaml.proxies.map((proxy) => proxy.name)).toEqual([
+      'dedicated-one',
       'public-one',
       'public-two',
-      'dedicated-one',
     ]);
 
     // The other user sees only their own dedicated source plus the public ones.
@@ -256,9 +256,9 @@ describe('GET /s/:token source aggregation', () => {
     );
     const otherYaml = parseYaml(other.body) as { proxies: Array<{ name: string }> };
     expect(otherYaml.proxies.map((proxy) => proxy.name)).toEqual([
+      'foreign',
       'public-one',
       'public-two',
-      'foreign',
     ]);
   });
 

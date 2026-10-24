@@ -4,6 +4,11 @@
  *
  * Omitting `url` keeps the stored (encrypted) URL; sending one replaces it
  * after validation. The response carries the masked URL only.
+ *
+ * `ownerUserId` / `accessMode` / `allowedUserIds` follow the v2 access model
+ * (see `server/utils/admin-sources.ts`): an owner clears the allowlist,
+ * 'all' clears it too, and 'restricted' without `allowedUserIds` keeps the
+ * stored list.
  */
 import { updateSource } from '../../../utils/admin-sources';
 import {

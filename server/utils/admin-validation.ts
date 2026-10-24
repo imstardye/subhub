@@ -26,6 +26,14 @@ export const REFRESH_MINUTES_DEFAULT = 60;
 export const SOURCE_TYPES = ['remote', 'local'] as const;
 export type SourceType = (typeof SOURCE_TYPES)[number];
 
+/**
+ * Source access model v2. A source is DEDICATED when it has an owner, PUBLIC
+ * when it has no owner and `accessMode` 'all', SHARED when it has no owner and
+ * `accessMode` 'restricted' (only the allowlist sees it).
+ */
+export const SOURCE_ACCESS_MODES = ['all', 'restricted'] as const;
+export type SourceAccessMode = (typeof SOURCE_ACCESS_MODES)[number];
+
 /** Rule profile output flavour; `mihomo` is the default. */
 export const PROFILE_VARIANTS = ['mihomo', 'legacy'] as const;
 export type ProfileVariant = (typeof PROFILE_VARIANTS)[number];
@@ -142,6 +150,37 @@ export function parseSourceType(value: unknown): SourceType {
     return value as SourceType;
   }
   throw new ValidationError(`type must be one of: ${SOURCE_TYPES.join(', ')}`);
+}
+
+/** Source access mode (`all` by default, i.e. public). */
+export function parseSourceAccessMode(value: unknown): SourceAccessMode {
+  if (value === undefined || value === null || value === '') return 'all';
+  if (typeof value === 'string' && (SOURCE_ACCESS_MODES as readonly string[]).includes(value)) {
+    return value as SourceAccessMode;
+  }
+  throw new ValidationError(`accessMode must be one of: ${SOURCE_ACCESS_MODES.join(', ')}`);
+}
+
+/**
+ * An allowlist id list: positive integers only, duplicates removed and the
+ * result sorted ascending (stable responses). Accepts numeric strings from
+ * form payloads. Existence is checked against the users table by the caller
+ * (`admin-sources.ts`), which owns the database handle. Absent/null means
+ * "no ids".
+ */
+export function parseIdList(value: unknown, field = 'allowedUserIds'): number[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new ValidationError(`invalid ${field}`);
+  const ids: number[] = [];
+  for (const raw of value) {
+    const id =
+      typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
+    if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) {
+      throw new ValidationError(`invalid ${field}`);
+    }
+    if (!ids.includes(id)) ids.push(id);
+  }
+  return ids.sort((a, b) => a - b);
 }
 
 /** Refresh interval in whole minutes within [5, 10080]; default 60. */

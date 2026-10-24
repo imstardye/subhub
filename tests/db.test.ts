@@ -110,6 +110,83 @@ describe('guarded migration: sources.owner_user_id', () => {
   });
 });
 
+describe('guarded migration: sources.access_mode + source_allowed_users', () => {
+  function legacyDb(dbPath: string) {
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+        name TEXT NOT NULL,
+        token TEXT NOT NULL,
+        profile_id INTEGER,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        note TEXT,
+        created_at INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'remote',
+        ua TEXT,
+        refresh_minutes INTEGER NOT NULL DEFAULT 60,
+        last_ok_at INTEGER,
+        last_error TEXT,
+        cache_blob TEXT,
+        owner_user_id INTEGER
+      );
+      INSERT INTO sources (name, url, owner_user_id) VALUES ('legacy-public', 'v1:placeholder', NULL);
+    `);
+    legacy.close();
+  }
+
+  it('creates the json-visible column with the public default on existing rows', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subhub-migrate-access-'));
+    dirs.push(dir);
+    const dbPath = join(dir, 'legacy.sqlite');
+    legacyDb(dbPath);
+
+    const db = openDb({ path: dbPath });
+    // Pre-v2 rows keep today's behaviour: public, no allowlist.
+    const row = db.select().from(sources).all()[0]!;
+    expect(row.accessMode).toBe('all');
+    expect(row.ownerUserId).toBeNull();
+
+    // The join table exists and is queryable.
+    const raw = new Database(dbPath);
+    const table = raw
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'source_allowed_users'")
+      .get() as { name?: string } | undefined;
+    expect(table?.name).toBe('source_allowed_users');
+    raw.close();
+
+    // Restrictive mode can be written, restored and re-opened idempotently.
+    const publicId = db.select().from(sources).all()[0]!.id;
+    db.update(sources).set({ accessMode: 'restricted' }).where(eq(sources.id, publicId)).run();
+    const again = openDb({ path: dbPath });
+    expect(again.select().from(sources).all()[0]!.accessMode).toBe('restricted');
+
+    const handle = new Database(dbPath);
+    ensureSchema(handle);
+    ensureSchema(handle);
+    const columns = handle.pragma('table_info(sources)') as Array<{ name: string }>;
+    expect(columns.filter((column) => column.name === 'access_mode')).toHaveLength(1);
+    handle.close();
+  });
+
+  it('creates the column and the join table on a fresh database', () => {
+    const db = openDb({ path: ':memory:' });
+    const sqlite = (db as unknown as { $client: Database.Database }).$client;
+    const columns = sqlite.pragma('table_info(sources)') as Array<{ name: string }>;
+    const accessMode = columns.find((column) => column.name === 'access_mode');
+    expect(accessMode).toBeDefined();
+    const tables = sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all() as Array<{ name: string }>;
+    expect(tables.map((row) => row.name)).toContain('source_allowed_users');
+  });
+});
+
 describe('source url crypto', () => {
   it('round-trips a placeholder string and does not embed the plaintext', () => {
     const plain = 'placeholder-not-a-subscription';
