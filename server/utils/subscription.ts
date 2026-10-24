@@ -59,6 +59,9 @@ export function detectTargetFromUserAgent(ua: string | null | undefined): Export
 /** Placeholder subscription-userinfo until sources are aggregated (P2 cache task). */
 export const PLACEHOLDER_USERINFO = 'upload=0; download=0; total=0; expire=0';
 
+/** Access-log/IP column cap; the exported handler already normalises the value. */
+const MAX_IP_LENGTH = 64;
+
 /** Guard against abuse of the unauthenticated path before the token is checked. */
 const MAX_TOKEN_LENGTH = 128;
 
@@ -213,7 +216,7 @@ function logAccess(
         target: entry.target,
         // Keep the UA column bounded; it is client-controlled.
         ua: entry.userAgent ? entry.userAgent.slice(0, 512) : null,
-        ip: entry.ip ? entry.ip.slice(0, 64) : null,
+        ip: entry.ip ? entry.ip.slice(0, MAX_IP_LENGTH) : null,
         status: entry.status,
         ms: Math.max(0, Date.now() - entry.startedAt),
       })

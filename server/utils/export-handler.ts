@@ -7,13 +7,17 @@
  * `server/routes/s/[token]/index.get.ts` and
  * `server/routes/s/[token]/[target].get.ts` can point at the same handler.
  */
+import { getClientIpOrNull } from './client-ip';
 import { getServerDb } from './db';
 import { handleSubscriptionExport, type ExportRequest } from './subscription';
 
 /** Minimal H3 event shape we rely on (avoids a direct `h3` dependency). */
 interface ExportEvent {
   path?: string;
-  context: { params?: Record<string, string | undefined> };
+  context: {
+    params?: Record<string, string | undefined>;
+    clientAddress?: string;
+  };
   node: {
     req: {
       headers: Record<string, string | string[] | undefined>;
@@ -36,12 +40,13 @@ export function requestFromEvent(event: ExportEvent): ExportRequest {
   const target = params.target ?? segments[2] ?? null;
 
   const userAgent = event.node.req.headers['user-agent'];
-  const address = event.node.req.socket?.remoteAddress;
   return {
     token,
     target,
     userAgent: Array.isArray(userAgent) ? userAgent[0] : userAgent ?? null,
-    ip: address ?? null,
+    // Same rule as the login throttle: socket by default, trusted header only
+    // when SUBHUB_TRUSTED_IP_HEADER is set (see client-ip.ts).
+    ip: getClientIpOrNull(event),
   };
 }
 

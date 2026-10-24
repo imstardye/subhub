@@ -17,6 +17,7 @@
  * The cap keeps a hostile payload from being buffered unbounded.
  */
 import { isSessionSigningUnavailable, login } from '../../utils/admin-auth';
+import { getClientIp } from '../../utils/client-ip';
 import { adminLoginThrottle, type LoginThrottle } from '../../utils/login-throttle';
 
 /** Login bodies are tiny; anything bigger is rejected before parsing. */
@@ -107,15 +108,13 @@ async function readPassword(event: LoginEvent): Promise<unknown> {
 }
 
 /**
- * Client address used as the throttle key: Nitro's `clientAddress` when the
- * event carries one (it honours the trusted proxy config), else the socket
- * peer. Only used as an opaque bucket key, never logged.
+ * Client address used as the throttle key. Delegates to the shared helper
+ * (client-ip.ts): the socket peer by default, or the header named by
+ * SUBHUB_TRUSTED_IP_HEADER when configured. Only used as an opaque bucket key,
+ * never logged.
  */
 export function clientAddress(event: LoginEvent): string {
-  const fromContext = event.context?.clientAddress;
-  if (typeof fromContext === 'string' && fromContext.length > 0) return fromContext;
-  const remote = event.node.req.socket?.remoteAddress;
-  return typeof remote === 'string' && remote.length > 0 ? remote : '';
+  return getClientIp(event);
 }
 
 export interface LoginHandlerOptions {
