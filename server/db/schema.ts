@@ -126,6 +126,21 @@ export const accessLogs = sqliteTable(
   ],
 );
 
+/**
+ * Site settings (key/value). In-app configuration that must be changeable
+ * without a redeploy — currently `sub_path`, the subscription URL prefix (see
+ * `server/utils/settings.ts`). Deliberately not an env var: the owner changes
+ * it from the admin UI and expects it to take effect immediately.
+ */
+export const settings = sqliteTable('settings', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull().defaultNow(),
+});
+
+export type Setting = typeof settings.$inferSelect;
+export type NewSetting = typeof settings.$inferInsert;
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Source = typeof sources.$inferSelect;

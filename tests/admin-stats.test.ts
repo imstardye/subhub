@@ -81,7 +81,15 @@ describe('GET /api/admin/stats counters', () => {
   it('returns zeros on an empty database', async () => {
     const { status, body } = await fetchStats();
     expect(status).toBe(200);
-    expect(body).toEqual({ users: 0, sources: 0, profiles: 0, accessLogs24h: 0 });
+    // `settings` (the subscription prefix the UI builds links with) rides on
+    // the payload; see server/api/admin/stats/index.get.ts.
+    expect(body).toEqual({
+      users: 0,
+      sources: 0,
+      profiles: 0,
+      accessLogs24h: 0,
+      settings: { subPath: 's' },
+    });
   });
 
   it('counts users, sources and profiles independently', async () => {
@@ -97,7 +105,7 @@ describe('GET /api/admin/stats counters', () => {
     base.db.insert(profiles).values({ name: 'fixture-profile', iniText: '[ruleset]' }).run();
 
     const { body } = await fetchStats();
-    expect(body).toEqual({ users: 3, sources: 2, profiles: 1, accessLogs24h: 0 });
+    expect(body).toEqual({ users: 3, sources: 2, profiles: 1, accessLogs24h: 0, settings: { subPath: 's' } });
   });
 
   it('counts only access logs inside the 24h window', async () => {

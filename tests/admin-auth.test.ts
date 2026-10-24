@@ -327,7 +327,9 @@ describe('/api/admin handlers', () => {
     // The cookie grants access; the response body never echoes the token.
     const token = cookie.split(';')[0].split('=')[1];
     const { event: authed } = makeEvent({ cookie: `${ADMIN_COOKIE}=${token}` });
-    expect(adminMeHandler(authed as never)).toEqual({ authenticated: true });
+    // Authenticated answers also carry the effective subscription prefix
+    // (`subPath`; the layout seeds its link-building state from it).
+    expect(adminMeHandler(authed as never)).toEqual({ authenticated: true, subPath: 's' });
   });
 
   it('login 401 without setting a cookie on a wrong password', async () => {

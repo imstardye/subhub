@@ -102,6 +102,13 @@ CREATE TABLE IF NOT EXISTS access_logs (
 );
 CREATE INDEX IF NOT EXISTS access_logs_user_created_idx ON access_logs (user_id, created_at);
 CREATE INDEX IF NOT EXISTS access_logs_created_idx ON access_logs (created_at);
+
+-- In-app site settings (key/value), e.g. the subscription URL prefix.
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL DEFAULT (cast((julianday('now') - 2440587.5)*86400000 as integer))
+);
 `;
 
 /**

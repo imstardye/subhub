@@ -15,6 +15,7 @@ import type { SubhubDb } from '../db';
 import { sourceAllowedUsers, sources, userSources, users, type User } from '../db/schema';
 import {
   generateUserToken,
+  parseCustomToken,
   parseEnabled,
   parseId,
   parseName,
@@ -103,7 +104,14 @@ export function updateUser(db: SubhubDb, rawId: unknown, body: Record<string, un
   return toAdminUser(row);
 }
 
-/** Rotate the subscription token; the old /s/:token stops working at once. */
+/**
+ * Rotate the subscription token; the old /s/:token stops working at once.
+ *
+ * Reuses `generateUserToken()` (32 random bytes, hex) so a rotation is never
+ * weaker than a freshly created user's token. The export looks users up by
+ * token on every request (no token→user cache anywhere), so the new value is
+ * effective immediately and the old one is dead.
+ */
 export function resetUserToken(db: SubhubDb, rawId: unknown): AdminUser {
   const id = parseId(rawId);
   const existing = db.select().from(users).where(eq(users.id, id)).get();
@@ -123,6 +131,40 @@ export function resetUserToken(db: SubhubDb, rawId: unknown): AdminUser {
     }
   }
   throw new Error('could not reset token');
+}
+
+/**
+ * Set an admin-chosen subscription token (custom/vanity URL).
+ *
+ * The token is validated (`parseCustomToken`) and must be unique across users;
+ * taking another user's token answers 409 so the failure is distinguishable
+ * from a malformed value (400). Setting the caller's own current token is a
+ * no-op that returns the user unchanged.
+ */
+export function setUserToken(db: SubhubDb, rawId: unknown, rawToken: unknown): AdminUser {
+  const id = parseId(rawId);
+  const existing = db.select().from(users).where(eq(users.id, id)).get();
+  if (!existing) throw new ValidationError('user not found', 404);
+
+  const token = parseCustomToken(rawToken);
+  if (token === existing.token) return toAdminUser(existing);
+
+  const taken = db.select({ id: users.id }).from(users).where(eq(users.token, token)).get();
+  if (taken) {
+    throw new ValidationError('token 已被其他用户占用，请换一个', 409);
+  }
+
+  try {
+    const row = db.update(users).set({ token }).where(eq(users.id, id)).returning().get();
+    if (!row) throw new ValidationError('user not found', 404);
+    return toAdminUser(row);
+  } catch (error) {
+    // The unique index is the last line of defence (race with another write).
+    if (error instanceof Error && /UNIQUE constraint failed.*users\.token/i.test(error.message)) {
+      throw new ValidationError('token 已被其他用户占用，请换一个', 409);
+    }
+    throw error;
+  }
 }
 
 /**

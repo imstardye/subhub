@@ -148,6 +148,23 @@ docker run ... -e SUBHUB_ADMIN_PATH=hx/panel ...
 # 之后浏览器访问 https://your.example.com/hx/panel 一次，再正常登录
 ```
 
+## 订阅链接与令牌
+
+- 订阅链接形如 `/<前缀>/<token>/<target>`，默认前缀 `s`。
+- 前缀可在「设置 → 订阅链接」修改（`sub_path` 设置项，存于数据库，默认 `s`）：
+  - 允许小写字母、数字、`-`、`_`，可多段（`x/y`）；不能与后台入口路径（`SUBHUB_ADMIN_PATH`，默认 `/admin`）
+    或系统路径（`api`、`_nuxt`、`users` 等）冲突，否则接口返回 400 且保留旧值；
+  - 保存后旧的前缀目录立即返回 404，**所有已分享的链接都会失效**（界面有警告）；
+    实现上 `/s/` 仍是唯一的 Nitro 路由，`server/middleware/sub-path.ts` 在路由前
+    把 `/<前缀>/…` 改写过去；
+  - 管理后台所有复制链接按钮读取的是生效前缀（`GET /api/admin/settings`、
+    `/api/admin/stats` 的 `settings.subPath`、`/api/admin/me` 的 `subPath`）。
+- 每个用户的令牌可随时处理（用户页行内操作）：
+  - 「刷新令牌」`POST /api/admin/users/:id/reset-token`：重新生成 32 字节随机令牌，
+    旧链接立刻失效；
+  - 「自定义令牌」`PUT /api/admin/users/:id/token`（body `{ token }`）：
+    8–64 个字符、`/^[a-z0-9][a-z0-9_-]*$/i`、全局唯一（占用返回 409，非法返回 400）。
+
 ## 环境变量
 
 所有可配置项使用 `SUBHUB_*` 前缀。仓库与镜像说明中只放占位符；**切勿**把真实
@@ -160,6 +177,9 @@ secret、管理员密码或内网/生产域名写进 Git。
 | `SUBHUB_DB_PATH` | 强烈建议显式设置 | `.data/subhub.sqlite` | SQLite 文件路径 |
 | `SUBHUB_ADMIN_PATH` | 否 | `admin`（即 `/admin`） | 管理后台隐藏入口路径，如 `hx/panel`；见上文「隐藏入口」 |
 | `SUBHUB_TRUSTED_IP_HEADER` | 否 | 未设置（只用 socket IP） | 仅当源站只经可信代理（如 Cloudflare）时再设，例如 `cf-connecting-ip` |
+
+订阅链接前缀（`/s/<token>` 里的 `s`）**不是环境变量**：它是应用内设置，在管理后台
+「设置 → 订阅链接」里修改（存在数据库 `settings` 表），保存后立即生效，无需重启。
 
 本地开发可参考 [`.env.example`](./.env.example)：
 

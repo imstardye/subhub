@@ -14,6 +14,13 @@
  * profiles API — there is no numeric ID input anywhere.
  *
  * `?new=1` (used by the dashboard's 快捷操作 card) opens the create form.
+ *
+ * Subscription links use the *effective* prefix (`sub_path` site setting, the
+ * `admin-sub-path` state filled by the layout from `/api/admin/me`) — never a
+ * hard-coded `/s/`. The row actions 「刷新令牌」 (confirm step: it kills the old
+ * link at once) and 「自定义令牌」 (validated input + save, API errors shown)
+ * rotate the token; the row is replaced with the server answer, so the copied
+ * link already carries the new token.
  */
 definePageMeta({ layout: 'admin' });
 
@@ -30,11 +37,13 @@ import {
 import {
   formatDateTime,
   maskToken,
-  subscriptionUrl,
+  subscriptionPathLabel,
+  subscriptionUrlWithPrefix,
   SUBSCRIPTION_QUICK_TARGETS,
   userSourceCounts,
   type UserSourceCounts,
 } from '~/core/utils/admin-ui';
+import { validateCustomToken } from '~/core/utils/token-form';
 
 const route = useRoute();
 const users = ref<AdminUser[]>([]);
@@ -56,6 +65,13 @@ const deleting = ref<AdminUser | null>(null);
 const copiedToken = ref('');
 
 const origin = ref('');
+/** Effective subscription prefix, shared with the settings page. */
+const subPath = useState<string>('admin-sub-path', () => 's');
+
+/** The 自定义令牌 dialog: which user, the draft, and its own error line. */
+const tokenEditing = ref<AdminUser | null>(null);
+const tokenDraft = ref('');
+const tokenError = ref('');
 
 const profilesById = computed(() => new Map(profiles.value.map((p) => [p.id, p])));
 
@@ -75,7 +91,11 @@ function profileName(user: AdminUser): string {
 }
 
 function linkFor(user: AdminUser, target?: string): string {
-  return subscriptionUrl(origin.value || 'http://localhost', user.token, target);
+  return subscriptionUrlWithPrefix(origin.value || 'http://localhost', subPath.value, user.token, target);
+}
+
+function pathLabel(user: AdminUser): string {
+  return subscriptionPathLabel(subPath.value, user.token);
 }
 
 async function loadSources() {
@@ -256,9 +276,10 @@ async function confirmDelete() {
   }
 }
 
-async function resetToken(user: AdminUser) {
+/** 刷新令牌: regenerate via the existing endpoint, with a confirm step. */
+async function refreshToken(user: AdminUser) {
   if (busyId.value !== null) return;
-  if (!confirm(`重置「${user.name}」的订阅 token？旧链接将立即失效。`)) return;
+  if (!confirm(`刷新「${user.name}」的订阅令牌？旧链接将立即失效，需要重新分发新链接。`)) return;
   busyId.value = user.id;
   error.value = '';
   notice.value = '';
@@ -267,9 +288,51 @@ async function resetToken(user: AdminUser) {
       method: 'POST',
     });
     users.value = users.value.map((u) => (u.id === res.item.id ? res.item : u));
-    notice.value = `「${user.name}」的订阅 token 已重置`;
+    notice.value = `「${user.name}」的订阅令牌已刷新，新链接：${pathLabel(res.item)}`;
   } catch (err) {
-    error.value = apiErrorMessage(err);
+    error.value = `「${user.name}」刷新令牌失败：${apiErrorMessage(err)}`;
+  } finally {
+    busyId.value = null;
+  }
+}
+
+function openTokenDialog(user: AdminUser) {
+  tokenEditing.value = user;
+  tokenDraft.value = '';
+  tokenError.value = '';
+  error.value = '';
+  notice.value = '';
+}
+
+function closeTokenDialog() {
+  tokenEditing.value = null;
+  tokenDraft.value = '';
+  tokenError.value = '';
+}
+
+/** 自定义令牌: PUT the validated token, surface the API error (400/409). */
+async function saveCustomToken() {
+  const user = tokenEditing.value;
+  if (!user || busyId.value !== null) return;
+  tokenError.value = '';
+  const checked = validateCustomToken(tokenDraft.value);
+  if (!checked.ok) {
+    tokenError.value = checked.error;
+    return;
+  }
+  busyId.value = user.id;
+  error.value = '';
+  notice.value = '';
+  try {
+    const res = await $fetch<{ item: AdminUser }>(`/api/admin/users/${user.id}/token`, {
+      method: 'PUT',
+      body: { token: checked.token },
+    });
+    users.value = users.value.map((u) => (u.id === res.item.id ? res.item : u));
+    notice.value = `「${user.name}」的订阅令牌已设为 ${pathLabel(res.item)}`;
+    closeTokenDialog();
+  } catch (err) {
+    tokenError.value = apiErrorMessage(err);
   } finally {
     busyId.value = null;
   }
@@ -406,7 +469,7 @@ onMounted(() => {
           </label>
 
           <span class="entity-field link-row" :title="linkFor(user)">
-            <code class="mono">/s/{{ maskToken(user.token) }}</code>
+            <code class="mono">{{ pathLabel(user) }}</code>
             <button
               type="button"
               class="small"
@@ -436,14 +499,50 @@ onMounted(() => {
           <button type="button" class="small" :disabled="busyId !== null" @click="openEdit(user)">
             编辑
           </button>
-          <button type="button" class="small" :disabled="busyId !== null" @click="resetToken(user)">
-            {{ busyId === user.id ? '处理中…' : '重置 Token' }}
+          <button type="button" class="small" :disabled="busyId !== null" @click="refreshToken(user)">
+            {{ busyId === user.id ? '处理中…' : '刷新令牌' }}
+          </button>
+          <button type="button" class="small" :disabled="busyId !== null" @click="openTokenDialog(user)">
+            自定义令牌
           </button>
           <button type="button" class="small danger" :disabled="busyId !== null" @click="deleting = user">
             删除
           </button>
         </div>
       </article>
+    </div>
+
+    <div
+      v-if="tokenEditing"
+      class="overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="token-user-title"
+    >
+      <form class="card dialog" @submit.prevent="saveCustomToken">
+        <h2 id="token-user-title">自定义令牌「{{ tokenEditing.name }}」</h2>
+        <p class="sub">
+          新令牌会立即替换旧令牌，旧链接随即失效。8–64 个字符，只能用字母、数字、- 和 _。
+        </p>
+        <input
+          v-model="tokenDraft"
+          type="text"
+          maxlength="64"
+          autocomplete="off"
+          spellcheck="false"
+          :placeholder="`当前 ${maskToken(tokenEditing.token)}`"
+          :disabled="busyId !== null"
+          :aria-label="`${tokenEditing.name} 的新订阅令牌`"
+        >
+        <p class="sub">新链接：<code class="mono">{{ subscriptionPathLabel(subPath, tokenDraft.trim() || '…') }}</code></p>
+        <p v-if="tokenError" class="error" role="alert">{{ tokenError }}</p>
+        <div class="actions">
+          <button class="primary" type="submit" :disabled="busyId !== null">
+            {{ busyId === tokenEditing.id ? '保存中…' : '保存令牌' }}
+          </button>
+          <button type="button" :disabled="busyId !== null" @click="closeTokenDialog">取消</button>
+        </div>
+      </form>
     </div>
 
     <div v-if="deleting" class="overlay" role="dialog" aria-modal="true" aria-labelledby="delete-user-title">
