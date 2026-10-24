@@ -20,7 +20,6 @@ import {
   collectUserUserInfo,
   loadUserProfile,
   renderTargetBody,
-  targetProxyNames,
   type ProfileIniResolver,
 } from './export-nodes';
 import { formatUserInfo, type SubscriptionUserInfo } from './userinfo';
@@ -276,11 +275,11 @@ export async function handleSubscriptionExport(
   let userinfo: SubscriptionUserInfo | null;
   try {
     const nodes = collectUserNodes(db, user.id);
-    // Group regexes (`.*`, `((?i)hk)`, ...) are expanded against the names the
-    // producer will emit, i.e. after transformation/filtering.
-    const nodeNames = targetProxyNames(target, nodes);
-    const profile = await loadUserProfile(db, user.id, target, deps.resolveProfileIni, nodeNames);
-    body = renderTargetBody(target, nodes, {}, profile);
+    // The profile load also applies `[common] exclude_remarks`: the returned
+    // nodes already have the info/ads pseudo-nodes dropped, and the profile's
+    // group regexes were expanded against that filtered set.
+    const loaded = await loadUserProfile(db, user.id, target, nodes, deps.resolveProfileIni);
+    body = renderTargetBody(target, loaded?.nodes ?? nodes, {}, loaded?.profile ?? null);
     userinfo = collectUserUserInfo(db, user.id);
   } catch {
     logAccess(db, {

@@ -20,6 +20,12 @@ import type {
 } from '../types';
 import { parse as parseYaml } from 'yaml';
 
+export {
+  compileExcludeRemarks,
+  excludeRemarkNodes,
+  type RemarkExcluder,
+} from './exclude-remarks';
+
 const MAX_YAML_ALIAS_COUNT = 100;
 
 /** Guard against absurdly large user-supplied group regexes. */
