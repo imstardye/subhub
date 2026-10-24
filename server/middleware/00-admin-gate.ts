@@ -29,6 +29,7 @@ import {
   issueGateToken,
   isGateSigningUnavailable,
 } from '../utils/admin-gate';
+import { currentSubPathPrefix } from './sub-path';
 
 interface MinimalRequest {
   headers: Record<string, string | string[] | undefined>;
@@ -91,8 +92,12 @@ export function handleAdminGate(event: GateEvent): boolean {
 
   // A knock always (re)issues the cookie — even when the browser already has
   // one, so the 30 days restart on every visit and a rotated secret recovers.
+  // The gate runs BEFORE the sub-path rewrite, so it must recognise the
+  // effective subscription prefix itself — otherwise exports under a custom
+  // prefix would be blanked as an "unknown top-level path".
+  const subFirstSegment = currentSubPathPrefix().split('/')[0] ?? 's';
   const decision = decideGate(
-    { path, entrance, hasGateCookie: hasValidGateCookie(event.node.req.headers) },
+    { path, entrance, hasGateCookie: hasValidGateCookie(event.node.req.headers), subFirstSegment },
     '',
   );
   if (decision.action === 'knock') {

@@ -177,6 +177,23 @@ describe('gateScope', () => {
     expect(gateScope('/s', entrance)).toEqual({ kind: 'public' });
   });
 
+  it('never gates exports under a custom subscription prefix', () => {
+    // Composition regression (gate x sub-path): the gate runs before the
+    // prefix rewrite, so with sub_path=dl an export arrives as /dl/<token>
+    // and must be public — it used to fall into "unknown top-level path"
+    // and get blanked (200, empty body) on the merged build.
+    const token = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    expect(gateScope(`/dl/${token}/clash`, entrance, 'dl')).toEqual({ kind: 'public' });
+    expect(gateScope('/dl', entrance, 'dl')).toEqual({ kind: 'public' });
+    // Multi-segment prefixes contribute their first segment.
+    expect(gateScope(`/x/y/${token}`, entrance, 'x')).toEqual({ kind: 'public' });
+    // Without the prefix knowledge the same path stays gated (fail closed).
+    expect(gateScope(`/dl/${token}/clash`, entrance)).toEqual({ kind: 'admin-page' });
+    expect(
+      decideGate({ entrance, path: `/dl/${token}/clash`, hasGateCookie: false, subFirstSegment: 'dl' }),
+    ).toEqual({ action: 'allow', reason: 'not-admin-surface' });
+  });
+
   it('classifies /_nuxt as assets', () => {
     expect(gateScope('/_nuxt/entry.js', entrance)).toEqual({ kind: 'assets' });
   });

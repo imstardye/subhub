@@ -166,13 +166,22 @@ export type GateScope =
  * `/api/admin/*` are gated — except the login/logout endpoints, which must be
  * reachable for a browser that just knocked (see UNGATED_ADMIN_API_PATHS).
  */
-export function gateScope(path: string, entrance: string = adminEntrancePath()): GateScope {
+export function gateScope(
+  path: string,
+  entrance: string = adminEntrancePath(),
+  subFirstSegment: string = 's',
+): GateScope {
   const clean = normalizeRequestPath(path);
   if (clean === normalizeRequestPath(entrance)) return { kind: 'knock' };
   const segments = clean.split('/').filter((segment) => segment.length > 0);
   const first = segments[0] ?? '';
 
-  if (first === 's') return { kind: 'public' };
+  // Subscription exports are public under the EFFECTIVE prefix (the in-app
+  // `sub_path` setting, first segment — the gate runs before the sub-path
+  // rewrite middleware, so it must recognise the prefix itself) and under
+  // the implementation root `s` (which the rewrite middleware 404s while a
+  // custom prefix is active — passing it through leaks nothing).
+  if (first === 's' || first === subFirstSegment) return { kind: 'public' };
   // `/my/<token>`: the token is the credential; never gated (the route itself
   // answers 404 for unknown tokens, exactly like `/s/*`).
   if ((USER_CENTER_PAGES as readonly string[]).includes(`/${first}`)) return { kind: 'public' };
@@ -210,6 +219,12 @@ export interface GateInput {
   entrance: string;
   /** True when the request carries a validly signed gate cookie. */
   hasGateCookie: boolean;
+  /**
+   * First segment of the effective subscription prefix (`sub_path` setting;
+   * multi-segment prefixes contribute their first segment). Defaults to the
+   * implementation root `s`.
+   */
+  subFirstSegment?: string;
 }
 
 /** Redirect target of a successful knock: the existing login flow. */
@@ -221,7 +236,7 @@ export const GATE_REDIRECT_PATH = '/login';
  * surface without a cookie is blanked; everything else continues.
  */
 export function decideGate(input: GateInput, cookie = ''): GateDecision {
-  const scope = gateScope(input.path, input.entrance);
+  const scope = gateScope(input.path, input.entrance, input.subFirstSegment ?? 's');
   if (scope.kind === 'knock') {
     return { action: 'knock', cookie, redirect: GATE_REDIRECT_PATH };
   }
