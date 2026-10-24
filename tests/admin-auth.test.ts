@@ -32,6 +32,7 @@ import {
 } from '../server/utils/admin-auth';
 import { LOGIN_MISCONFIGURED_ERROR } from '../server/api/admin/login.post';
 import {
+  createKeyedQueue,
   createLoginThrottle,
   LOGIN_GLOBAL_KEY,
   LOGIN_MAX_FAILURES_PER_IP,
@@ -39,10 +40,12 @@ import {
   LOGIN_SLOWDOWN_MAX_MS,
   LOGIN_UNKNOWN_IP_KEY,
 } from '../server/utils/login-throttle';
+import { TRUSTED_IP_HEADER_ENV } from '../server/utils/client-ip';
+import { createFakeClock, flushMicrotasks } from './helpers/fake-clock';
 
 const PASSWORD = 'correct-horse-battery';
 
-const ENV_KEYS = ['SUBHUB_ADMIN_PASSWORD', 'SUBHUB_SECRET', 'NODE_ENV'] as const;
+const ENV_KEYS = ['SUBHUB_ADMIN_PASSWORD', 'SUBHUB_SECRET', 'NODE_ENV', TRUSTED_IP_HEADER_ENV] as const;
 let savedEnv: Record<string, string | undefined>;
 
 beforeEach(() => {
@@ -50,6 +53,7 @@ beforeEach(() => {
   process.env.SUBHUB_ADMIN_PASSWORD = PASSWORD;
   process.env.SUBHUB_SECRET = 'test-signing-secret';
   delete process.env.NODE_ENV;
+  delete process.env[TRUSTED_IP_HEADER_ENV];
 });
 
 afterEach(() => {
@@ -75,6 +79,8 @@ function makeEvent(
     noBody?: boolean;
     /** Socket peer used as the login throttle key. */
     remoteAddress?: string;
+    /** Value for the trusted forwarding header (see TRUSTED_IP_HEADER_ENV). */
+    forwardedFor?: string;
   } = {},
 ) {
   const headers: Record<string, string> = {
@@ -95,6 +101,7 @@ function makeEvent(
     headers,
     socket: options.remoteAddress ? { remoteAddress: options.remoteAddress } : undefined,
   });
+  if (options.forwardedFor) headers['x-forwarded-for'] = options.forwardedFor;
 
   const responseHeaders: HeaderStore = {};
   const event = {
@@ -532,5 +539,231 @@ describe('login brute-force throttle', () => {
     // 4 IP buckets + the single global bucket.
     expect(throttle.size()).toBe(4 + 1);
     expect(LOGIN_GLOBAL_KEY).toBe('global');
+  });
+});
+
+describe('login slowdown: serialized waiting', () => {
+  /**
+   * A throttle with the default limits, a fake clock, and a login handler whose
+   * `sleep` is driven by that clock: every blocked request really waits until
+   * the test advances time, so "pending" means genuinely pending.
+   */
+  function harness(options: { maxGlobal?: number; maxPerIp?: number } = {}) {
+    let clock = 1_000_000;
+    const throttle = createLoginThrottle({ now: () => clock, ...options });
+    const timer = createFakeClock();
+    return { throttle, timer, advance: (ms: number) => (clock += ms) };
+  }
+
+  /**
+   * Start a login from `ip`. The fake events expose no socket peer, so the IP
+   * is passed through the trusted forwarding header (the same path a proxied
+   * deployment uses); the env var is restored in afterEach.
+   */
+  function start(
+    throttle: ReturnType<typeof createLoginThrottle>,
+    timer: ReturnType<typeof createFakeClock>,
+    password: unknown,
+    ip: string,
+  ) {
+    process.env[TRUSTED_IP_HEADER_ENV] = 'x-forwarded-for';
+    const { event, headers } = makeEvent({
+      method: 'POST',
+      body: { password },
+      forwardedFor: ip,
+    });
+    return adminLoginHandler(event as never, { throttle, sleep: timer.sleep }).then((body) => ({
+      body,
+      status: event.node.res.statusCode,
+      headers,
+    }));
+  }
+
+  /** Tag a promise so the test can tell "pending" from "settled". */
+  function track<T>(promise: Promise<T>) {
+    const state: { settled: boolean; value?: T; error?: unknown } = { settled: false };
+    promise.then(
+      (value) => {
+        state.settled = true;
+        state.value = value;
+      },
+      (error) => {
+        state.settled = true;
+        state.error = error;
+      },
+    );
+    return state;
+  }
+
+  it('keeps a throttled correct login pending until the delay really elapses', async () => {
+    const { throttle, timer } = harness();
+    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
+      expect((await start(throttle, timer, 'wrong', '203.0.113.7')).status).toBe(401);
+    }
+    // The failures were not slowed, so nothing is waiting yet.
+    expect(timer.intervals).toHaveLength(0);
+
+    const login = track(start(throttle, timer, PASSWORD, '203.0.113.7'));
+    await flushMicrotasks();
+    // Inside the delay window: no password check, no response yet.
+    expect(login.settled).toBe(false);
+    expect(timer.intervals).toEqual([
+      { start: 0, duration: LOGIN_SLOWDOWN_BASE_MS, end: undefined },
+    ]);
+
+    // Still pending one tick before the delay ends.
+    timer.tick(LOGIN_SLOWDOWN_BASE_MS - 1);
+    await flushMicrotasks();
+    expect(login.settled).toBe(false);
+
+    timer.tick(1);
+    await flushMicrotasks();
+    expect(login.settled).toBe(true);
+    const result = login.value!;
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ ok: true });
+    expect(result.headers['set-cookie']).toContain(`${ADMIN_COOKIE}=`);
+    expect(result.headers['retry-after']).toMatch(/^\d+$/);
+    // Never a 429, before or after the limit.
+    expect(result.status).not.toBe(429);
+  });
+
+  it('serializes concurrent throttled requests from one IP (no overlap)', async () => {
+    const { throttle, timer } = harness();
+    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
+      await start(throttle, timer, 'wrong', '203.0.113.7');
+    }
+
+    // A burst of 4: one correct password hidden in the middle.
+    const burst = [
+      track(start(throttle, timer, 'wrong', '203.0.113.7')),
+      track(start(throttle, timer, PASSWORD, '203.0.113.7')),
+      track(start(throttle, timer, 'wrong', '203.0.113.7')),
+      track(start(throttle, timer, 'wrong', '203.0.113.7')),
+    ];
+    await flushMicrotasks();
+
+    // Only the first request is waiting; the others are queued behind it.
+    expect(timer.intervals).toHaveLength(1);
+    expect(burst.every((entry) => !entry.settled)).toBe(true);
+
+    // Drain step by step: every fired delay releases exactly one request and
+    // starts exactly one more, so the intervals never overlap.
+    for (let step = 0; step < burst.length; step += 1) {
+      expect(timer.intervals).toHaveLength(step + 1);
+      expect(burst.filter((entry) => entry.settled)).toHaveLength(step);
+      timer.tick(timer.intervals.at(-1)!.duration);
+      await flushMicrotasks();
+      expect(burst.filter((entry) => entry.settled)).toHaveLength(step + 1);
+    }
+
+    // Intervals are contiguous and non-overlapping: total wait = sum of delays.
+    const intervals = timer.intervals;
+    expect(intervals).toHaveLength(burst.length);
+    let cursor = 0;
+    for (const interval of intervals) {
+      expect(interval.start).toBe(cursor);
+      expect(interval.end).toBe(interval.start + interval.duration);
+      cursor = interval.end!;
+    }
+    const totalWait = intervals.reduce((sum, interval) => sum + interval.duration, 0);
+    expect(timer.now()).toBe(totalWait);
+    // The backoff grows, so all four waits are at least the base delay: a
+    // parallel implementation would have finished the whole burst in <= base.
+    expect(totalWait).toBeGreaterThanOrEqual(LOGIN_SLOWDOWN_BASE_MS * burst.length);
+    expect(Math.max(...intervals.map((interval) => interval.duration))).toBeLessThanOrEqual(
+      LOGIN_SLOWDOWN_MAX_MS,
+    );
+
+    // Every request completed normally; the correct one logged in, none got 429.
+    const statuses = burst.map((entry) => entry.value!.status);
+    expect(statuses).toEqual([401, 200, 401, 401]);
+    expect(burst[1].value!.headers['set-cookie']).toContain(`${ADMIN_COOKIE}=`);
+  });
+
+  it('does not block other IPs while one IP is over its limit', async () => {
+    const { throttle, timer } = harness();
+    for (let i = 0; i < LOGIN_MAX_FAILURES_PER_IP; i += 1) {
+      await start(throttle, timer, 'wrong', '198.51.100.1');
+    }
+    const slow = track(start(throttle, timer, 'wrong', '198.51.100.1'));
+    await flushMicrotasks();
+    expect(timer.intervals).toHaveLength(1);
+
+    // Another IP still has budget: answered without any delay.
+    const other = track(start(throttle, timer, 'wrong', '198.51.100.2'));
+    await flushMicrotasks();
+    expect(other.settled).toBe(true);
+    expect(other.value!.status).toBe(401);
+    expect(slow.settled).toBe(false);
+    expect(timer.intervals).toHaveLength(1);
+  });
+
+  it('serializes globally when the global bucket is exhausted', async () => {
+    const { throttle, timer } = harness({ maxGlobal: 2, maxPerIp: 10 });
+    for (const ip of ['192.0.2.1', '192.0.2.2']) {
+      expect((await start(throttle, timer, 'wrong', ip)).status).toBe(401);
+    }
+
+    const burst = ['192.0.2.3', '192.0.2.4', '192.0.2.5'].map((ip) =>
+      track(start(throttle, timer, PASSWORD, ip)),
+    );
+    await flushMicrotasks();
+    // Different IPs, but the global bucket is full: only one delay runs.
+    expect(timer.intervals).toHaveLength(1);
+    expect(burst.every((entry) => !entry.settled)).toBe(true);
+
+    for (let step = 0; step < burst.length; step += 1) {
+      timer.tick(timer.intervals.at(-1)!.duration);
+      await flushMicrotasks();
+      expect(burst.filter((entry) => entry.settled)).toHaveLength(step + 1);
+    }
+    const intervals = timer.intervals;
+    expect(intervals).toHaveLength(burst.length);
+    for (let i = 1; i < intervals.length; i += 1) {
+      expect(intervals[i].start).toBe(intervals[i - 1].end);
+    }
+    expect(burst.map((entry) => entry.value!.status)).toEqual([200, 200, 200]);
+  });
+
+  it('marks only attempts that were actually counted', () => {
+    const throttle = createLoginThrottle({ now: () => 0, maxGlobal: 1, maxPerIp: 1 });
+    expect(throttle.consume('10.0.0.1')).toMatchObject({ throttled: false, counted: true });
+    // Same IP again: the IP bucket is full (global too) — still over a limit.
+    expect(throttle.consume('10.0.0.1')).toMatchObject({ throttled: true, counted: false });
+    // Global bucket full and a fresh IP: the IP bucket still had room, so that
+    // slot is counted (a correct password would give it back); the global
+    // limit is reported separately.
+    expect(throttle.consume('10.0.0.2')).toMatchObject({
+      throttled: true,
+      global: true,
+      counted: true,
+    });
+    // IP bucket full, global still has room: the global slot is counted (and is
+    // what a successful login would give back).
+    const ipOnly = createLoginThrottle({ now: () => 0, maxGlobal: 10, maxPerIp: 1 });
+    expect(ipOnly.consume('10.0.1.1').counted).toBe(true);
+    expect(ipOnly.consume('10.0.1.1')).toMatchObject({
+      throttled: true,
+      global: false,
+      counted: true,
+    });
+  });
+
+  it('keeps the queue map bounded and drains it', async () => {
+    const queue = createKeyedQueue(2);
+    const gates: Array<() => void> = [];
+    const gate = () => new Promise<void>((resolve) => gates.push(resolve));
+    const a = queue.enqueue('ip:a', gate);
+    const b = queue.enqueue('ip:b', gate);
+    await flushMicrotasks();
+    expect(queue.size()).toBe(2);
+    // Over the cap: still delayed (runs unchained), but the map does not grow.
+    const c = queue.enqueue('ip:c', gate);
+    expect(queue.size()).toBe(2);
+    gates.splice(0).forEach((release) => release());
+    await Promise.all([a, b, c]);
+    await flushMicrotasks();
+    expect(queue.size()).toBe(0);
   });
 });

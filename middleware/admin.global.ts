@@ -12,16 +12,21 @@
  * client-side navigation, then redirects to /login when the visitor is not
  * authenticated. An already-authenticated visitor reaching /login is sent on
  * by login.vue itself, which keeps the `redirect` query handling there.
+ *
+ * The decision itself lives in `core/utils/admin-gate.ts` (`resolveAdminGate`)
+ * so it can be tested without a Nuxt runtime; this file only wires it up.
  */
+import { ADMIN_LOGIN_PATH, resolveAdminGate } from '../core/utils/admin-gate';
+
 export default defineNuxtRouteMiddleware(async (to) => {
-  if (to.path === '/login') return;
+  // Public page first: never even ask the server about /login.
+  if (to.path === ADMIN_LOGIN_PATH) return;
 
   const requestFetch = useRequestFetch();
   const state = await requestFetch<{ authenticated: boolean }>('/api/admin/me').catch(
     () => ({ authenticated: false }),
   );
 
-  if (!state.authenticated) {
-    return navigateTo({ path: '/login', query: { redirect: to.fullPath } });
-  }
+  const decision = resolveAdminGate(to, state);
+  if (decision.action === 'navigate') return navigateTo(decision.to);
 });
