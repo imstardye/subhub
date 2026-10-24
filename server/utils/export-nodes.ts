@@ -34,6 +34,7 @@ import {
   excludeRemarkNodes,
   parseIni,
   parseSubscription,
+  prepareNode,
   produceLoon,
   produceMihomo,
   produceMihomoProxiesOnly,
@@ -41,12 +42,11 @@ import {
   produceSingbox,
   produceSurge,
   produceUri,
-  prepareNode,
+  pruneEmptyGroups,
   stringifyMihomoConfig,
   type ClashProxyGroup,
   type ProxyNode,
   type ProduceOptions,
-  type ProxyGroupEntry,
 } from '../../core';
 import { stringify as stringifyYaml } from 'yaml';
 import type { SubhubDb } from '../db';
@@ -346,16 +346,35 @@ export async function loadUserProfile(
     // empty-rule config; keep today's nodes-only output instead.
     if (built.proxyGroups.length === 0 && built.rules.length === 0) return null;
 
+    // One prune pass for every target, before the profile leaves this function:
+    // a group whose regexes matched none of the user's nodes renders as
+    // `proxies: []`, which makes mihomo/Clash reject the whole config. Dropping
+    // it here (and the references/rules pointing at it) keeps mihomo/clash
+    // byte-identical and lets surge/loon inherit the fix; their own builder
+    // still prunes against *their* emitted names on top. `nodeNames` are the
+    // target's emitted names, so a member that is neither a group, a built-in
+    // nor an emitted node is a dangling reference and goes too.
+    const pruned = pruneEmptyGroups(
+      { proxyGroups: built.proxyGroups, rules: built.rules },
+      // `groupNames` is every group the INI declares (a repeated name is one
+      // group in the output, defined by its last declaration), so a name the
+      // prune keeps can never be absent from the emitted `proxy-groups`.
+      { nodeNames, groupNames: ini.groups.map((group) => group.name) },
+    );
+    if (pruned.proxyGroups.length === 0 && pruned.rules.length === 0) return null;
+
     const capability = exportProfileCapability(exportTarget);
-    if (capability === 'none' && built.proxyGroups.length === 0) return null;
-    if (capability === 'groups' && built.proxyGroups.length === 0) return null;
+    if (capability === 'none' && pruned.proxyGroups.length === 0) return null;
+    if (capability === 'groups' && pruned.proxyGroups.length === 0) return null;
 
     return {
       profile: {
         ruleProviders: built.ruleProviders,
-        rules: built.rules,
-        proxyGroups: built.proxyGroups,
-        groupNames: ini.groups.map((group: ProxyGroupEntry) => group.name),
+        rules: pruned.rules,
+        proxyGroups: pruned.proxyGroups,
+        // Only the groups that survived the prune: a caller resolving a name in
+        // `groupNames` must never reach a group the output does not define.
+        groupNames: pruned.proxyGroups.map((group) => group.name),
         // Raw text only: the core parses it at render time and silently falls
         // back to the built-in DNS section when it is not a YAML mapping.
         dnsTemplate: row.dnsTemplate ?? null,
