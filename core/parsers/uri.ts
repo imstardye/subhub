@@ -182,16 +182,13 @@ export function parseSsr(line: string): ProxyNode {
     throw new Error('Invalid SSR URI: malformed payload');
   }
 
-  // SSR writers use the literal `(null)` for empty parameters. Sub-Store
-  // strips whitespace from the decoded protocol/obfs params but not names.
+  // SSR writers use the literal `(null)` for empty parameters.
   const decodeSsrParam = (value: string | undefined): string =>
     value && value.trim() !== '(null)'
-      ? decodeBase64(value).replace(/\s/g, '')
+      ? decodeBase64(value)
       : '';
-  const remarks =
-    query.remarks && query.remarks.trim() !== '(null)'
-      ? decodeBase64(query.remarks)
-      : '';
+  const remarks = decodeSsrParam(query.remarks);
+  const group = decodeSsrParam(query.group);
   const protocolParam = decodeSsrParam(
     query.protoparam || query.protocolparam,
   );
@@ -213,6 +210,7 @@ export function parseSsr(line: string): ProxyNode {
 
   if (protocolParam) node['protocol-param'] = protocolParam;
   if (obfsParam) node['obfs-param'] = obfsParam;
+  if (group) node.group = group;
 
   return node;
 }

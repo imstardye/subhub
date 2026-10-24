@@ -99,11 +99,56 @@ describe('SSR parser', () => {
     });
   });
 
+  it('preserves spaces in decoded protocol and obfs params', () => {
+    const main = `ssr.example.com:443:origin:aes-128-cfb:plain:${encodeBase64('fake-password')}`;
+    const node = parseSsr(
+      `ssr://${encodeBase64(`${main}/?obfsparam=YSBi&protoparam=YyBk&remarks=U1NSIHRlc3Q&group=R3JvdXAgdGVzdA`)}`,
+    );
+
+    expect(node).toMatchObject({
+      'obfs-param': 'a b',
+      'protocol-param': 'c d',
+      name: 'SSR test',
+      group: 'Group test',
+    });
+  });
+
+  it.each(['8J-YgCDwn5i_IGE', '8J-YgCDwn5i_IGE='])(
+    'decodes URL-safe base64 params with optional padding: %s',
+    (value) => {
+      const main = `ssr.example.com:443:origin:aes-128-cfb:plain:${encodeBase64('fake-password')}`;
+      const query = ['obfsparam', 'protoparam', 'remarks', 'group']
+        .map((key) => `${key}=${value}`)
+        .join('&');
+      const node = parseSsr(`ssr://${encodeBase64(`${main}/?${query}`)}`);
+
+      expect(node).toMatchObject({
+        'obfs-param': '😀 😿 a',
+        'protocol-param': '😀 😿 a',
+        name: '😀 😿 a',
+        group: '😀 😿 a',
+      });
+    },
+  );
+
+  it.each(['obfsparam', 'protoparam', 'protocolparam', 'remarks', 'group'])(
+    'rejects invalid base64 in %s',
+    (key) => {
+      const main = `ssr.example.com:443:origin:aes-128-cfb:plain:${encodeBase64('fake-password')}`;
+      const uri = `ssr://${encodeBase64(`${main}/?${key}=!!!`)}`;
+
+      expect(() => parseSsr(uri)).toThrow();
+      const result = parseSubscriptionDetailed(uri);
+      expect(result.nodes).toEqual([]);
+      expect(result.errors).toHaveLength(1);
+    },
+  );
+
   it('keeps bracketed IPv6 servers and drops (null) params', () => {
     const main = `[2001:db8::1]:8388:origin:aes-128-cfb:plain:${encodeBase64('fake-pw')}`;
     const node = parseSsr(
       `ssr://${encodeBase64(
-        `${main}/?remarks=${encodeBase64('SSR6')}&obfsparam=(null)`,
+        `${main}/?remarks=${encodeBase64('SSR6')}&obfsparam=(null)&protoparam=(null)&group=(null)`,
       )}`,
     );
 
@@ -111,6 +156,8 @@ describe('SSR parser', () => {
     expect(node.port).toBe(8388);
     expect(node.name).toBe('SSR6');
     expect(node['obfs-param']).toBeUndefined();
+    expect(node['protocol-param']).toBeUndefined();
+    expect(node.group).toBeUndefined();
   });
 });
 

@@ -7,7 +7,7 @@
  * See the repository LICENSE file.
  */
 
-const BASE64_ALPHABET = /^[A-Za-z0-9+/_=-]+$/;
+const BASE64_ALPHABET = /^[A-Za-z0-9+/]*={0,2}$/;
 
 export function normalizeBase64(input: string): string {
   const compact = input.replace(/\s+/g, '');
@@ -18,14 +18,24 @@ export function decodeBase64(input: string): string {
   const normalized = normalizeBase64(input);
   if (!normalized) return '';
 
-  if (typeof Buffer !== 'undefined') {
-    return Buffer.from(normalized, 'base64').toString('utf8');
+  // Buffer silently ignores malformed input; validate before either decoder.
+  // Padding may be omitted, but any supplied padding must be well formed.
+  if (
+    !BASE64_ALPHABET.test(normalized) ||
+    normalized.length % 4 === 1 ||
+    (normalized.includes('=') && normalized.length % 4 !== 0)
+  ) {
+    throw new Error('Invalid base64 input');
   }
 
   const padded = normalized.padEnd(
     normalized.length + ((4 - (normalized.length % 4)) % 4),
     '=',
   );
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(padded, 'base64').toString('utf8');
+  }
+
   const binary = atob(padded);
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
   return new TextDecoder().decode(bytes);
