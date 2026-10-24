@@ -4,10 +4,9 @@
  * thin wrapper and the behaviour is unit-testable.
  *
  * P2 scope: user lookup, per-token rate limiting, cache-backed source
- * aggregation (the refresh task fills `cache_blob`) and access logging. The
- * remaining targeted producers (shadowrocket/singbox/surge/loon/uri) are still
- * missing; unsupported targets fall back to the mihomo YAML (see P4 note
- * below).
+ * aggregation (the refresh task fills `cache_blob`) and access logging.
+ * `singbox` and `uri` have real producers; shadowrocket/surge/loon still fall
+ * back to the mihomo YAML (see P4 note below and `targets.ts`).
  *
  * The user's rule profile (`users.profileId`) is applied on top of the nodes:
  * its proxy groups, rules and rule-providers are appended to the rendered YAML.
@@ -23,7 +22,12 @@ import {
   renderTargetBody,
   type ProfileIniResolver,
 } from './export-nodes';
-import { isExportTarget, type ExportTarget } from './targets';
+import {
+  contentTypeForTarget,
+  fileNameExtensionFor,
+  isExportTarget,
+  type ExportTarget,
+} from './targets';
 import {
   createRateLimiter,
   RATE_LIMIT_MAX,
@@ -136,7 +140,7 @@ export function resolveTarget(
 }
 
 function fileNameFor(target: ExportTarget, user: { id: number }): string {
-  return `subhub-${user.id}-${target}.yaml`;
+  return `subhub-${user.id}-${target}.${fileNameExtensionFor(target)}`;
 }
 
 function logAccess(
@@ -303,7 +307,7 @@ export async function handleSubscriptionExport(
     headers: {
       // Same hardening as the text error paths (notably `cache-control: no-store`).
       ...TEXT_HEADERS,
-      'content-type': 'text/yaml; charset=utf-8',
+      'content-type': contentTypeForTarget(target),
       'content-disposition': `attachment; filename="${fileNameFor(target, user)}"`,
       'profile-update-interval': '24',
       'profile-web-page-url': 'https://github.com/imstardye/subhub',
