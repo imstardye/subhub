@@ -48,7 +48,7 @@ export const OPTIONS_MAX_LENGTH = 16 * 1024;
 export class ValidationError extends Error {
   constructor(
     message: string,
-    readonly statusCode: 400 | 404 = 400,
+    readonly statusCode: 400 | 403 | 404 = 400,
   ) {
     super(message);
     this.name = 'ValidationError';

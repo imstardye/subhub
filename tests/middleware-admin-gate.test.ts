@@ -9,7 +9,7 @@
  * All paths and query strings below are fixtures.
  */
 import { describe, expect, it } from 'vitest';
-import { ADMIN_LOGIN_PATH, resolveAdminGate } from '../core/utils/admin-gate';
+import { ADMIN_LOGIN_PATH, isPublicPage, resolveAdminGate } from '../core/utils/admin-gate';
 
 describe('resolveAdminGate', () => {
   it('lets /login through without any session check', () => {
@@ -43,5 +43,26 @@ describe('resolveAdminGate', () => {
     expect(
       resolveAdminGate({ path: '/sources/42', fullPath: '/sources/42' }, { authenticated: true }),
     ).toEqual({ action: 'allow' });
+  });
+});
+
+describe('user center is public', () => {
+  it('lets /my/<token> through without a session (the token is the credential)', () => {
+    const token = 'a'.repeat(32);
+    for (const path of ['/my', `/my/${token}`, `/my/${token}/`]) {
+      expect(resolveAdminGate({ path, fullPath: path }, { authenticated: false }), path).toEqual({
+        action: 'allow',
+      });
+      expect(isPublicPage(path), path).toBe(true);
+    }
+  });
+
+  it('still sends anonymous visitors of admin pages to /login', () => {
+    expect(isPublicPage('/users')).toBe(false);
+    expect(isPublicPage('/my-settings')).toBe(false);
+    expect(resolveAdminGate({ path: '/users', fullPath: '/users' }, null)).toEqual({
+      action: 'navigate',
+      to: { path: ADMIN_LOGIN_PATH, query: { redirect: '/users' } },
+    });
   });
 });

@@ -12,7 +12,7 @@
  */
 import { eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
-import { sourceAllowedUsers, sources, userSources, users, type User } from '../db/schema';
+import { sourceAllowedUsers, sources, userSourceChoices, userSources, users, type User } from '../db/schema';
 import {
   generateUserToken,
   parseEnabled,
@@ -147,6 +147,7 @@ export function deleteUser(db: SubhubDb, rawId: unknown): { ok: true; id: number
 
   try {
     db.delete(sourceAllowedUsers).where(eq(sourceAllowedUsers.userId, id)).run();
+    db.delete(userSourceChoices).where(eq(userSourceChoices.userId, id)).run();
     db.delete(userSources).where(eq(userSources.userId, id)).run();
     db.delete(sources).where(eq(sources.ownerUserId, id)).run();
     db.delete(users).where(eq(users.id, id)).run();
@@ -155,6 +156,7 @@ export function deleteUser(db: SubhubDb, rawId: unknown): { ok: true; id: number
     // the user instead of surfacing a raw FK error to the admin UI.
     if (!(error instanceof Error) || !/FOREIGN KEY/i.test(error.message)) throw error;
     db.delete(sourceAllowedUsers).where(eq(sourceAllowedUsers.userId, id)).run();
+    db.delete(userSourceChoices).where(eq(userSourceChoices.userId, id)).run();
     db.update(sources).set({ ownerUserId: null }).where(eq(sources.ownerUserId, id)).run();
     db.update(users).set({ profileId: null }).where(eq(users.id, id)).run();
     db.delete(users).where(eq(users.id, id)).run();
