@@ -3,13 +3,14 @@
  * Subscription export logic, kept free of Nuxt/crypto globals so the route is a
  * thin wrapper and the behaviour is unit-testable.
  *
- * P2 scope: user lookup, per-token rate limiting, minimal producers and access
- * logging. Real source parsing/pipeline (P2 cache task) and the remaining
- * targeted producers (shadowrocket/singbox/surge/loon/uri) are still missing;
- * unsupported targets fall back to the mihomo YAML (see P4 note below).
+ * P2 scope: user lookup, per-token rate limiting, cache-backed source
+ * aggregation (the refresh task fills `cache_blob`) and access logging. The
+ * remaining targeted producers (shadowrocket/singbox/surge/loon/uri) are still
+ * missing; unsupported targets fall back to the mihomo YAML (see P4 note
+ * below).
  */
 import { and, asc, eq } from 'drizzle-orm';
-import { parseClashYaml, produceMihomo, produceLegacy, type ProxyNode } from '../../core';
+import { parseSubscription, produceMihomo, produceLegacy, type ProxyNode } from '../../core';
 import type { SubhubDb } from '../db';
 import { accessLogs, sources, userSources, users } from '../db/schema';
 import { createRateLimiter, RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS } from './rate-limit';
@@ -125,8 +126,10 @@ function loadUserSourceCaches(db: SubhubDb, userId: number): CachedSource[] {
 }
 
 /**
- * Parse cached payloads into nodes. A broken cache entry only drops that source;
- * the export must still succeed with whatever remains.
+ * Parse cached payloads into nodes, in the user's source order. Cache blobs are
+ * the raw provider response (share links, base64 or Clash YAML), so they go
+ * through `parseSubscription`. A broken cache entry only drops that source; the
+ * export must still succeed with whatever remains.
  */
 function collectNodes(caches: CachedSource[]): ProxyNode[] {
   const nodes: ProxyNode[] = [];
@@ -134,7 +137,7 @@ function collectNodes(caches: CachedSource[]): ProxyNode[] {
     const blob = entry.cacheBlob?.trim();
     if (!blob) continue;
     try {
-      nodes.push(...parseClashYaml(blob));
+      nodes.push(...parseSubscription(blob));
     } catch {
       // Cache is stale/invalid; the refresh task will replace it.
     }
