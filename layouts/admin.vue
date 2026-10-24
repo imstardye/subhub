@@ -1,8 +1,10 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
- * Admin shell: fixed sidebar plus the page content. Every page is protected
- * by the global `admin.global.ts` route middleware.
+ * Admin shell: fixed sidebar plus the page's content column. The slim top bar
+ * (page title + primary action) is rendered inside the page via
+ * `<PageTopbar>`. Every page is protected by the global `admin.global.ts`
+ * route middleware.
  */
 const links = [
   { to: '/', label: '仪表盘', icon: 'dashboard' },
@@ -101,9 +103,11 @@ async function handleLogout() {
         <span class="nav-label">{{ loggingOut ? '退出中…' : '退出登录' }}</span>
       </button>
     </aside>
-    <main class="content">
-      <slot />
-    </main>
+    <div class="main">
+      <main class="content">
+        <slot />
+      </main>
+    </div>
   </div>
 </template>
 
@@ -239,21 +243,29 @@ nav {
   height: 1.05rem;
 }
 
+.main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  max-width: 96rem;
+  padding: 0 var(--space-10);
+}
+
 .content {
   flex: 1;
   min-width: 0;
-  padding: var(--space-8) var(--space-10);
-  max-width: 96rem;
+  padding: 0 0 var(--space-10);
 }
 
 @media (max-width: 900px) {
-  .content {
-    padding: var(--space-6);
+  .main {
+    padding: 0 var(--space-6);
   }
 }
 
-/* Narrow screens: sidebar collapses to an icon rail so the table pages keep
-   their room. Labels stay in the DOM for assistive tech via title + text. */
+/* Narrow screens: sidebar collapses to an icon rail so the cards keep their
+   room. Labels stay in the DOM for assistive tech via the nav aria-labels. */
 @media (max-width: 640px) {
   .admin {
     flex-direction: column;
@@ -312,8 +324,8 @@ nav {
     padding: 0.5rem;
   }
 
-  .content {
-    padding: var(--space-4) var(--space-3);
+  .main {
+    padding: 0 var(--space-3);
   }
 }
 </style>

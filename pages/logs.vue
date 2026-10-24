@@ -1,17 +1,20 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
- * Access log: paged table over GET /api/admin/logs, newest first.
+ * Access log: dense paged table over GET /api/admin/logs, newest first.
  *
  * Filters (`userId`, `status`) and paging (`limit` / `offset`) are applied
  * server-side; "上一页"/"下一页" move by one page and the total decides whether
- * "下一页" is offered.
+ * "下一页" is offered. Users are picked by name and the status by a select —
+ * no typed ids/codes. Status codes render as coloured chips
+ * (2xx green / 4xx amber / 5xx red).
  */
 definePageMeta({ layout: 'admin' });
 
 import type { AdminAccessLog } from '~/server/utils/admin-logs';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import type { AdminUser } from '~/server/utils/admin-users';
+import { formatDateTime, logStatusClass, logUserName } from '~/core/utils/admin-ui';
 
 interface LogsResponse {
   items: AdminAccessLog[];
@@ -36,16 +39,15 @@ const filterStatus = ref<string>('');
 const hasPrev = computed(() => offset.value > 0);
 const hasNext = computed(() => offset.value + PAGE_SIZE < total.value);
 
-function formatTime(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-
-function userName(log: AdminAccessLog): string {
-  // The log keeps userId after the user is deleted; the name is then null.
-  if (log.userId === null) return '—';
-  return log.userName ?? `(已删除 #${log.userId})`;
-}
+/** Status filter choices (the API takes the numeric code). */
+const STATUS_FILTERS = [
+  { value: '', label: '全部状态' },
+  { value: '200', label: '200 成功' },
+  { value: '400', label: '400 未知目标' },
+  { value: '404', label: '404 未找到' },
+  { value: '429', label: '429 限流' },
+  { value: '500', label: '500 服务器错误' },
+];
 
 async function loadUsers() {
   try {
@@ -108,8 +110,7 @@ onMounted(() => {
 
 <template>
   <section class="page">
-    <header class="page-head">
-      <h1>访问日志</h1>
+    <PageTopbar title="访问日志" subtitle="订阅访问记录，最新在前">
       <button type="button" :disabled="loading" @click="load">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
@@ -117,7 +118,7 @@ onMounted(() => {
         </svg>
         {{ loading ? '刷新中…' : '刷新' }}
       </button>
-    </header>
+    </PageTopbar>
 
     <p v-if="error" class="error" role="alert">{{ error }}</p>
 
@@ -127,13 +128,17 @@ onMounted(() => {
         <select v-model="filterUserId" :disabled="loading">
           <option value="">全部用户</option>
           <option v-for="user in users" :key="user.id" :value="String(user.id)">
-            #{{ user.id }} {{ user.name }}
+            {{ user.name }}
           </option>
         </select>
       </label>
       <label>
         状态码
-        <input v-model="filterStatus" type="number" min="100" max="599" step="1" placeholder="全部" :disabled="loading">
+        <select v-model="filterStatus" :disabled="loading">
+          <option v-for="item in STATUS_FILTERS" :key="item.value" :value="item.value">
+            {{ item.label }}
+          </option>
+        </select>
       </label>
       <div class="actions">
         <button class="primary" type="submit" :disabled="loading">筛选</button>
@@ -171,11 +176,13 @@ onMounted(() => {
         <tbody>
           <tr v-for="log in items" :key="log.id">
             <td class="id-cell">{{ log.id }}</td>
-            <td class="nowrap log-time">{{ formatTime(log.createdAt) }}</td>
-            <td>{{ userName(log) }}</td>
+            <td class="nowrap log-time">{{ formatDateTime(log.createdAt) }}</td>
+            <td>{{ logUserName(log) }}</td>
             <td class="mono">{{ log.target ?? '—' }}</td>
             <td class="mono">{{ log.ip ?? '—' }}</td>
-            <td class="mono status-cell">{{ log.status ?? '—' }}</td>
+            <td>
+              <span :class="logStatusClass(log.status)">{{ log.status ?? '—' }}</span>
+            </td>
             <td class="mono nowrap">{{ log.ms === null ? '—' : `${log.ms} ms` }}</td>
             <td class="ua" :title="log.ua ?? ''">{{ log.ua ?? '—' }}</td>
           </tr>
@@ -226,9 +233,6 @@ onMounted(() => {
   color: var(--muted-foreground);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-}
-.status-cell {
-  font-variant-numeric: tabular-nums;
 }
 .ua {
   max-width: 18rem;

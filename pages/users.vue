@@ -1,16 +1,25 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
- * Users admin page: list, create, edit, delete and token reset.
+ * Users admin page — the operations hub.
  *
- * Talks to /api/admin/users. The token is read-only here (the server generates
- * it) and feeds the public subscription URL /s/:token. Pages are demo-editable
- * only through the real API — there is no client-side fake store.
+ * Every user is a rich row: name, an inline enabled switch, the rule profile
+ * BY NAME (inline `<select>`), the subscription link with 复制 and quick
+ * mihomo/clash targets, the source counts (专属源 N · 可用共享 M) and the row
+ * actions (编辑 / 重置 Token / 删除).
+ *
+ * The switch and the profile select PATCH `/api/admin/users/:id` immediately
+ * and always report a failure through the page's error banner (the previous
+ * value is restored). The create/edit form picks a profile by name from the
+ * profiles API — there is no numeric ID input anywhere.
+ *
+ * `?new=1` (used by the dashboard's 快捷操作 card) opens the create form.
  */
 definePageMeta({ layout: 'admin' });
 
 import type { AdminUser } from '~/server/utils/admin-users';
 import type { AdminSource } from '~/server/utils/admin-sources';
+import type { AdminProfile } from '~/server/utils/admin-profiles';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import {
   buildUserPayload,
@@ -18,13 +27,21 @@ import {
   userFormFromUser,
   type UserForm,
 } from '~/core/utils/user-form';
+import {
+  formatDateTime,
+  maskToken,
+  subscriptionUrl,
+  SUBSCRIPTION_QUICK_TARGETS,
+  userSourceCounts,
+  type UserSourceCounts,
+} from '~/core/utils/admin-ui';
 
+const route = useRoute();
 const users = ref<AdminUser[]>([]);
-/**
- * Sources are loaded only to count each user's dedicated (专属) sources. A
- * failure here must not block user management, so it is loaded best-effort.
- */
+/** Sources are loaded to count 专属 / 共享 sources per user (best effort). */
 const sources = ref<AdminSource[]>([]);
+/** Profiles for the inline select and the form (best effort). */
+const profiles = ref<AdminProfile[]>([]);
 const loading = ref(false);
 const saving = ref(false);
 const busyId = ref<number | null>(null);
@@ -36,26 +53,29 @@ const formOpen = ref(false);
 const form = ref<UserForm>(emptyUserForm());
 
 const deleting = ref<AdminUser | null>(null);
-
 const copiedToken = ref('');
 
-/** Dedicated sources per user id; 公共 sources (no owner) are not counted. */
-const dedicatedCounts = computed(() => {
-  const counts = new Map<number, number>();
-  for (const source of sources.value) {
-    if (source.ownerUserId === null) continue;
-    counts.set(source.ownerUserId, (counts.get(source.ownerUserId) ?? 0) + 1);
-  }
-  return counts;
+const origin = ref('');
+
+const profilesById = computed(() => new Map(profiles.value.map((p) => [p.id, p])));
+
+const counts = computed(() => {
+  const map = new Map<number, UserSourceCounts>();
+  for (const user of users.value) map.set(user.id, userSourceCounts(sources.value, user.id));
+  return map;
 });
 
-function dedicatedCount(user: AdminUser): number {
-  return dedicatedCounts.value.get(user.id) ?? 0;
+function countsOf(user: AdminUser): UserSourceCounts {
+  return counts.value.get(user.id) ?? { dedicated: 0, shared: 0 };
 }
 
-function subscriptionUrl(user: Pick<AdminUser, 'token'>): string {
-  // Client-only: copyLink runs in the browser after mount.
-  return `${window.location.origin}/s/${user.token}`;
+function profileName(user: AdminUser): string {
+  if (user.profileId === null) return '无规则档';
+  return profilesById.value.get(user.profileId)?.name ?? `已删除的规则档 #${user.profileId}`;
+}
+
+function linkFor(user: AdminUser, target?: string): string {
+  return subscriptionUrl(origin.value || 'http://localhost', user.token, target);
 }
 
 async function loadSources() {
@@ -63,8 +83,17 @@ async function loadSources() {
     const res = await $fetch<{ items: AdminSource[] }>('/api/admin/sources');
     sources.value = res.items;
   } catch {
-    // The count is decorative; the user list stays usable without it.
+    // Counts are informational; the hub stays usable without them.
     sources.value = [];
+  }
+}
+
+async function loadProfiles() {
+  try {
+    const res = await $fetch<{ items: AdminProfile[] }>('/api/admin/profiles');
+    profiles.value = res.items;
+  } catch {
+    profiles.value = [];
   }
 }
 
@@ -79,7 +108,66 @@ async function load() {
   } finally {
     loading.value = false;
   }
-  await loadSources();
+  await Promise.all([loadSources(), loadProfiles()]);
+}
+
+/** PATCH one user and fold the server's answer back into the list. */
+async function patchUser(user: AdminUser, body: Record<string, unknown>): Promise<AdminUser | null> {
+  const res = await $fetch<{ item: AdminUser }>(`/api/admin/users/${user.id}`, {
+    method: 'PATCH',
+    body,
+  });
+  users.value = users.value.map((u) => (u.id === res.item.id ? res.item : u));
+  return res.item;
+}
+
+/**
+ * Inline enabled toggle: PATCHes at once. A failure shows the banner and
+ * reverts the optimistic flip (the row always reflects the server).
+ */
+async function toggleEnabled(user: AdminUser) {
+  if (busyId.value !== null) return;
+  const next = !user.enabled;
+  busyId.value = user.id;
+  error.value = '';
+  notice.value = '';
+  const before = user.enabled;
+  users.value = users.value.map((u) => (u.id === user.id ? { ...u, enabled: next } : u));
+  try {
+    await patchUser(user, { enabled: next });
+    notice.value = `「${user.name}」已${next ? '启用' : '停用'}`;
+  } catch (err) {
+    users.value = users.value.map((u) => (u.id === user.id ? { ...u, enabled: before } : u));
+    error.value = `「${user.name}」状态更新失败：${apiErrorMessage(err)}`;
+  } finally {
+    busyId.value = null;
+  }
+}
+
+/** Inline profile select (by name): '' = 无. PATCHes at once. */
+async function changeProfile(user: AdminUser, event: Event) {
+  if (busyId.value !== null) return;
+  const value = (event.target as HTMLSelectElement).value;
+  const profileId = value === '' ? null : Number(value);
+  const before = user.profileId;
+  busyId.value = user.id;
+  error.value = '';
+  notice.value = '';
+  users.value = users.value.map((u) => (u.id === user.id ? { ...u, profileId } : u));
+  try {
+    await patchUser(user, { profileId });
+    notice.value = profileId === null
+      ? `「${user.name}」已取消规则档`
+      : `「${user.name}」规则档已改为「${profilesById.value.get(profileId)?.name ?? ''}」`;
+  } catch (err) {
+    users.value = users.value.map((u) => (u.id === user.id ? { ...u, profileId: before } : u));
+    error.value = `「${user.name}」规则档更新失败：${apiErrorMessage(err)}`;
+    // Re-sync the <select> with the restored state.
+    const select = event.target as HTMLSelectElement;
+    select.value = before === null ? '' : String(before);
+  } finally {
+    busyId.value = null;
+  }
 }
 
 function openCreate() {
@@ -96,6 +184,11 @@ function openEdit(user: AdminUser) {
   formOpen.value = true;
   error.value = '';
   notice.value = '';
+  if (import.meta.client) {
+    nextTick(() => {
+      document.getElementById('user-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
 }
 
 function closeForm() {
@@ -105,18 +198,12 @@ function closeForm() {
 }
 
 /**
- * Submit the create/edit form.
- *
- * Never resolves without feedback: validation problems, API errors (the
- * server's Chinese `error` message is shown as-is), and *unexpected*
- * exceptions — including ones thrown before `$fetch` is even called — all end
- * in a visible error banner. The form stays open so the input is not lost.
+ * Submit the create/edit form. Never resolves without feedback: validation
+ * problems, API errors and unexpected exceptions all end in the banner, and
+ * the form stays open so nothing is lost.
  */
 async function submitForm() {
   if (saving.value) return;
-  // The whole handler is guarded, not just the request: anything that throws
-  // here (a render/validation bug included) must still produce a visible
-  // banner instead of leaving the form looking like nothing happened.
   try {
     error.value = '';
     notice.value = '';
@@ -128,22 +215,16 @@ async function submitForm() {
       return;
     }
 
-    let saved: AdminUser;
     if (editingId.value === null) {
       const res = await $fetch<{ item: AdminUser }>('/api/admin/users', {
         method: 'POST',
         body: built.payload,
       });
-      saved = res.item;
-      users.value = [...users.value, saved];
+      users.value = [...users.value, res.item];
       notice.value = '用户已创建';
     } else {
-      const res = await $fetch<{ item: AdminUser }>(`/api/admin/users/${editingId.value}`, {
-        method: 'PATCH',
-        body: built.payload,
-      });
-      saved = res.item;
-      users.value = users.value.map((u) => (u.id === saved.id ? saved : u));
+      const item = await patchUser({ id: editingId.value } as AdminUser, built.payload);
+      if (!item) return;
       notice.value = '用户已更新';
     }
     closeForm();
@@ -166,7 +247,7 @@ async function confirmDelete() {
     notice.value = `已删除用户「${user.name}」`;
     if (editingId.value === user.id) closeForm();
     deleting.value = null;
-    // Their dedicated sources went with them.
+    // Their sources (and allowlist entries) went with them.
     await loadSources();
   } catch (err) {
     error.value = apiErrorMessage(err);
@@ -194,27 +275,29 @@ async function resetToken(user: AdminUser) {
   }
 }
 
-async function copyLink(user: AdminUser) {
-  const url = subscriptionUrl(user);
+async function copyText(text: string, token: string) {
   try {
-    await navigator.clipboard.writeText(url);
-    copiedToken.value = user.token;
+    await navigator.clipboard.writeText(text);
+    copiedToken.value = token;
     notice.value = '订阅链接已复制';
     window.setTimeout(() => {
-      if (copiedToken.value === user.token) copiedToken.value = '';
+      if (copiedToken.value === token) copiedToken.value = '';
     }, 2000);
   } catch {
     error.value = '复制失败，请手动复制链接';
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  origin.value = window.location.origin;
+  if (route.query.new !== undefined) openCreate();
+  load();
+});
 </script>
 
 <template>
   <section class="page">
-    <header class="page-head">
-      <h1>用户</h1>
+    <PageTopbar title="用户" subtitle="启用状态、规则档与订阅链接，一处管理">
       <button class="primary" type="button" @click="openCreate">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M12 5v14" />
@@ -222,28 +305,45 @@ onMounted(load);
         </svg>
         新建用户
       </button>
-    </header>
+    </PageTopbar>
 
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-if="notice" class="notice">{{ notice }}</p>
 
-    <form v-if="formOpen" class="card form" @submit.prevent="submitForm">
-      <h2>{{ editingId === null ? '新建用户' : `编辑用户 #${editingId}` }}</h2>
+    <form
+      v-if="formOpen"
+      id="user-form"
+      class="card form"
+      @submit.prevent="submitForm"
+    >
+      <h2>{{ editingId === null ? '新建用户' : `编辑用户「${users.find((u) => u.id === editingId)?.name ?? ''}」` }}</h2>
       <label>
         名称
-        <input v-model="form.name" type="text" maxlength="100" required :disabled="saving">
+        <input
+          v-model="form.name"
+          type="text"
+          maxlength="100"
+          required
+          autocomplete="off"
+          :disabled="saving"
+        >
+      </label>
+      <label>
+        规则档
+        <select v-model="form.profileId" :disabled="saving">
+          <option value="">无</option>
+          <option v-for="profile in profiles" :key="profile.id" :value="String(profile.id)">
+            {{ profile.name }}（{{ profile.variant }}）
+          </option>
+        </select>
       </label>
       <label class="inline">
         <input v-model="form.enabled" type="checkbox" :disabled="saving">
         启用
       </label>
       <label>
-        备注
+        备注（可选）
         <textarea v-model="form.note" rows="2" maxlength="500" :disabled="saving" />
-      </label>
-      <label>
-        规则档 ID（可选）
-        <input v-model="form.profileId" type="number" min="1" step="1" :disabled="saving">
       </label>
       <div class="actions">
         <button class="primary" type="submit" :disabled="saving">
@@ -259,77 +359,96 @@ onMounted(load);
         <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
         <circle cx="9" cy="7" r="4" />
       </svg>
-      暂无用户。
+      暂无用户，点击右上角「新建用户」开始。
     </p>
 
-    <div v-else class="table-wrap">
-      <table class="list">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>名称</th>
-            <th>状态</th>
-            <th>规则档</th>
-            <th>专属源</th>
-            <th>备注</th>
-            <th>订阅链接</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="user in users" :key="user.id">
-            <td class="id-cell">{{ user.id }}</td>
-            <td>{{ user.name }}</td>
-            <td>
-              <span :class="['badge', user.enabled ? 'on' : 'off']">
-                {{ user.enabled ? '启用' : '停用' }}
-              </span>
-            </td>
-            <td class="mono">{{ user.profileId ?? '—' }}</td>
-            <td>
-              <span
-                :class="['badge', dedicatedCount(user) > 0 ? 'on' : 'off']"
-                :title="dedicatedCount(user) > 0 ? '该用户的专属订阅源数量' : '该用户没有专属订阅源'"
-              >
-                {{ dedicatedCount(user) }}
-              </span>
-            </td>
-            <td class="note">{{ user.note ?? '—' }}</td>
-            <td class="token">
-              <code>{{ user.token }}</code>
-              <button type="button" class="small" @click="copyLink(user)">
-                {{ copiedToken === user.token ? '已复制' : '复制链接' }}
-              </button>
-            </td>
-            <td class="row-actions">
-              <button type="button" class="small" :disabled="busyId !== null" @click="openEdit(user)">
-                编辑
-              </button>
-              <button
-                type="button"
-                class="small"
-                :disabled="busyId !== null"
-                @click="resetToken(user)"
-              >
-                {{ busyId === user.id ? '处理中…' : '重置 token' }}
-              </button>
-              <button
-                type="button"
-                class="small danger"
-                :disabled="busyId !== null"
-                @click="deleting = user"
-              >
-                删除
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <div v-else class="rows">
+      <article
+        v-for="user in users"
+        :key="user.id"
+        :class="['entity', { 'is-disabled': !user.enabled }]"
+      >
+        <div class="entity-identity">
+          <div class="entity-name">
+            <span :title="user.name">{{ user.name }}</span>
+            <button
+              type="button"
+              role="switch"
+              :class="['switch', 'small']"
+              :aria-checked="user.enabled ? 'true' : 'false'"
+              :aria-busy="busyId === user.id ? 'true' : 'false'"
+              :aria-label="`${user.enabled ? '停用' : '启用'}用户 ${user.name}`"
+              :disabled="busyId !== null"
+              @click="toggleEnabled(user)"
+            >
+              <span class="switch-track" aria-hidden="true"><span class="switch-thumb" /></span>
+              {{ user.enabled ? '启用' : '停用' }}
+            </button>
+          </div>
+          <span v-if="user.note" class="sub">{{ user.note }}</span>
+          <span v-else-if="user.createdAt" class="sub">创建于 {{ formatDateTime(user.createdAt) }}</span>
+        </div>
+
+        <div class="entity-body">
+          <label class="entity-field" :title="`规则档：${profileName(user)}`">
+            规则档
+            <select
+              :value="user.profileId === null ? '' : String(user.profileId)"
+              :disabled="busyId !== null"
+              :aria-label="`${user.name} 的规则档`"
+              @change="changeProfile(user, $event)"
+            >
+              <option value="">无</option>
+              <option v-for="profile in profiles" :key="profile.id" :value="String(profile.id)">
+                {{ profile.name }}
+              </option>
+            </select>
+          </label>
+
+          <span class="entity-field link-row" :title="linkFor(user)">
+            <code class="mono">/s/{{ maskToken(user.token) }}</code>
+            <button
+              type="button"
+              class="small"
+              :aria-label="`复制 ${user.name} 的订阅链接`"
+              @click="copyText(linkFor(user), user.token)"
+            >
+              {{ copiedToken === user.token ? '已复制' : '复制' }}
+            </button>
+            <a
+              v-for="quick in SUBSCRIPTION_QUICK_TARGETS"
+              :key="quick.target"
+              class="sub quick-target"
+              :href="linkFor(user, quick.target)"
+              target="_blank"
+              rel="noreferrer"
+            >{{ quick.label }}</a>
+          </span>
+
+          <span class="counts" :title="`专属源 ${countsOf(user).dedicated} 个 · 可用共享源 ${countsOf(user).shared} 个`">
+            专属源 <b>{{ countsOf(user).dedicated }}</b>
+            ·
+            可用共享 <b>{{ countsOf(user).shared }}</b>
+          </span>
+        </div>
+
+        <div class="entity-actions">
+          <button type="button" class="small" :disabled="busyId !== null" @click="openEdit(user)">
+            编辑
+          </button>
+          <button type="button" class="small" :disabled="busyId !== null" @click="resetToken(user)">
+            {{ busyId === user.id ? '处理中…' : '重置 Token' }}
+          </button>
+          <button type="button" class="small danger" :disabled="busyId !== null" @click="deleting = user">
+            删除
+          </button>
+        </div>
+      </article>
     </div>
 
-    <div v-if="deleting" class="overlay" role="dialog" aria-modal="true">
+    <div v-if="deleting" class="overlay" role="dialog" aria-modal="true" aria-labelledby="delete-user-title">
       <div class="card dialog">
-        <h2>删除用户</h2>
+        <h2 id="delete-user-title">删除用户</h2>
         <p>确定删除「{{ deleting.name }}」？该用户的订阅链接将立即失效，其专属订阅源也会一并删除。</p>
         <div class="actions">
           <button class="danger" type="button" :disabled="busyId !== null" @click="confirmDelete">
@@ -343,29 +462,17 @@ onMounted(load);
 </template>
 
 <style scoped>
-.note {
-  max-width: 14rem;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.id-cell {
+.quick-target {
+  text-decoration: none;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--muted-foreground);
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  color: var(--muted-foreground);
 }
-.token {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.token code {
-  max-width: 12rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--muted-foreground);
-}
-.token button {
-  flex-shrink: 0;
+
+.quick-target:hover {
+  border-color: var(--primary);
+  color: var(--primary);
 }
 </style>

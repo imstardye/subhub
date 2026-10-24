@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
- * Subscription preview: pick a user and a target, render the export server-side
- * via POST /api/admin/preview and show the body.
+ * Subscription preview: pick a user BY NAME and a target, render the export
+ * server-side via POST /api/admin/preview, copy the result.
  *
  * The preview bypasses the public /s/:token path: no token needed for a
  * disabled user, no rate limit, no access log line. Bodies above ~200 KiB come
@@ -34,8 +34,12 @@ const notice = ref('');
 const selectedUserId = ref<string>('');
 const target = ref<ExportTarget>('mihomo');
 const result = ref<PreviewResponse | null>(null);
+const copied = ref(false);
 
 const targetOptions = [...EXPORT_TARGETS];
+
+/** Query preselects the user (`/preview?userId=3`), e.g. from the users hub. */
+const route = useRoute();
 
 async function loadUsers() {
   loadingUsers.value = true;
@@ -43,7 +47,10 @@ async function loadUsers() {
   try {
     const res = await $fetch<{ items: AdminUser[] }>('/api/admin/users');
     users.value = res.items;
-    if (selectedUserId.value === '' && res.items.length > 0) {
+    const requested = String(route.query.userId ?? '');
+    const match = res.items.find((user) => String(user.id) === requested);
+    if (match) selectedUserId.value = String(match.id);
+    else if (selectedUserId.value === '' && res.items.length > 0) {
       selectedUserId.value = String(res.items[0]!.id);
     }
   } catch (err) {
@@ -57,6 +64,7 @@ async function generate() {
   if (generating.value) return;
   error.value = '';
   notice.value = '';
+  copied.value = false;
   if (!selectedUserId.value) {
     error.value = '请选择用户';
     return;
@@ -77,19 +85,30 @@ async function generate() {
   }
 }
 
+async function copyResult() {
+  if (!result.value) return;
+  try {
+    await navigator.clipboard.writeText(result.value.body);
+    copied.value = true;
+    window.setTimeout(() => {
+      copied.value = false;
+    }, 2000);
+  } catch {
+    error.value = '复制失败，请手动选择内容';
+  }
+}
+
 onMounted(loadUsers);
 </script>
 
 <template>
   <section class="page">
-    <header class="page-head">
-      <h1>预览</h1>
-    </header>
+    <PageTopbar title="预览" subtitle="按用户渲染订阅输出，无需 token" />
 
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-if="notice" class="notice">{{ notice }}</p>
 
-    <form class="card form" @submit.prevent="generate">
+    <form class="card form inline-form" @submit.prevent="generate">
       <label>
         用户
         <select v-model="selectedUserId" :disabled="loadingUsers || generating">
@@ -97,7 +116,7 @@ onMounted(loadUsers);
             {{ loadingUsers ? '加载中…' : '暂无用户' }}
           </option>
           <option v-for="user in users" :key="user.id" :value="String(user.id)">
-            #{{ user.id }} {{ user.name }}{{ user.enabled ? '' : '（已停用）' }}
+            {{ user.name }}{{ user.enabled ? '' : '（已停用）' }}
           </option>
         </select>
       </label>
@@ -118,15 +137,20 @@ onMounted(loadUsers);
     </form>
 
     <div v-if="result" class="card result">
-      <div class="result-head">
-        <h2>用户 #{{ result.userId }} · {{ result.name }}</h2>
-        <span :class="['badge', result.enabled ? 'on' : 'off']">
-          {{ result.enabled ? '启用' : '停用' }}
-        </span>
-        <span class="meta">target: {{ result.target }}</span>
-        <span class="meta">status: {{ result.status }}</span>
-        <span class="meta">{{ result.contentType }}</span>
-        <span v-if="result.truncated" class="badge warn">已截断</span>
+      <div class="card-head">
+        <h2>
+          {{ result.name }}
+          <span :class="['badge', result.enabled ? 'on' : 'off']">
+            {{ result.enabled ? '启用' : '停用' }}
+          </span>
+          <span v-if="result.truncated" class="badge warn">已截断</span>
+        </h2>
+        <div class="actions">
+          <span class="meta">{{ result.target }} · {{ result.status }}</span>
+          <button type="button" class="small" @click="copyResult">
+            {{ copied ? '已复制' : '复制结果' }}
+          </button>
+        </div>
       </div>
       <pre class="body"><code>{{ result.body }}</code></pre>
     </div>
@@ -134,30 +158,43 @@ onMounted(loadUsers);
 </template>
 
 <style scoped>
-.form {
-  max-width: 32rem;
+.inline-form {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-4);
+  max-width: none;
 }
+
+.inline-form label {
+  width: 14rem;
+  align-self: flex-end;
+}
+
+.inline-form .actions {
+  padding-bottom: 1px;
+}
+
 .result {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
   min-width: 0;
 }
-.result > h2 {
-  padding-bottom: 0;
-  border-bottom: none;
-}
-.result-head {
+
+.result .card-head h2 {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  padding-bottom: var(--space-3);
-  border-bottom: 1px solid var(--border);
+  margin: 0;
+  border: none;
+  padding: 0;
 }
+
 .body {
   margin: 0;
-  max-height: 60vh;
+  max-height: 65vh;
   overflow: auto;
   padding: var(--space-4);
   background: var(--subtle);
@@ -169,5 +206,17 @@ onMounted(loadUsers);
   line-height: 1.6;
   white-space: pre;
   tab-size: 2;
+}
+
+@media (max-width: 640px) {
+  .inline-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .inline-form label {
+    width: 100%;
+    align-self: stretch;
+  }
 }
 </style>

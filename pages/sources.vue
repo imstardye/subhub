@@ -1,18 +1,22 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
- * Subscription sources admin page: list, create, edit and delete.
+ * Subscription sources admin page: three groups (公共源 / 共享源 / 专属源).
  *
  * The API never returns the plaintext URL — only `urlMasked` — so this page
  * never stores, echoes or caches an entered URL beyond the create/edit form
- * (which is cleared as soon as the request settles). When editing, leaving the
- * URL field empty means "keep the stored URL unchanged".
+ * (cleared as soon as the request settles). When editing, leaving the URL field
+ * empty means "keep the stored URL unchanged".
  *
- * Sharing model: a source is either 公共 (`ownerUserId` null, every user gets
- * it) or 专属 to one user. The form has an 归属 selector for this, the list
- * shows a badge with 公共 or the owner's name, and each row can be refreshed
- * on demand via POST /api/admin/sources/:id/refresh (same path as the
- * scheduled task).
+ * Access model v2:
+ * - 公共（所有用户）: every user gets it;
+ * - 共享（指定用户）: only the checked users (a checkbox list, never typed ids);
+ * - 专属（单个用户）: only the selected owner (a `<select>`, never typed ids).
+ *
+ * Each row shows status at a glance (正常 / 失败 + lastError / 未刷新), the last
+ * successful refresh and a 归属 summary, plus 刷新 / 编辑 / 删除.
+ *
+ * `?new=1` opens the create form (dashboard 快捷操作).
  */
 definePageMeta({ layout: 'admin' });
 
@@ -20,6 +24,21 @@ import type { AdminSource } from '~/server/utils/admin-sources';
 import type { AdminUser } from '~/server/utils/admin-users';
 import type { SourceType } from '~/server/utils/admin-validation';
 import { apiErrorMessage } from '~/core/utils/api-error';
+import {
+  accessSummary,
+  allowedUserNames,
+  buildOwnershipPayload,
+  formatDateTime,
+  groupSources,
+  ownershipFromSource,
+  SOURCE_HEALTH_LABELS,
+  SOURCE_KIND_LABELS,
+  SOURCE_KINDS,
+  sourceHealth,
+  userNameResolver,
+  type SourceKind,
+  type SourceOwnership,
+} from '~/core/utils/admin-ui';
 
 type SourceForm = {
   name: string;
@@ -27,11 +46,17 @@ type SourceForm = {
   url: string;
   ua: string;
   refreshMinutes: string;
-  /** '' = 公共, otherwise the owning user id as a string. */
+  ownership: SourceOwnership;
+  /** Owner id as a string ('' = not chosen); only for 专属. */
   ownerUserId: string;
+  /** Checked user ids; only for 共享. */
+  allowedUserIds: number[];
 };
 
+const route = useRoute();
 const sources = ref<AdminSource[]>([]);
+const users = ref<AdminUser[]>([]);
+const usersError = ref('');
 const loading = ref(false);
 const saving = ref(false);
 const busyId = ref<number | null>(null);
@@ -44,10 +69,6 @@ const form = ref<SourceForm>(emptyForm());
 
 const deleting = ref<AdminSource | null>(null);
 
-/** Users for the 归属 dropdown; a failure only hides 专属 assignment. */
-const users = ref<AdminUser[]>([]);
-const usersError = ref('');
-
 function emptyForm(): SourceForm {
   return {
     name: '',
@@ -55,22 +76,48 @@ function emptyForm(): SourceForm {
     url: '',
     ua: '',
     refreshMinutes: '60',
+    ownership: 'public',
     ownerUserId: '',
+    allowedUserIds: [],
   };
 }
 
-const usersById = computed(() => new Map(users.value.map((user) => [user.id, user])));
+const userName = computed(() => userNameResolver(users.value));
+const groups = computed(() => groupSources(sources.value));
 
-/** Owner name for the 归属 badge; unknown ids fall back to the raw id. */
-function ownerLabel(source: AdminSource): string {
-  if (source.ownerUserId === null) return '公共';
-  return usersById.value.get(source.ownerUserId)?.name ?? `用户 #${source.ownerUserId}`;
+const ownershipOptions: Array<{ value: SourceOwnership; label: string; hint: string }> = [
+  { value: 'public', label: '公共（所有用户）', hint: '所有用户的订阅都会包含此源。' },
+  { value: 'shared', label: '共享（指定用户）', hint: '只有勾选的用户会获得此源。' },
+  { value: 'dedicated', label: '专属（单个用户）', hint: '只有该用户的订阅包含此源。' },
+];
+
+/** The select offers presets; an existing custom interval is shown as-is. */
+const refreshPreset = computed(() =>
+  ['5', '15', '30', '60', '180', '720', '1440'].includes(form.value.refreshMinutes),
+);
+
+const ownershipHint = computed(
+  () => ownershipOptions.find((option) => option.value === form.value.ownership)?.hint ?? '',
+);
+
+function summary(source: AdminSource): string {
+  return accessSummary(source, userName.value);
 }
 
-function formatTime(value: string | null): string {
-  if (!value) return '—';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+function healthLabel(source: AdminSource): string {
+  return SOURCE_HEALTH_LABELS[sourceHealth(source)];
+}
+
+function healthClass(source: AdminSource): string {
+  const health = sourceHealth(source);
+  if (health === 'ok') return 'badge on';
+  if (health === 'failed') return 'badge bad';
+  return 'badge off';
+}
+
+function allowlistTitle(source: AdminSource): string {
+  const names = allowedUserNames(source, userName.value);
+  return names.length > 0 ? names.join('、') : '允许名单为空：当前没有用户能获得此源';
 }
 
 function validUrl(value: string): boolean {
@@ -87,9 +134,9 @@ async function loadUsers() {
   try {
     const res = await $fetch<{ items: AdminUser[] }>('/api/admin/users');
     users.value = res.items;
-  } catch {
+  } catch (err) {
     users.value = [];
-    usersError.value = '用户列表加载失败，暂时无法设置专属归属';
+    usersError.value = `用户列表加载失败：${apiErrorMessage(err)}`;
   }
 }
 
@@ -107,12 +154,17 @@ async function load() {
   await loadUsers();
 }
 
-function openCreate() {
+function openCreate(ownership: SourceOwnership = 'public') {
   editingId.value = null;
-  form.value = emptyForm();
+  form.value = { ...emptyForm(), ownership };
   formOpen.value = true;
   error.value = '';
   notice.value = '';
+  if (import.meta.client) {
+    nextTick(() => {
+      document.getElementById('source-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
 }
 
 function openEdit(source: AdminSource) {
@@ -124,17 +176,32 @@ function openEdit(source: AdminSource) {
     url: '',
     ua: source.ua ?? '',
     refreshMinutes: String(source.refreshMinutes),
+    ownership: ownershipFromSource(source),
     ownerUserId: source.ownerUserId === null ? '' : String(source.ownerUserId),
+    allowedUserIds: [...(source.allowedUserIds ?? [])],
   };
   formOpen.value = true;
   error.value = '';
   notice.value = '';
+  if (import.meta.client) {
+    nextTick(() => {
+      document.getElementById('source-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
 }
 
 function closeForm() {
   formOpen.value = false;
   editingId.value = null;
   form.value = emptyForm();
+}
+
+/** Checkbox list binding for the 共享 allowlist. */
+function toggleAllowed(userId: number, checked: boolean) {
+  const current = new Set(form.value.allowedUserIds);
+  if (checked) current.add(userId);
+  else current.delete(userId);
+  form.value.allowedUserIds = [...current].sort((a, b) => a - b);
 }
 
 async function submitForm() {
@@ -161,14 +228,22 @@ async function submitForm() {
     return;
   }
 
+  const ownership = buildOwnershipPayload(
+    form.value.ownership,
+    form.value.ownerUserId,
+    form.value.allowedUserIds,
+  );
+  if (!ownership.ok) {
+    error.value = ownership.error;
+    return;
+  }
+
   const body: Record<string, unknown> = {
     name,
     type: form.value.type,
     ua: form.value.ua.trim() || null,
     refreshMinutes,
-    // '' means 公共 -> null; otherwise the selected user id (the API accepts
-    // the numeric string and rejects unknown ids with 400).
-    ownerUserId: form.value.ownerUserId || null,
+    ...ownership.payload,
   };
   // Only send `url` when the user actually typed one; omit it when editing so
   // the stored ciphertext is left untouched.
@@ -203,10 +278,10 @@ async function submitForm() {
 
 /**
  * Manually refresh one source's cache. Reuses the scheduled task's fetch/parse
- * code path on the server; a `local` source or a failed fetch answers 200 with
- * `outcome: 'failed'` and the source's `lastError`, which is shown as a banner.
+ * code path; a `local` source or a failed fetch answers 200 with
+ * `outcome: 'failed'` and the source's `lastError`, shown as a banner.
  */
-async function refreshSource(source: AdminSource) {
+async function refreshOne(source: AdminSource) {
   if (busyId.value !== null) return;
   busyId.value = source.id;
   error.value = '';
@@ -249,30 +324,44 @@ async function confirmDelete() {
   }
 }
 
-onMounted(load);
+onMounted(() => {
+  if (route.query.new !== undefined) openCreate();
+  load();
+});
 </script>
 
 <template>
   <section class="page">
-    <header class="page-head">
-      <h1>订阅源</h1>
-      <button class="primary" type="button" @click="openCreate">
+    <PageTopbar title="订阅源" subtitle="按公共 / 共享 / 专属分组，状态一眼可见">
+      <button class="primary" type="button" @click="openCreate()">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M12 5v14" />
           <path d="M5 12h14" />
         </svg>
         新建订阅源
       </button>
-    </header>
+    </PageTopbar>
 
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <p v-if="notice" class="notice">{{ notice }}</p>
 
-    <form v-if="formOpen" class="card form" @submit.prevent="submitForm">
-      <h2>{{ editingId === null ? '新建订阅源' : `编辑订阅源 #${editingId}` }}</h2>
+    <form
+      v-if="formOpen"
+      id="source-form"
+      class="card form"
+      @submit.prevent="submitForm"
+    >
+      <h2>{{ editingId === null ? '新建订阅源' : `编辑订阅源「${sources.find((s) => s.id === editingId)?.name ?? ''}」` }}</h2>
       <label>
         名称
-        <input v-model="form.name" type="text" maxlength="100" required :disabled="saving">
+        <input
+          v-model="form.name"
+          type="text"
+          maxlength="100"
+          required
+          autocomplete="off"
+          :disabled="saving"
+        >
       </label>
       <label>
         URL
@@ -286,6 +375,58 @@ onMounted(load);
           :disabled="saving"
         >
       </label>
+
+      <fieldset class="radio-group">
+        <legend>归属</legend>
+        <label
+          v-for="option in ownershipOptions"
+          :key="option.value"
+          class="radio-option"
+        >
+          <input
+            v-model="form.ownership"
+            type="radio"
+            name="ownership"
+            :value="option.value"
+            :disabled="saving"
+          >
+          {{ option.label }}
+        </label>
+      </fieldset>
+
+      <div v-if="form.ownership === 'shared'" class="ownership-panel">
+        <label class="inline">
+          <span>允许访问的用户（{{ form.allowedUserIds.length }} 人）</span>
+        </label>
+        <p v-if="usersError" class="sub">{{ usersError }}</p>
+        <p v-else-if="users.length === 0" class="sub">暂无用户，请先在「用户」页创建。</p>
+        <div v-else class="check-list">
+          <label v-for="user in users" :key="user.id">
+            <input
+              type="checkbox"
+              :checked="form.allowedUserIds.includes(user.id)"
+              :disabled="saving"
+              @change="toggleAllowed(user.id, ($event.target as HTMLInputElement).checked)"
+            >
+            {{ user.name }}
+            <span v-if="!user.enabled" class="sub">（已停用）</span>
+          </label>
+        </div>
+      </div>
+
+      <label v-if="form.ownership === 'dedicated'">
+        专属用户
+        <select v-model="form.ownerUserId" :disabled="saving || users.length === 0">
+          <option value="" disabled>请选择用户</option>
+          <option v-for="user in users" :key="user.id" :value="String(user.id)">
+            {{ user.name }}
+          </option>
+        </select>
+        <span v-if="usersError" class="sub">{{ usersError }}</span>
+      </label>
+
+      <p class="hint">{{ ownershipHint }}</p>
+
       <label>
         类型
         <select v-model="form.type" :disabled="saving">
@@ -294,32 +435,23 @@ onMounted(load);
         </select>
       </label>
       <label>
-        归属
-        <select v-model="form.ownerUserId" :disabled="saving || (users.length === 0 && usersError !== '')">
-          <option value="">公共（所有用户共享）</option>
-          <option v-for="user in users" :key="user.id" :value="String(user.id)">
-            专属：{{ user.name }}（#{{ user.id }}）
+        刷新间隔（分钟）
+        <select v-model="form.refreshMinutes" :disabled="saving">
+          <option value="5">5 分钟</option>
+          <option value="15">15 分钟</option>
+          <option value="30">30 分钟</option>
+          <option value="60">1 小时</option>
+          <option value="180">3 小时</option>
+          <option value="720">12 小时</option>
+          <option value="1440">1 天</option>
+          <option v-if="!refreshPreset" :value="form.refreshMinutes">
+            {{ form.refreshMinutes }} 分钟（当前）
           </option>
         </select>
-        <span v-if="usersError" class="sub">{{ usersError }}</span>
-        <span v-else class="hint">
-          专属订阅源只出现在该用户的订阅中；公共订阅源对所有用户可见。
-        </span>
       </label>
       <label>
         User-Agent（可选）
         <input v-model="form.ua" type="text" maxlength="256" :disabled="saving">
-      </label>
-      <label>
-        刷新间隔（分钟）
-        <input
-          v-model="form.refreshMinutes"
-          type="number"
-          min="5"
-          max="10080"
-          step="1"
-          :disabled="saving"
-        >
       </label>
       <div class="actions">
         <button class="primary" type="submit" :disabled="saving">
@@ -336,56 +468,71 @@ onMounted(load);
         <path d="M4 4a16 16 0 0 1 16 16" />
         <circle cx="5" cy="19" r="1" />
       </svg>
-      暂无订阅源。
+      暂无订阅源，点击右上角「新建订阅源」开始。
     </p>
 
-    <div v-else class="table-wrap">
-      <table class="list">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>名称</th>
-            <th>类型</th>
-            <th>归属</th>
-            <th>URL（已脱敏）</th>
-            <th>刷新</th>
-            <th>上次成功</th>
-            <th>缓存</th>
-            <th>最近错误</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="source in sources" :key="source.id">
-            <td class="id-cell">{{ source.id }}</td>
-            <td>
-              <div>{{ source.name }}</div>
-              <div v-if="source.ua" class="sub">UA: {{ source.ua }}</div>
-            </td>
-            <td>
-              <span class="type-tag">{{ source.type }}</span>
-            </td>
-            <td>
-              <span :class="['badge', source.ownerUserId === null ? 'off' : 'on']">
-                {{ ownerLabel(source) }}
+    <template v-else>
+      <section
+        v-for="kind in SOURCE_KINDS"
+        :key="kind"
+        class="source-group"
+        :aria-labelledby="`group-${kind}`"
+      >
+        <div class="card-head">
+          <h2 :id="`group-${kind}`">
+            {{ SOURCE_KIND_LABELS[kind as SourceKind] }}
+            <span class="chip-count">{{ groups[kind as SourceKind].length }}</span>
+          </h2>
+          <span class="sub kind-hint">
+            <template v-if="kind === 'public'">所有用户都会获得</template>
+            <template v-else-if="kind === 'shared'">仅名单内的用户会获得</template>
+            <template v-else>仅专属用户会获得</template>
+          </span>
+        </div>
+
+        <p v-if="groups[kind as SourceKind].length === 0" class="muted sub empty-row">
+          暂无{{ SOURCE_KIND_LABELS[kind as SourceKind] }}。
+        </p>
+
+        <div v-else class="rows">
+          <article
+            v-for="source in groups[kind as SourceKind]"
+            :key="source.id"
+            class="entity"
+          >
+            <div class="entity-identity">
+              <div class="entity-name">
+                <span :title="source.name">{{ source.name }}</span>
+                <span :class="healthClass(source)">
+                  {{ healthLabel(source) }}
+                </span>
+              </div>
+              <code class="mono url" :title="source.urlMasked">{{ source.urlMasked }}</code>
+              <span v-if="source.lastError" class="sub err" :title="source.lastError">
+                {{ source.lastError }}
               </span>
-            </td>
-            <td class="url-cell"><code>{{ source.urlMasked }}</code></td>
-            <td class="nowrap">{{ source.refreshMinutes }} 分钟</td>
-            <td class="nowrap">{{ formatTime(source.lastOkAt) }}</td>
-            <td>
-              <span :class="['badge', source.hasCache ? 'on' : 'off']">
-                {{ source.hasCache ? '有' : '无' }}
+            </div>
+
+            <div class="entity-body">
+              <span class="sub" :title="`${source.type} · 每 ${source.refreshMinutes} 分钟刷新`">
+                {{ source.type }} · {{ source.refreshMinutes }} 分钟
               </span>
-            </td>
-            <td class="err">{{ source.lastError ?? '—' }}</td>
-            <td class="row-actions">
+              <span class="sub">上次成功 {{ formatDateTime(source.lastOkAt) }}</span>
+              <span
+                :class="['badge', kind === 'public' ? 'off' : 'info']"
+                :title="kind === 'shared' ? allowlistTitle(source) : summary(source)"
+              >
+                {{ summary(source) }}
+              </span>
+            </div>
+
+            <div class="entity-actions">
               <button
                 type="button"
                 class="small"
                 :disabled="busyId !== null"
                 :title="source.type === 'local' ? '本地订阅源没有可拉取的 URL，仅更新状态' : '立即拉取并更新缓存'"
-                @click="refreshSource(source)"
+                @click="refreshOne(source)"
               >
                 {{ busyId === source.id ? '刷新中…' : '刷新' }}
               </button>
@@ -400,16 +547,16 @@ onMounted(load);
               >
                 删除
               </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+            </div>
+          </article>
+        </div>
+      </section>
+    </template>
 
-    <div v-if="deleting" class="overlay" role="dialog" aria-modal="true">
+    <div v-if="deleting" class="overlay" role="dialog" aria-modal="true" aria-labelledby="delete-source-title">
       <div class="card dialog">
-        <h2>删除订阅源</h2>
-        <p>确定删除「{{ deleting.name }}」？相关缓存将一并移除。</p>
+        <h2 id="delete-source-title">删除订阅源</h2>
+        <p>确定删除「{{ deleting.name }}」？相关缓存与允许名单将一并移除。</p>
         <div class="actions">
           <button class="danger" type="button" :disabled="busyId !== null" @click="confirmDelete">
             {{ busyId === deleting.id ? '删除中…' : '确认删除' }}
@@ -422,29 +569,60 @@ onMounted(load);
 </template>
 
 <style scoped>
-.id-cell {
-  font-family: var(--font-mono);
+.source-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.kind-hint {
+  text-align: right;
+}
+
+.empty-row {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+}
+
+.url {
+  display: block;
+  max-width: 32rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: var(--text-xs);
-  color: var(--muted-foreground);
 }
-.type-tag {
-  display: inline-flex;
-  padding: 0.1rem 0.45rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--muted);
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-}
-.url-cell {
-  max-width: 16rem;
-  word-break: break-all;
-}
+
 .err {
-  max-width: 16rem;
-  word-break: break-word;
-  color: var(--warning-text);
-  font-size: var(--text-xs);
+  max-width: 32rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--destructive);
+}
+
+.ownership-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ownership-panel > label.inline {
+  font-size: var(--text-sm);
+}
+
+@media (max-width: 640px) {
+  .kind-hint {
+    text-align: left;
+  }
+
+  .url,
+  .err {
+    max-width: 100%;
+  }
 }
 </style>
