@@ -48,6 +48,7 @@ export {
   buildSurgeGroups,
   buildSurgeProxies,
   produceSurge,
+  surgePortHopping,
   surgeProxyLine,
 } from './surge';
 export {

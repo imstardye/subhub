@@ -4,8 +4,8 @@
  *
  * Line syntax (`name = type, server, port, key=value, ...`) follows Surge's
  * config format. Only protocols Surge itself can dial are emitted; VLESS and
- * AnyTLS do not exist in Surge and are skipped instead of being faked (the
- * point of a real producer is that the client can load the result).
+ * SSR do not exist in Surge and are skipped instead of being faked (the point
+ * of a real producer is that the client can load the result).
  *
  * No `[Rule]` section: rules are owned by the client/its own template. Surge
  * policy names are therefore irrelevant here, and the profile groups are
@@ -16,13 +16,16 @@
  * - `vmess`    `vmess, server, port, username=<uuid>, tls=, ws=, ws-path=,
  *              ws-headers=Host:.., sni=, skip-cert-verify=`
  * - `trojan`   `trojan, server, port, password=, sni=, skip-cert-verify=`
+ * - `anytls`   `anytls, server, port, password=, sni=, skip-cert-verify=`
+ *              (Surge iOS 5.17.0+ / Mac 6.4.3+, AnyTLS v2, UDP over TCP)
  * - `tuic`     `tuic, server, port, token=<uuid>|<password>, ...
  *              (uuid and password are joined with `:`)*
- * - `hysteria2` `hysteria2, server, port, password=, sni=, skip-cert-verify=`
+ * - `hysteria2` `hysteria2, server, port, password=, sni=, skip-cert-verify=`,
+ *              plus port hopping (`port-hopping=`, `port-hopping-interval=`)
  * - `socks5`/`http` (with `, tls=true` for https proxies)
  *
- * Skipped on purpose: VLESS / AnyTLS (no Surge support), shadowsocks plugins
- * (obfs / v2ray-plugin — Surge has neither), SSR (Surge has no SSR),
+ * Skipped on purpose: VLESS (not in Surge's protocol table) and SSR (no Surge
+ * support), shadowsocks plugins (obfs / v2ray-plugin — Surge has neither),
  * WireGuard, and any node whose required credentials are missing.
  */
 
@@ -168,14 +171,59 @@ function tuicLine(node: ProxyNode): string | null {
   return parts.join(', ');
 }
 
+/**
+ * Hysteria2 `ports` ("60000-62000", "60000,61000-62000") as Surge's
+ * `port-hopping` list: comma-separated entries, ranges with a `-`, entries
+ * separated by **semicolons**. Empty/garbage entries are dropped; `undefined`
+ * when nothing usable is left (then the declaration port applies).
+ */
+export function surgePortHopping(ports: unknown): string | undefined {
+  if (ports === undefined || ports === null) return undefined;
+  const items = String(ports)
+    .split(/[;,]/)
+    .map((item) => item.trim())
+    .filter((item) => /^\d+(-\d+)?$/.test(item));
+  return items.length > 0 ? items.join(';') : undefined;
+}
+
 function hysteria2Line(node: ProxyNode): string | null {
   if (!node.password) return null;
   const parts = [`hysteria2, ${node.server}, ${node.port}`, `password=${node.password}`];
-  // Port hopping (`ports`) has no Surge equivalent; the single port is used.
   if (node.obfs !== undefined && node.obfs !== '' && node.obfs !== 'none') {
     parts.push('obfs=salamander');
     if (node['obfs-password']) parts.push(`obfs-password=${node['obfs-password']}`);
   }
+  const sni = sniOf(node);
+  if (sni) parts.push(`sni=${sni}`);
+  const alpn = alpnOf(node);
+  if (alpn) parts.push(`alpn=${alpn}`);
+  if (node['skip-cert-verify'] !== undefined) {
+    parts.push(`skip-cert-verify=${bool(node['skip-cert-verify'])}`);
+  }
+  // Port hopping: when set, the client ignores the declaration port above.
+  const hopping = surgePortHopping(node.ports);
+  if (hopping) parts.push(`port-hopping=${hopping}`);
+  const interval = node['hop-interval'];
+  if (interval !== undefined && interval !== null && String(interval) !== '') {
+    parts.push(`port-hopping-interval=${String(interval)}`);
+  }
+  // Bandwidth hints: only the download side has a confirmed Surge parameter.
+  const down = node.down ?? node.downmbps;
+  if (down !== undefined && down !== null && String(down) !== '') {
+    parts.push(`download-bandwidth=${String(down)}`);
+  }
+  return parts.join(', ');
+}
+
+/**
+ * AnyTLS (Surge iOS 5.17.0+ / Mac 6.4.3+, AnyTLS v2):
+ * `anytls, server, port, password=, sni=, skip-cert-verify=`. TLS is implicit
+ * for the protocol, so the shared TLS params carry the identity/verification
+ * settings only. UDP travels over the TCP session: no extra parameter.
+ */
+function anytlsLine(node: ProxyNode): string | null {
+  if (!node.password) return null;
+  const parts = [`anytls, ${node.server}, ${node.port}`, `password=${node.password}`];
   const sni = sniOf(node);
   if (sni) parts.push(`sni=${sni}`);
   const alpn = alpnOf(node);
@@ -256,10 +304,11 @@ export function surgeProxyLine(node: ProxyNode):
     case 'http':
       body = socksHttpLine(proxy, 'http');
       break;
+    case 'anytls':
+      body = anytlsLine(proxy);
+      break;
     case 'vless':
       return { skipped: 'Surge has no VLESS support' };
-    case 'anytls':
-      return { skipped: 'Surge has no AnyTLS support' };
     case 'ssr':
       return { skipped: 'Surge has no ShadowsocksR support' };
     default:

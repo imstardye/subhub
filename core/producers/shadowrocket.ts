@@ -275,19 +275,26 @@ function trojanLink(node: ProxyNode): string | null {
 }
 
 /**
- * Hysteria2 carries a password, never a UUID; port hopping (`ports`) and
- * bandwidth hints have no URI field here, so a node relying on them would
- * connect differently (or not at all) and is skipped instead.
+ * Hysteria2 carries a password, never a UUID (a UUID-bearing node is a
+ * mis-parsed Hysteria v1 / v2ray link, not a hy2 node).
+ *
+ * Port hopping and the bandwidth hints *do* have link-level expressions in
+ * the ecosystem, and this repo's own parser reads them back: `mport` (the
+ * `ports` list) and `upmbps`/`downmbps`. They are emitted, never used as a
+ * reason to drop the node — dropping them was what silently removed 11 of 71
+ * real nodes from a subscription.
  */
 function hysteria2Link(node: ProxyNode): string | null {
   if (!node.password || node.uuid) return null;
-  if (node.ports !== undefined || node.up !== undefined || node.down !== undefined) return null;
   const params: string[] = [];
-  const sni = node.sni;
+  const sni = node.sni ?? node.servername;
   if (sni) params.push(`sni=${encode(sni)}`);
-  if (node.obfs) {
+  if (node.obfs && node.obfs !== 'none') {
     params.push(`obfs=${encode(node.obfs)}`);
     if (node['obfs-password']) params.push(`obfs-password=${encode(node['obfs-password'])}`);
+  }
+  if (node.ports !== undefined && node.ports !== null && String(node.ports) !== '') {
+    params.push(`mport=${encode(node.ports)}`);
   }
   if (node['skip-cert-verify'] !== undefined) {
     params.push(`insecure=${isTruthyFlag(node['skip-cert-verify']) ? 1 : 0}`);
@@ -296,6 +303,12 @@ function hysteria2Link(node: ProxyNode): string | null {
   if (node.alpn !== undefined) {
     const alpn = Array.isArray(node.alpn) ? node.alpn.join(',') : String(node.alpn);
     if (alpn) params.push(`alpn=${encode(alpn)}`);
+  }
+  if (node.up !== undefined && node.up !== null) params.push(`upmbps=${encode(node.up)}`);
+  if (node.down !== undefined && node.down !== null) params.push(`downmbps=${encode(node.down)}`);
+  const hopInterval = node['hop-interval'];
+  if (hopInterval !== undefined && hopInterval !== null && String(hopInterval) !== '') {
+    params.push(`hop-interval=${encode(hopInterval)}`);
   }
   return `hysteria2://${encode(node.password)}@${host(String(node.server))}:${node.port}${query(
     params,
