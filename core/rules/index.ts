@@ -76,9 +76,38 @@ function unquote(value: string): string {
 }
 
 function splitFirstComma(value: string): [string, string] {
-  const index = value.indexOf(',');
+  const index = findFirstUnescapedComma(value);
   if (index === -1) return [value.trim(), ''];
   return [value.slice(0, index).trim(), value.slice(index + 1).trim()];
+}
+
+/** Find the first comma in `value` that is not escaped with a backslash. */
+function findFirstUnescapedComma(value: string): number {
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== ',') continue;
+    let backslashes = 0;
+    for (let cursor = index - 1; cursor >= 0 && value[cursor] === '\\'; cursor -= 1) {
+      backslashes += 1;
+    }
+    if (backslashes % 2 === 0) return index;
+  }
+  return -1;
+}
+
+/**
+ * Find the last comma in `value.slice(0, end)` that is not escaped with a
+ * backslash, so regex payloads such as `^foo\,DIRECT` are not split.
+ */
+function findLastUnescapedComma(value: string, end: number): number {
+  for (let index = end - 1; index >= 0; index -= 1) {
+    if (value[index] !== ',') continue;
+    let backslashes = 0;
+    for (let cursor = index - 1; cursor >= 0 && value[cursor] === '\\'; cursor -= 1) {
+      backslashes += 1;
+    }
+    if (backslashes % 2 === 0) return index;
+  }
+  return -1;
 }
 
 /**
@@ -87,15 +116,20 @@ function splitFirstComma(value: string): [string, string] {
  * optional policy target are separated from the content.
  */
 function parseRuleLine(line: string): ParsedRuleLine | null {
-  const firstComma = line.indexOf(',');
-  const rawType = (firstComma === -1 ? line : line.slice(0, firstComma)).trim();
+  const firstComma = findFirstUnescapedComma(line);
+  if (firstComma === -1) {
+    const rawType = line.trim();
+    if (!rawType) return null;
+    return { type: mapRuleType(rawType), content: '', options: [] };
+  }
+  const rawType = line.slice(0, firstComma).trim();
   if (!rawType) return null;
 
-  let rest = firstComma === -1 ? '' : line.slice(firstComma + 1);
+  let rest = line.slice(firstComma + 1);
   const options: string[] = [];
 
   while (rest) {
-    const lastComma = rest.lastIndexOf(',');
+    const lastComma = findLastUnescapedComma(rest, rest.length);
     if (lastComma === -1) break;
 
     const tail = rest.slice(lastComma + 1).trim();
@@ -106,13 +140,14 @@ function parseRuleLine(line: string): ParsedRuleLine | null {
   }
 
   // After trailing options are removed, a classical rule is `TYPE,payload`
-  // or `TYPE,payload,policy`. Peel the last segment only when it is a known
-  // policy (the assigned group, or a built-in target) so comma-containing
-  // payloads such as `^a.{0,61}$` stay intact.
+  // or `TYPE,payload,policy`. Peel the last unescaped segment only when it is
+  // a known policy (the assigned group, or a built-in target) so
+  // comma-containing payloads such as `^a.{0,61}$` and escaped commas such as
+  // `^foo\,DIRECT` stay intact.
   let sourceTarget: string | undefined;
   const mappedType = mapRuleType(rawType);
   if (mappedType !== 'MATCH' && mappedType !== 'FINAL') {
-    const lastComma = rest.lastIndexOf(',');
+    const lastComma = findLastUnescapedComma(rest, rest.length);
     if (lastComma !== -1) {
       const tail = rest.slice(lastComma + 1).trim();
       const payload = rest.slice(0, lastComma).trim();

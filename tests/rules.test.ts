@@ -316,6 +316,27 @@ ruleset=GROUP C,[]FINAL
     ]);
   });
 
+  it('keeps escaped commas and regex quantifiers intact when splitting rules', () => {
+    expect(expandRuleList('DOMAIN-REGEX,^foo\\,DIRECT', 'NEW')).toEqual([
+      'DOMAIN-REGEX,^foo\\,DIRECT,NEW',
+    ]);
+    expect(expandRuleList('DOMAIN-REGEX,^a.{0,61}$', 'NEW')).toEqual([
+      'DOMAIN-REGEX,^a.{0,61}$,NEW',
+    ]);
+
+    const built = buildRules(
+      parseIni(`
+[custom]
+ruleset=NEW,[]DOMAIN-REGEX,^foo\\,DIRECT
+ruleset=NEW,[]DOMAIN-REGEX,^a.{0,61}$
+`),
+    );
+    expect(built.rules).toEqual([
+      'DOMAIN-REGEX,^foo\\,DIRECT,NEW',
+      'DOMAIN-REGEX,^a.{0,61}$,NEW',
+    ]);
+  });
+
   it('does not append a policy onto a rule that already has one', () => {
     expect(expandRuleList('DOMAIN,example.com,OLD', 'NEW')).toEqual([
       'DOMAIN,example.com,OLD',
