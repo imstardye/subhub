@@ -178,9 +178,10 @@ describe('GET /s/:token valid export', () => {
     expect(response.headers['content-disposition']).toBe(
       `attachment; filename="subhub-${userId}-clash.yaml"`,
     );
-    expect(response.headers['subscription-userinfo']).toBe(
-      'upload=0; download=0; total=0; expire=0',
-    );
+    // No source cache -> no aggregated userinfo -> no header at all (the old
+    // hard-coded `upload=0; download=0; total=0; expire=0` placeholder is gone;
+    // see tests/userinfo.test.ts for the aggregation itself).
+    expect(response.headers).not.toHaveProperty('subscription-userinfo');
     // Every mihomo body now carries the anti-leak template (see
     // tests/dns-template.test.ts for the detailed assertions). The default
     // User-Agent here is a Clash client, i.e. mihomo.
@@ -282,6 +283,83 @@ describe('GET /s/:token source aggregation', () => {
   });
 });
 
+describe('GET /s/:token/:target clash render parity', () => {
+  // Regression: target `clash` used to go through the legacy Clash producer,
+  // whose whitelist dropped vless/anytls/tuic/hysteria2 — a user with only
+  // modern nodes got `proxies: []` with emptied groups.
+  const MODERN_NODES = [
+    'proxies:',
+    '  - {name: "modern-vless", type: vless, server: v.example.com, port: 443, uuid: "11111111-2222-3333-4444-555555555555", tls: true, servername: v.example.com}',
+    '  - {name: "modern-hy2", type: hysteria2, server: h.example.com, port: 443, password: "fake", sni: h.example.com}',
+    '  - {name: "modern-tuic", type: tuic, server: t.example.com, port: 443, uuid: "11111111-2222-3333-4444-555555555555", password: "fake"}',
+    '  - {name: "modern-anytls", type: anytls, server: a.example.com, port: 443, password: "fake"}',
+  ].join('\n');
+
+  it('keeps every modern node and renders the same body as mihomo', async () => {
+    attachSource(MODERN_NODES, null);
+
+    const clash = await call(TOKEN, 'clash');
+    expect(clash.status).toBe(200);
+    const document = parseYaml(clash.body) as {
+      dns: Record<string, unknown>;
+      proxies: Array<{ name: string; type: string }>;
+      rules: string[];
+    };
+    expect(document.proxies.map((proxy) => proxy.name)).toEqual([
+      'modern-vless',
+      'modern-hy2',
+      'modern-tuic',
+      'modern-anytls',
+    ]);
+    expect(document.proxies.map((proxy) => proxy.type)).toEqual([
+      'vless',
+      'hysteria2',
+      'tuic',
+      'anytls',
+    ]);
+    // Built-in DNS leak protection and the QUIC block come with it.
+    expect(document.dns).toEqual(BUILTIN_DNS_TEMPLATE);
+    expect(document.rules).toEqual([QUIC_BLOCK_RULE]);
+
+    const mihomo = await call(TOKEN, 'mihomo');
+    expect(clash.body).toBe(mihomo.body);
+    // Same content type/filename scheme, keyed by the requested target.
+    expect(clash.headers['content-type']).toBe(mihomo.headers['content-type']);
+    expect(clash.headers['content-disposition']).toContain('-clash.yaml');
+  });
+
+  it('fills profile groups with the modern nodes too', async () => {
+    attachSource(MODERN_NODES, null);
+    const profile = db
+      .insert(profiles)
+      .values({
+        name: 'fixture-modern-profile',
+        iniText: [
+          '[custom]',
+          'custom_proxy_group=🚀 节点选择`select`.*',
+          'ruleset=🚀 节点选择,[]MATCH',
+        ].join('\n'),
+      })
+      .returning({ id: profiles.id })
+      .get()!;
+    db.update(users).set({ profileId: profile.id }).where(eq(users.id, userId)).run();
+
+    const response = await call(TOKEN, 'clash');
+    expect(response.status).toBe(200);
+    const yaml = parseYaml(response.body) as {
+      'proxy-groups': Array<{ name: string; proxies: string[] }>;
+      rules: string[];
+    };
+    expect(yaml['proxy-groups'][0]!.proxies).toEqual([
+      'modern-vless',
+      'modern-hy2',
+      'modern-tuic',
+      'modern-anytls',
+    ]);
+    expect(yaml.rules).toEqual([QUIC_BLOCK_RULE, 'MATCH,🚀 节点选择']);
+  });
+});
+
 describe('GET /s/:token rule profile', () => {
   const PROFILE_INI = [
     '[custom]',
@@ -301,7 +379,7 @@ describe('GET /s/:token rule profile', () => {
     return profile.id;
   }
 
-  it('applies the profile groups and rules for mihomo and legacy targets', async () => {
+  it('applies the profile groups and rules for mihomo and clash targets', async () => {
     attachSource(
       'proxies:\n  - {name: "fixture-ss", type: ss, server: example.com, port: 8388, cipher: aes-128-gcm, password: "fake"}\n',
       null,
@@ -320,13 +398,9 @@ describe('GET /s/:token rule profile', () => {
       expect(yaml.proxies.map((proxy) => proxy.name)).toEqual(['fixture-ss']);
       expect(yaml['proxy-groups'].map((group) => group.name)).toEqual(['🚀 节点选择', '🎯 全球直连']);
       expect(yaml['proxy-groups'][0]!.proxies).toContain('fixture-ss');
-      // The QUIC block is always the first rule (mihomo only; legacy Clash is
-      // left untouched), ahead of every profile rule.
-      expect(yaml.rules).toEqual(
-        target === 'mihomo'
-          ? [QUIC_BLOCK_RULE, 'GEOIP,CN,🎯 全球直连', 'MATCH,🚀 节点选择']
-          : ['GEOIP,CN,🎯 全球直连', 'MATCH,🚀 节点选择'],
-      );
+      // `clash` renders exactly like `mihomo` (same producer): the QUIC block
+      // is always the first rule, ahead of every profile rule.
+      expect(yaml.rules).toEqual([QUIC_BLOCK_RULE, 'GEOIP,CN,🎯 全球直连', 'MATCH,🚀 节点选择']);
     }
   });
 

@@ -20,7 +20,6 @@ import {
   isQuicBlockRule,
   parseAnyTLS,
   parseDnsTemplate,
-  produceLegacy,
   produceMihomo,
   QUIC_BLOCK_RULE,
   resolveDnsTemplate,
@@ -30,6 +29,7 @@ import { openDb, type SubhubDb } from '../server/db';
 import { profiles, sources, users } from '../server/db/schema';
 import { encrypt } from '../server/db/crypto';
 import {
+  buildTargetProxies,
   loadUserProfile,
   renderTargetBody,
   type ExportProfile,
@@ -80,6 +80,33 @@ function exportProfile(overrides: Partial<ExportProfile> = {}): ExportProfile {
     ...overrides,
   };
 }
+
+describe('clash target renders through the mihomo producer', () => {
+  it('keeps modern protocols instead of filtering them away', () => {
+    const nodes: ProxyNode[] = [
+      node({ name: 'vless', type: 'vless', uuid: '11111111-2222-3333-4444-555555555555' }),
+      node({ name: 'hy2', type: 'hysteria2', password: 'fake' }),
+      node({ name: 'tuic', type: 'tuic', password: 'fake' }),
+      node({ name: 'anytls', type: 'anytls', password: 'fake' }),
+    ];
+    for (const target of ['mihomo', 'clash'] as const) {
+      const document = parseYaml(renderTargetBody(target, nodes)) as MihomoDocument;
+      expect(document.proxies.map((proxy) => proxy.name)).toEqual(['vless', 'hy2', 'tuic', 'anytls']);
+      expect(document.dns).toEqual(BUILTIN_DNS_TEMPLATE);
+      expect(document.rules).toEqual([QUIC_BLOCK_RULE]);
+    }
+    // Identical node set for the node-name expansion used by profile groups.
+    expect(buildTargetProxies('clash', nodes).map((proxy) => proxy.name)).toEqual(
+      buildTargetProxies('mihomo', nodes).map((proxy) => proxy.name),
+    );
+  });
+
+  it('leaves the unimplemented P4 targets on the nodes-only fallback', () => {
+    const document = parseYaml(renderTargetBody('singbox', [node()], {}, exportProfile())) as MihomoDocument;
+    expect(document.dns).toBeUndefined();
+    expect(document.rules).toEqual(['MATCH,🚀 节点选择']);
+  });
+});
 
 describe('built-in DNS template', () => {
   it('is the expected fake-ip + encrypted-DNS mapping', () => {
@@ -150,11 +177,18 @@ describe('mihomo producer: default DNS section', () => {
     expect(document.proxies).toEqual([]);
   });
 
-  it('does not leak the dns template into the legacy Clash producer', () => {
-    const document = parseYaml(produceLegacy([node()], { pretty: true })) as MihomoDocument;
-    expect(document).toEqual({ proxies: [expect.objectContaining({ name: 'fixture-ss' })] });
-    expect(document.dns).toBeUndefined();
-    expect(document.rules).toBeUndefined();
+  it('renders the clash target exactly like mihomo, dns section included', () => {
+    // The legacy Clash producer used to drop the template (and every modern
+    // protocol). `clash` now goes through the mihomo renderer, so its output
+    // is byte-identical to `mihomo`'s.
+    for (const target of ['mihomo', 'clash'] as const) {
+      const document = parseYaml(renderTargetBody(target, [node()])) as MihomoDocument;
+      expect(document).toEqual({
+        dns: BUILTIN_DNS_TEMPLATE,
+        proxies: [expect.objectContaining({ name: 'fixture-ss' })],
+        rules: [QUIC_BLOCK_RULE],
+      });
+    }
   });
 });
 
@@ -272,12 +306,13 @@ describe('mihomo producer: QUIC blocking', () => {
     ]);
   });
 
-  it('never changes the legacy Clash output', () => {
-    const document = parseYaml(
-      renderTargetBody('clash', [node()], {}, exportProfile()),
-    ) as MihomoDocument;
-    expect(document.dns).toBeUndefined();
-    expect(document.rules).toEqual(['MATCH,🚀 节点选择']);
+  it('also puts the QUIC rule first for the clash target', () => {
+    const body = renderTargetBody('clash', [node()], {}, exportProfile());
+    const document = parseYaml(body) as MihomoDocument;
+    expect(document.dns).toEqual(BUILTIN_DNS_TEMPLATE);
+    expect(document.rules).toEqual([QUIC_BLOCK_RULE, 'MATCH,🚀 节点选择']);
+    // Section-for-section identical to mihomo.
+    expect(body).toBe(renderTargetBody('mihomo', [node()], {}, exportProfile()));
   });
 
   it('can be disabled or replaced through the producer option', () => {
@@ -420,16 +455,20 @@ describe('export path: profile dnsTemplate', () => {
     expect(document.rules).toEqual([QUIC_BLOCK_RULE, 'MATCH,🚀 节点选择']);
   });
 
-  it('does not add the dns section to a legacy Clash export', async () => {
+  it('applies the dns section and QUIC rule to the clash export too', async () => {
     attachProfile('nameserver:\n  - https://dns.example.net/dns-query');
     resetExportRateLimiter();
-    const response = await handleSubscriptionExport(
+    const clash = await handleSubscriptionExport(
       { token: TOKEN, target: 'clash', userAgent: 'clash', ip: '127.0.0.1' },
       { db },
     );
-    expect(response.status).toBe(200);
-    const document = parseYaml(response.body) as MihomoDocument;
-    expect(document.dns).toBeUndefined();
-    expect(document.rules).toEqual(['MATCH,🚀 节点选择']);
+    expect(clash.status).toBe(200);
+    const document = parseYaml(clash.body) as MihomoDocument;
+    expect(document.dns).toEqual({ nameserver: ['https://dns.example.net/dns-query'] });
+    expect(document.rules).toEqual([QUIC_BLOCK_RULE, 'MATCH,🚀 节点选择']);
+
+    // Identical to what /s/:token/mihomo serves.
+    const mihomo = await exportMihomo();
+    expect(clash.body).toBe(mihomo.body);
   });
 });

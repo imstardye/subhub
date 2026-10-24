@@ -673,8 +673,13 @@ describe('/api/admin/sources CRUD', () => {
     const owner = await createFixtureUser('fixture-refresh-owner');
     const source = await createFixtureSource({ name: 'fixture-refresh', ownerUserId: owner.id });
 
-    // No test touches the network: the source is `local`, so `refreshSource`
-    // does not fetch anything (a `remote` source would fetch its URL).
+    // The fixture source is `remote`, so the real task would fetch its URL.
+    // No test may touch the network: the global `fetch` fails deterministically
+    // here, which exercises the "failed refresh" path this test asserts and
+    // never hangs on a DNS/proxy timeout.
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('no network in tests'));
     const before = db.select().from(sources).where(eq(sources.id, source.id as number)).get()!;
     expect(before.lastOkAt).toBeNull();
 
@@ -686,9 +691,10 @@ describe('/api/admin/sources CRUD', () => {
       item: Record<string, unknown>;
       outcome: string;
     };
+    fetchSpy.mockRestore();
     expect(event.node.res.statusCode).toBe(200);
-    // A local source has nothing to fetch: the cache stays empty and the
-    // helper records the failure instead of inventing a result.
+    // The fetch failed: the cache stays empty and the helper records the
+    // failure instead of inventing a result.
     expect(res.outcome).toBe('failed');
     expect(res.item).toMatchObject({
       id: source.id,

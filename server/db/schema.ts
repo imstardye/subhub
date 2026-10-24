@@ -54,6 +54,18 @@ export const sources = sqliteTable('sources', {
   lastOkAt: integer('last_ok_at', { mode: 'timestamp_ms' }),
   lastError: text('last_error'),
   cacheBlob: text('cache_blob'),
+  /**
+   * Parsed `subscription-userinfo` of the last successful refresh (bytes,
+   * `expire` in Unix epoch seconds). Each part is nullable on its own: the
+   * header may carry any subset, and providers without it leave everything
+   * NULL. See `server/utils/userinfo.ts`.
+   */
+  userinfoUpload: integer('userinfo_upload'),
+  userinfoDownload: integer('userinfo_download'),
+  userinfoTotal: integer('userinfo_total'),
+  userinfoExpire: integer('userinfo_expire'),
+  /** When the stored userinfo was captured (`last_ok_at` of that refresh). */
+  userinfoRefreshedAt: integer('userinfo_refreshed_at', { mode: 'timestamp_ms' }),
 });
 
 /** Ordered many-to-many between users and sources. */

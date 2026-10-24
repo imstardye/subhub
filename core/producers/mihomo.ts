@@ -130,9 +130,8 @@ export function buildMihomoProxies(
 }
 
 /**
- * `proxies` block only (the historical body). Used by targets that must stay
- * untouched by the mihomo DNS/QUIC template (legacy Clash, future P4
- * producers).
+ * `proxies` block only (the historical body). Used by the unimplemented P4
+ * targets, which must stay untouched by the mihomo DNS/QUIC template.
  */
 export function produceMihomoProxiesOnly(
   nodes: ProxyNode[],

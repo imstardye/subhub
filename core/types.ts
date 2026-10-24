@@ -44,7 +44,8 @@ export interface ProduceOptions {
   includeUnsupported?: boolean;
   /**
    * Raw `dns:` template YAML (a mapping) that replaces the built-in DNS
-   * section. Ignored when empty/invalid; only mihomo/clash targets read it.
+   * section. Ignored when empty/invalid; only the mihomo renderer
+   * (export targets mihomo/clash) reads it.
    */
   dnsTemplate?: string | null;
   /**

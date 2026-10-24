@@ -10,12 +10,7 @@ import {
   parseVless,
   parseVmess,
 } from '../core/parsers';
-import {
-  buildLegacyProxies,
-  buildMihomoProxies,
-  produceLegacy,
-  produceMihomo,
-} from '../core/producers';
+import { buildMihomoProxies, produceMihomo } from '../core/producers';
 
 const UUID = '11111111-2222-3333-4444-555555555555';
 
@@ -180,113 +175,13 @@ describe('mihomo producer', () => {
   });
 });
 
-describe('legacy Clash producer', () => {
-  it('filters protocols and features unsupported by legacy Clash', () => {
-    const nodes: ProxyNode[] = [
-      node({ type: 'ss', cipher: 'aes-256-gcm', password: 'fake-password' }),
-      node({
-        type: 'ss',
-        name: 'unsupported-cipher',
-        cipher: '2022-blake3-aes-128-gcm',
-        password: 'fake-password',
-      }),
-      node({ type: 'vmess', uuid: UUID, cipher: 'auto', alterId: 0 }),
-      node({ type: 'vless', name: 'vless-plain', uuid: UUID }),
-      node({
-        type: 'vless',
-        name: 'vless-reality',
-        uuid: UUID,
-        'reality-opts': { 'public-key': 'fake-public-key' },
-      }),
-      node({ type: 'vless', name: 'vless-flow', uuid: UUID, flow: 'xtls-rprx-vision' }),
-      node({ type: 'trojan', password: 'fake-password' }),
-      node({ type: 'hysteria2', password: 'fake-password' }),
-      node({ type: 'tuic', uuid: UUID, password: 'fake-password' }),
-      node({ type: 'anytls', password: 'fake-password' }),
-      node({
-        type: 'vmess',
-        name: 'vmess-httpupgrade',
-        uuid: UUID,
-        network: 'ws',
-        'ws-opts': { path: '/', 'v2ray-http-upgrade': true },
-      }),
-    ];
-
-    const proxies = buildLegacyProxies(nodes);
-
-    expect(proxies.map((proxy) => proxy.name)).toEqual([
-      'test',
-      'test',
-      'test',
-    ]);
-    expect(proxies.map((proxy) => proxy.type)).toEqual(['ss', 'vmess', 'trojan']);
-  });
-
-  it('filters plain VLESS nodes, not only flow/reality ones', () => {
-    const proxies = buildLegacyProxies([
-      node({ type: 'vless', name: 'vless-plain', uuid: UUID }),
-      node({ type: 'vless', name: 'vless-tls', uuid: UUID, tls: true }),
-      node({ type: 'vless', name: 'vless-ws', uuid: UUID, network: 'ws' }),
-      node({ type: 'ss', name: 'ss', cipher: 'aes-256-gcm', password: 'fake-password' }),
-    ]);
-
-    expect(proxies.map((proxy) => proxy.type)).toEqual(['ss']);
-  });
-
-  it('uses servername for vmess/vless and drops reality/flow fields', () => {
-    const [vmess, vless] = buildLegacyProxies([
-      node({
-        type: 'vmess',
-        uuid: UUID,
-        cipher: 'auto',
-        alterId: 0,
-        sni: 'sni.example.com',
-      }),
-      node({
-        type: 'vless',
-        name: 'vless',
-        uuid: UUID,
-        sni: 'sni.example.com',
-        'reality-opts': { 'public-key': 'fake' },
-        flow: 'xtls-rprx-vision',
-      }),
-    ], { includeUnsupported: true });
-
-    expect(vmess.servername).toBe('sni.example.com');
-    expect(vmess.sni).toBeUndefined();
-    expect(vless.servername).toBe('sni.example.com');
-    expect(vless['reality-opts']).toBeUndefined();
-    expect(vless.flow).toBeUndefined();
-  });
-
-  it('does not emit a tls field for Trojan nodes', () => {
-    const [trojan] = buildLegacyProxies([
-      node({ type: 'trojan', password: 'fake-password', tls: true }),
-    ]);
-
-    expect(trojan.tls).toBeUndefined();
-  });
-
-  it('keeps tls for VMess nodes', () => {
-    const [vmess] = buildLegacyProxies([
-      node({ type: 'vmess', uuid: UUID, cipher: 'auto', alterId: 0, tls: true }),
-    ]);
-
-    expect(vmess.tls).toBe(true);
-  });
-
-  it('emits parseable YAML and excludes unsupported nodes by default', () => {
-    const output = produceLegacy(
-      [
-        node({ type: 'ss', cipher: 'aes-256-gcm', password: 'fake-password' }),
-        node({ type: 'hysteria2', password: 'fake-password' }),
-        node({ type: 'anytls', password: 'fake-password' }),
-      ],
-      { pretty: true },
-    );
-    const document = parseYaml(output) as { proxies: ProxyNode[] };
-
-    expect(document.proxies).toHaveLength(1);
-    expect(document.proxies[0].type).toBe('ss');
+describe('legacy Clash producer removal', () => {
+  it('no longer exports a filtering legacy Clash producer', async () => {
+    // `clash` is rendered by the mihomo producer (see export-nodes.ts), so the
+    // legacy whitelist that dropped vless/anytls/tuic/hysteria2 is gone rather
+    // than left behind as dead code.
+    const producers = await import('../core/producers');
+    expect('buildLegacyProxies' in producers).toBe(false);
+    expect('produceLegacy' in producers).toBe(false);
   });
 });

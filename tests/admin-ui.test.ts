@@ -25,6 +25,7 @@ import {
   SOURCE_KIND_LABELS,
   SOURCE_KINDS,
   sourceHealth,
+  sourceHealthCard,
   sourceKind,
   subscriptionUrl,
   truncate,
@@ -128,6 +129,85 @@ describe('source health', () => {
       source({ id: 5, lastError: 'dns' }),
     ]);
     expect(list.map((s) => s.id)).toEqual([3, 5, 2, 4]);
+  });
+});
+
+describe('dashboard source-health card', () => {
+  it('is never "healthy" before the source list has loaded', () => {
+    // Regression: the card rendered from an empty list while the request was
+    // still in flight (and in the server-rendered HTML) and claimed
+    // "所有订阅源状态正常。" while 16 sources had lastError set.
+    expect(sourceHealthCard([], { loading: true })).toEqual({ state: 'loading', count: 0, sources: [] });
+    expect(sourceHealthCard(null, { loading: true })).toEqual({ state: 'loading', count: 0, sources: [] });
+    // Not loading, but no data either (SSR default / not yet assigned).
+    expect(sourceHealthCard(undefined).state).toBe('loading');
+  });
+
+  it('reports a fetch failure instead of an empty healthy list', () => {
+    const card = sourceHealthCard([], { error: '订阅源加载失败' });
+    expect(card).toEqual({ state: 'error', count: 0, sources: [], error: '订阅源加载失败' });
+    // Even a stale, non-empty list is not reported as healthy on error.
+    expect(sourceHealthCard([source({ id: 1 })], { error: 'boom' }).state).toBe('error');
+    // Whitespace-only errors are not errors.
+    expect(sourceHealthCard([], { error: '   ' }).state).toBe('empty');
+  });
+
+  it('says "no sources" for a loaded empty list, not "all healthy"', () => {
+    expect(sourceHealthCard([])).toEqual({ state: 'empty', count: 0, sources: [] });
+    expect(sourceHealthCard([], { loading: false, error: '' })).toEqual({
+      state: 'empty',
+      count: 0,
+      sources: [],
+    });
+  });
+
+  it('keeps the all-healthy state when nothing is unhealthy', () => {
+    const card = sourceHealthCard([
+      source({ id: 1, lastOkAt: '2026-01-01T00:00:00.000Z' }),
+      source({ id: 2, lastOkAt: '2026-01-02T00:00:00.000Z' }),
+    ]);
+    expect(card).toEqual({ state: 'healthy', count: 0, sources: [] });
+  });
+
+  it('shows the count and the failing sources with their error', () => {
+    const failing = Array.from({ length: 16 }, (_, index) =>
+      source({ id: index + 1, lastError: 'HTTP 502' }),
+    );
+    const card = sourceHealthCard([
+      ...failing,
+      source({ id: 100, lastOkAt: '2026-01-01T00:00:00.000Z' }),
+    ]);
+    expect(card.state).toBe('unhealthy');
+    expect(card.count).toBe(16);
+    expect(card.sources).toHaveLength(16);
+    expect(card.sources[0]).toEqual({ id: 1, name: 'source-1', lastError: 'HTTP 502' });
+  });
+
+  it('counts never-refreshed sources and keeps failures first', () => {
+    const card = sourceHealthCard([
+      source({ id: 1 }),
+      source({ id: 2, lastError: 'timeout' }),
+      source({ id: 3, lastOkAt: '2026-01-01T00:00:00.000Z' }),
+      source({ id: 4, lastOkAt: '2026-01-01T00:00:00.000Z', lastError: 'still broken' }),
+    ]);
+    expect(card.state).toBe('unhealthy');
+    expect(card.count).toBe(3);
+    expect(card.sources).toEqual([
+      { id: 2, name: 'source-2', lastError: 'timeout' },
+      { id: 4, name: 'source-4', lastError: 'still broken' },
+      { id: 1, name: 'source-1', lastError: null },
+    ]);
+  });
+
+  it('keeps a previously loaded list visible (count + errors) while refreshing', () => {
+    // Refetching must not flash "loading"/"healthy": the last known failures
+    // stay on screen until new data replaces them.
+    const card = sourceHealthCard(
+      [source({ id: 1, lastError: 'HTTP 502' }), source({ id: 2, lastError: 'dns' })],
+      { loading: true },
+    );
+    expect(card.state).toBe('unhealthy');
+    expect(card.count).toBe(2);
   });
 });
 

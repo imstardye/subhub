@@ -33,6 +33,7 @@ import { eq, inArray } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { encrypt, decrypt } from '../db/crypto';
 import { sourceAllowedUsers, sources, users, type Source } from '../db/schema';
+import { hasUserInfo } from './userinfo';
 import {
   maskUrl,
   parseId,
@@ -67,6 +68,23 @@ export interface AdminSource {
   lastOkAt: string | null;
   lastError: string | null;
   hasCache: boolean;
+  /**
+   * Parsed `subscription-userinfo` of the last refresh that carried one
+   * (additive, read-only). `null` when the provider never sent a parseable
+   * header; each part may still be null on its own.
+   */
+  userinfo: AdminSourceUserInfo | null;
+}
+
+/** Source `subscription-userinfo` as exposed by the API (bytes, epoch seconds). */
+export interface AdminSourceUserInfo {
+  upload: number | null;
+  download: number | null;
+  total: number | null;
+  /** Unix epoch **seconds**, as the upstream header spells it. */
+  expire: number | null;
+  /** ISO timestamp of the refresh that captured these values. */
+  refreshedAt: string | null;
 }
 
 /** Decrypt for masking only; a bad ciphertext must not break the list. */
@@ -123,7 +141,20 @@ export function toAdminSource(row: Source, allowedUserIds: number[] = []): Admin
     lastOkAt: row.lastOkAt ? row.lastOkAt.toISOString() : null,
     lastError: row.lastError ?? null,
     hasCache: Boolean(row.cacheBlob),
+    userinfo: toAdminUserInfo(row),
   };
+}
+
+/** Stored userinfo, or `null` when the provider never sent a parseable value. */
+function toAdminUserInfo(row: Source): AdminSourceUserInfo | null {
+  const info: AdminSourceUserInfo = {
+    upload: row.userinfoUpload ?? null,
+    download: row.userinfoDownload ?? null,
+    total: row.userinfoTotal ?? null,
+    expire: row.userinfoExpire ?? null,
+    refreshedAt: row.userinfoRefreshedAt ? row.userinfoRefreshedAt.toISOString() : null,
+  };
+  return hasUserInfo(info) ? info : null;
 }
 
 /**

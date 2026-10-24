@@ -187,6 +187,81 @@ describe('guarded migration: sources.access_mode + source_allowed_users', () => 
   });
 });
 
+describe('guarded migration: sources.userinfo_* columns', () => {
+  const USERINFO_COLUMNS = [
+    'userinfo_upload',
+    'userinfo_download',
+    'userinfo_total',
+    'userinfo_expire',
+    'userinfo_refreshed_at',
+  ];
+
+  it('adds every nullable column to a database from before the feature', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subhub-migrate-userinfo-'));
+    dirs.push(dir);
+    const dbPath = join(dir, 'legacy.sqlite');
+
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'remote',
+        ua TEXT,
+        refresh_minutes INTEGER NOT NULL DEFAULT 60,
+        last_ok_at INTEGER,
+        last_error TEXT,
+        cache_blob TEXT,
+        owner_user_id INTEGER,
+        access_mode TEXT NOT NULL DEFAULT 'all'
+      );
+      INSERT INTO sources (name, url) VALUES ('legacy-source', 'v1:placeholder');
+    `);
+    legacy.close();
+
+    const db = openDb({ path: dbPath });
+    // Existing rows read as "no userinfo", never as zeros.
+    const row = db.select().from(sources).all()[0]!;
+    expect(row).toMatchObject({
+      userinfoUpload: null,
+      userinfoDownload: null,
+      userinfoTotal: null,
+      userinfoExpire: null,
+      userinfoRefreshedAt: null,
+    });
+
+    db.update(sources)
+      .set({ userinfoUpload: 1, userinfoExpire: 1_700_000_000, userinfoRefreshedAt: new Date(0) })
+      .where(eq(sources.id, row.id))
+      .run();
+    const reopened = openDb({ path: dbPath });
+    expect(reopened.select().from(sources).all()[0]).toMatchObject({
+      userinfoUpload: 1,
+      userinfoExpire: 1_700_000_000,
+    });
+
+    // Idempotent: no duplicate column errors on repeated migrations.
+    const handle = new Database(dbPath);
+    ensureSchema(handle);
+    ensureSchema(handle);
+    const columns = handle.pragma('table_info(sources)') as Array<{ name: string }>;
+    for (const name of USERINFO_COLUMNS) {
+      expect(columns.filter((column) => column.name === name)).toHaveLength(1);
+    }
+    handle.close();
+  });
+
+  it('creates the columns on a fresh database', () => {
+    const db = openDb({ path: ':memory:' });
+    const sqlite = (db as unknown as { $client: Database.Database }).$client;
+    const columns = (sqlite.pragma('table_info(sources)') as Array<{ name: string }>).map(
+      (column) => column.name,
+    );
+    for (const name of USERINFO_COLUMNS) expect(columns).toContain(name);
+  });
+});
+
 describe('source url crypto', () => {
   it('round-trips a placeholder string and does not embed the plaintext', () => {
     const plain = 'placeholder-not-a-subscription';

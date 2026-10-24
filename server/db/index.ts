@@ -55,7 +55,12 @@ CREATE TABLE IF NOT EXISTS sources (
   last_error TEXT,
   cache_blob TEXT,
   owner_user_id INTEGER,
-  access_mode TEXT NOT NULL DEFAULT 'all'
+  access_mode TEXT NOT NULL DEFAULT 'all',
+  userinfo_upload INTEGER,
+  userinfo_download INTEGER,
+  userinfo_total INTEGER,
+  userinfo_expire INTEGER,
+  userinfo_refreshed_at INTEGER
 );
 
 -- SHARED (accessMode 'restricted') source allowlists.
@@ -132,6 +137,21 @@ function ensureAddedColumns(sqlite: Database.Database): void {
   sqlite.exec(
     'CREATE INDEX IF NOT EXISTS sources_owner_id_idx ON sources (owner_user_id, id)',
   );
+  // `subscription-userinfo` passthrough: parsed parts of the last successful
+  // refresh. Nullable on purpose — providers that omit the header (or send it
+  // in an unparseable form) must not look like "0 bytes / never expires".
+  const userinfoColumns: Array<[string, string]> = [
+    ['userinfo_upload', 'INTEGER'],
+    ['userinfo_download', 'INTEGER'],
+    ['userinfo_total', 'INTEGER'],
+    ['userinfo_expire', 'INTEGER'],
+    ['userinfo_refreshed_at', 'INTEGER'],
+  ];
+  for (const [name, type] of userinfoColumns) {
+    if (!columns.some((column) => column.name === name)) {
+      sqlite.exec(`ALTER TABLE sources ADD COLUMN ${name} ${type}`);
+    }
+  }
 }
 
 export function ensureSchema(sqlite: Database.Database): void {

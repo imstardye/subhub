@@ -19,10 +19,12 @@ import { accessLogs, users } from '../db/schema';
 import {
   buildTargetProxies,
   collectUserNodes,
+  collectUserUserInfo,
   loadUserProfile,
   renderTargetBody,
   type ProfileIniResolver,
 } from './export-nodes';
+import { formatUserInfo, type SubscriptionUserInfo } from './userinfo';
 import { isExportTarget, type ExportTarget } from './targets';
 import {
   createRateLimiter,
@@ -50,9 +52,6 @@ export function detectTargetFromUserAgent(ua: string | null | undefined): Export
   if (value.includes('clash')) return 'clash';
   return 'mihomo';
 }
-
-/** Placeholder subscription-userinfo until sources are aggregated (P2 cache task). */
-export const PLACEHOLDER_USERINFO = 'upload=0; download=0; total=0; expire=0';
 
 /** Access-log/IP column cap; the exported handler already normalises the value. */
 const MAX_IP_LENGTH = 64;
@@ -268,6 +267,9 @@ export async function handleSubscriptionExport(
   }
 
   let body: string;
+  // Aggregated over the same sources the export merges (see export-nodes.ts).
+  // `null` -> no `subscription-userinfo` header at all, never a fake 0/0/0.
+  let userinfo: SubscriptionUserInfo | null;
   try {
     const nodes = collectUserNodes(db, user.id);
     // Group regexes (`.*`, `((?i)hk)`, ...) are expanded against the names the
@@ -277,6 +279,7 @@ export async function handleSubscriptionExport(
       .filter(Boolean);
     const profile = await loadUserProfile(db, user.id, target, deps.resolveProfileIni, nodeNames);
     body = renderTargetBody(target, nodes, {}, profile);
+    userinfo = collectUserUserInfo(db, user.id);
   } catch {
     logAccess(db, {
       userId: user.id,
@@ -307,7 +310,9 @@ export async function handleSubscriptionExport(
       'content-disposition': `attachment; filename="${fileNameFor(target, user)}"`,
       'profile-update-interval': '24',
       'profile-web-page-url': 'https://github.com/imstardye/subhub',
-      'subscription-userinfo': PLACEHOLDER_USERINFO,
+      // Only the parts some source actually reported (`upload=…; download=…;
+      // total=…; expire=…`); omitted entirely when no source has any.
+      ...(userinfo ? { 'subscription-userinfo': formatUserInfo(userinfo) } : {}),
       ...rateHeaders,
     },
     body,

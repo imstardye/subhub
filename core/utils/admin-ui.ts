@@ -99,6 +99,49 @@ export function unhealthySources<T extends Pick<AdminSource, 'id' | 'name' | 'la
     .sort((a, b) => Number(!a.lastError) - Number(!b.lastError) || a.id - b.id);
 }
 
+/**
+ * What the dashboard's 源健康 card shows.
+ *
+ * `loading` and `error` are distinct from `healthy`: an empty `sources` list
+ * before the request resolved (SSR renders `setup()` state!) is *not* "all
+ * sources are healthy", which is exactly the false-positive the card showed
+ * live while 16 sources had `lastError` set. Only a successfully loaded,
+ * non-empty list with zero unhealthy entries is `healthy`.
+ */
+export type SourceHealthCard =
+  | { state: 'loading'; count: 0; sources: [] }
+  | { state: 'error'; count: 0; sources: []; error: string }
+  | { state: 'empty'; count: 0; sources: [] }
+  | { state: 'healthy'; count: 0; sources: [] }
+  | { state: 'unhealthy'; count: number; sources: Array<{ id: number; name: string; lastError: string | null }> };
+
+export function sourceHealthCard(
+  sources: readonly Pick<AdminSource, 'id' | 'name' | 'lastOkAt' | 'lastError'>[] | null | undefined,
+  options: { loading?: boolean; error?: string | null } = {},
+): SourceHealthCard {
+  const error = options.error?.trim();
+  if (error) return { state: 'error', count: 0, sources: [], error };
+  if (!sources) return { state: 'loading', count: 0, sources: [] };
+  // Data wins over the loading flag: a refetch must not flash "loading" (or
+  // "healthy") while the last known failures are still on screen.
+  if (sources.length === 0) {
+    return options.loading
+      ? { state: 'loading', count: 0, sources: [] }
+      : { state: 'empty', count: 0, sources: [] };
+  }
+  const sick = unhealthySources(sources);
+  if (sick.length === 0) return { state: 'healthy', count: 0, sources: [] };
+  return {
+    state: 'unhealthy',
+    count: sick.length,
+    sources: sick.map((source) => ({
+      id: source.id,
+      name: source.name,
+      lastError: source.lastError ?? null,
+    })),
+  };
+}
+
 /** `2026-10-24 09:05` in local time; `—` for null/invalid. */
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return '—';

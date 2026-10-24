@@ -449,13 +449,24 @@ describe('POST /api/tasks/refresh-sources auth', () => {
 
   it('refreshes when the header matches the configured password', async () => {
     const sourceId = insertSource({ lastOkAt: null });
-    const event = fakeEvent({
-      headers: { 'x-admin-password': PASSWORD },
-      url: `/api/tasks/refresh-sources?sourceId=${sourceId}`,
-    });
-    const result = (await refreshSourcesHandler(event, auth)) as { checked: number };
-    expect(event.node.res.statusCode).toBe(200);
-    expect(result.checked).toBe(1);
+    // The trigger uses the real task and therefore the global `fetch`.
+    // Stub it so the test stays hermetic (no network, no proxy, no timeout
+    // flakiness) — this asserts the auth/trigger wiring, not the fetch itself.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(NEW_BODY, { status: 200 }),
+    );
+    try {
+      const event = fakeEvent({
+        headers: { 'x-admin-password': PASSWORD },
+        url: `/api/tasks/refresh-sources?sourceId=${sourceId}`,
+      });
+      const result = (await refreshSourcesHandler(event, auth)) as { checked: number };
+      expect(event.node.res.statusCode).toBe(200);
+      expect(result.checked).toBe(1);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it('validates sourceId only after authentication', async () => {

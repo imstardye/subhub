@@ -8,6 +8,10 @@
  * `last_error` is written — the previous `cache_blob` is kept so exports keep
  * working with the last known-good subscription.
  *
+ * The upstream `subscription-userinfo` header (traffic + expiry) is parsed and
+ * stored per source on success (see `userinfo.ts`), so `/s/:token` can pass the
+ * real numbers through instead of a placeholder.
+ *
  * Plain module (no Nitro globals) so it can be driven by a Nitro task, a manual
  * call, or unit tests with an injected fetcher. Tests must never hit the
  * network: pass `fetcher` (see tests/refresh-sources.test.ts).
@@ -16,6 +20,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { decrypt } from '../db/crypto';
 import type { SubhubDb } from '../db';
 import { sources, type Source } from '../db/schema';
+import { parseUserInfo, USERINFO_HEADER, type SubscriptionUserInfo } from '../utils/userinfo';
 
 /** Default response cap; remote sources above this are rejected as too large. */
 export const MAX_CACHE_BLOB_BYTES = 10 * 1024 * 1024;
@@ -61,6 +66,8 @@ export interface RefreshResult {
   error?: string;
   /** Body size written for `refreshed`. */
   bytes?: number;
+  /** Parsed `subscription-userinfo` stored by this refresh, when present. */
+  userinfo?: SubscriptionUserInfo;
 }
 
 export interface RefreshAllResult {
@@ -161,10 +168,31 @@ async function readBodyWithLimit(
   return { body: new TextDecoder('utf-8').decode(buffer), bytes };
 }
 
+/** Columns persisted for a successful refresh's `subscription-userinfo`. */
+export type UserInfoColumns = Pick<
+  Source,
+  'userinfoUpload' | 'userinfoDownload' | 'userinfoTotal' | 'userinfoExpire' | 'userinfoRefreshedAt'
+>;
+
+/**
+ * Map parsed header values to the source columns. Every part is stored as-is
+ * (NULL when the header omitted it), so "no total" never becomes "0 bytes
+ * total".
+ */
+export function userInfoColumns(info: SubscriptionUserInfo | null, capturedAt: number): UserInfoColumns {
+  return {
+    userinfoUpload: info?.upload ?? null,
+    userinfoDownload: info?.download ?? null,
+    userinfoTotal: info?.total ?? null,
+    userinfoExpire: info?.expire ?? null,
+    userinfoRefreshedAt: info ? new Date(capturedAt) : null,
+  };
+}
+
 async function fetchSourceBody(
   source: Source,
   options: RefreshOptions,
-): Promise<{ body: string; bytes: number }> {
+): Promise<{ body: string; bytes: number; userinfo: SubscriptionUserInfo | null }> {
   let url: string;
   try {
     url = decrypt(source.url);
@@ -202,7 +230,11 @@ async function fetchSourceBody(
 
     const body = await readBodyWithLimit(response, maxBytes, controller.signal);
     if (body.bytes === 0) throw new Error('empty response body');
-    return body;
+    // Headers are independent of the body stream, so this can be read after
+    // the body without loss; keeping it here means a failed fetch (status,
+    // oversize, empty body) never stores userinfo at all.
+    const userinfo = parseUserInfo(response.headers?.get(USERINFO_HEADER) ?? null);
+    return { ...body, userinfo };
   } finally {
     clearTimeout(timer);
   }
@@ -244,16 +276,24 @@ export async function refreshSource(
   if (source.type !== 'remote') return refreshLocalSource(db, source, now);
 
   try {
-    const { body, bytes } = await fetchSourceBody(source, options);
+    const { body, bytes, userinfo } = await fetchSourceBody(source, options);
+    // A successful refresh replaces the stored userinfo only when the response
+    // carries a parseable header. Without one the previous values are kept
+    // (and are already stale by `last_ok_at`, which the UI/DTO exposes):
+    // zeroing them would report "0 B of 0 B" to every client, and clearing
+    // them would silently drop the last known quota. `userinfoRefreshedAt`
+    // tells consumers *when* the kept numbers were captured.
+    const captured = userinfo !== null ? userInfoColumns(userinfo, now) : {};
     db.update(sources)
       .set({
         cacheBlob: body,
         lastOkAt: new Date(now),
         lastError: null,
+        ...captured,
       })
       .where(eq(sources.id, sourceId))
       .run();
-    return { sourceId, outcome: 'refreshed', bytes };
+    return { sourceId, outcome: 'refreshed', bytes, ...(userinfo ? { userinfo } : {}) };
   } catch (error) {
     // Keep the previous cache_blob; only record the failure.
     const message = truncateError(errorMessage(error));

@@ -26,12 +26,10 @@
  */
 import { and, eq, exists, isNull, or } from 'drizzle-orm';
 import {
-  buildLegacyProxies,
   buildMihomoProxies,
   buildRules,
   parseIni,
   parseSubscription,
-  produceLegacy,
   produceMihomo,
   produceMihomoProxiesOnly,
   stringifyMihomoConfig,
@@ -43,10 +41,13 @@ import { stringify as stringifyYaml } from 'yaml';
 import type { SubhubDb } from '../db';
 import { profiles, sourceAllowedUsers, sources, users } from '../db/schema';
 import type { ExportTarget } from './targets';
+import { aggregateUserInfo, type SubscriptionUserInfo } from './userinfo';
 
 interface CachedSource {
   id: number;
   cacheBlob: string | null;
+  /** Stored `subscription-userinfo` parts (see `userinfo.ts`). */
+  userinfo?: SubscriptionUserInfo | null;
 }
 
 /**
@@ -78,6 +79,10 @@ export function loadUserSourceCaches(db: SubhubDb, userId: number): CachedSource
       cacheBlob: sources.cacheBlob,
       ownerUserId: sources.ownerUserId,
       accessMode: sources.accessMode,
+      userinfoUpload: sources.userinfoUpload,
+      userinfoDownload: sources.userinfoDownload,
+      userinfoTotal: sources.userinfoTotal,
+      userinfoExpire: sources.userinfoExpire,
     })
     .from(sources)
     .where(
@@ -100,7 +105,16 @@ export function loadUserSourceCaches(db: SubhubDb, userId: number): CachedSource
     row.ownerUserId === null && row.accessMode === 'restricted' ? 1 : row.ownerUserId === null ? 2 : 0;
   return rows
     .sort((a, b) => bucket(a) - bucket(b) || a.id - b.id)
-    .map((row) => ({ id: row.id, cacheBlob: row.cacheBlob }));
+    .map((row) => ({
+      id: row.id,
+      cacheBlob: row.cacheBlob,
+      userinfo: {
+        upload: row.userinfoUpload ?? null,
+        download: row.userinfoDownload ?? null,
+        total: row.userinfoTotal ?? null,
+        expire: row.userinfoExpire ?? null,
+      },
+    }));
 }
 
 /**
@@ -126,6 +140,18 @@ export function collectNodes(caches: CachedSource[]): ProxyNode[] {
 /** Aggregate the cached sources of a user into proxy nodes. */
 export function collectUserNodes(db: SubhubDb, userId: number): ProxyNode[] {
   return collectNodes(loadUserSourceCaches(db, userId));
+}
+
+/**
+ * Aggregate `subscription-userinfo` over exactly the sources an export merges
+ * (same `loadUserSourceCaches` query), or `null` when none of them has any
+ * stored value — then the export emits no header at all.
+ */
+export function collectUserUserInfo(
+  db: SubhubDb,
+  userId: number,
+): SubscriptionUserInfo | null {
+  return aggregateUserInfo(loadUserSourceCaches(db, userId).map((entry) => entry.userinfo));
 }
 
 /** Resolve a profile's INI source. `null` when there is nothing usable. */
@@ -181,26 +207,25 @@ export interface ExportProfile {
   dnsTemplate?: string | null;
 }
 
-/** Use legacy Clash (not mihomo) semantics for nodes and rules? */
-function isLegacyTarget(target: ExportTarget): boolean {
-  return target === 'clash';
-}
-
 /**
- * Nodes exactly as the target's producer will emit them (transformed and, for
- * legacy Clash, filtered). Profile group members are expanded against *these*
- * names — the raw parsed names differ (e.g. `tls-fingerprint` -> `fingerprint`)
- * and nodes legacy cannot load disappear. Both paths run the same producer
- * code, so the export and the profile groups always agree.
+ * Nodes exactly as the target's producer will emit them (transformed; nothing
+ * is filtered). Profile group members are expanded against *these* names — the
+ * raw parsed names differ (e.g. `tls-fingerprint` -> `fingerprint`) — so the
+ * export and the profile groups always agree.
+ *
+ * `clash` is rendered by the mihomo producer (see `renderTargetBody`): modern
+ * Clash clients are mihomo-based, and the legacy filter used to drop every
+ * modern protocol (vless/anytls/tuic/hysteria2), leaving such users with an
+ * empty `proxies: []`. The target is kept in the signature so callers do not
+ * have to special-case the unimplemented P4 fallbacks.
  */
 export function buildTargetProxies(
   target: ExportTarget,
   nodes: ProxyNode[],
   options: ProduceOptions = {},
 ): ProxyNode[] {
-  return isLegacyTarget(target)
-    ? buildLegacyProxies(nodes, options)
-    : buildMihomoProxies(nodes, options);
+  void target;
+  return buildMihomoProxies(nodes, options);
 }
 
 /**
@@ -257,10 +282,13 @@ export async function loadUserProfile(
 }
 
 /**
- * Render nodes for an export target. Targets without a dedicated producer yet
- * (P4) fall back to the mihomo YAML, but keep the historical nodes-only body:
- * the DNS/QUIC template is a mihomo (Clash.Meta) feature and those clients
- * cannot load it.
+ * Render nodes for an export target. `mihomo` and `clash` render identically:
+ * Clash subscribers run mihomo-based clients (Clash Verge/Meta, ClashX Meta),
+ * so `clash` gets the full node set plus the built-in DNS section and QUIC rule.
+ *
+ * Targets without a dedicated producer yet (P4) fall back to the mihomo YAML,
+ * but keep the historical nodes-only body: the DNS/QUIC template is a mihomo
+ * (Clash.Meta) feature and those clients cannot load it.
  *
  * `profile` (from `loadUserProfile`) is optional: with it the body also carries
  * the profile's proxy groups, rules and mihomo rule-providers. Without one the
@@ -277,11 +305,11 @@ export function renderTargetBody(
   options: ProduceOptions = {},
   profile: ExportProfile | null = null,
 ): string {
-  if (isLegacyTarget(target)) return renderLegacyBody(nodes, options, profile);
-
   // A future target (P4) still falls back to mihomo YAML; it must stay exactly
   // what it produced before this template existed.
-  if (target !== 'mihomo') return renderMihomoFallbackBody(nodes, options, profile);
+  if (target !== 'mihomo' && target !== 'clash') {
+    return renderMihomoFallbackBody(nodes, options, profile);
+  }
 
   const dnsOptions: ProduceOptions = {
     ...options,
@@ -294,7 +322,6 @@ export function renderTargetBody(
   }
 
   const sections: Record<string, unknown> = {};
-  // Legacy Clash cannot load rule-providers; mihomo references them by name.
   if (Object.keys(profile.ruleProviders).length > 0) {
     sections['rule-providers'] = profile.ruleProviders;
   }
@@ -310,25 +337,6 @@ export function renderTargetBody(
   if (Object.keys(sections).length === 0) return head;
 
   return `${head}${stringifyYaml(sections, { lineWidth: 0, aliasDuplicateObjects: false })}`;
-}
-
-/** Legacy Clash: nodes-only `proxies` (no DNS, no injected rules). */
-function renderLegacyBody(
-  nodes: ProxyNode[],
-  options: ProduceOptions,
-  profile: ExportProfile | null,
-): string {
-  const body = produceLegacy(nodes, options);
-  if (!profile) return body;
-
-  const sections: Record<string, unknown> = {};
-  if (profile.proxyGroups.length > 0) sections['proxy-groups'] = profile.proxyGroups;
-  if (profile.rules.length > 0) sections.rules = profile.rules;
-  if (Object.keys(sections).length === 0) return body;
-
-  const head = body.endsWith('\n') || body === '' ? body : `${body}\n`;
-  const tail = stringifyYaml(sections, { lineWidth: 0, aliasDuplicateObjects: false });
-  return `${head}${tail}`;
 }
 
 /** Unimplemented P4 targets: the historical mihomo nodes-only YAML. */

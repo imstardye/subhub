@@ -17,5 +17,4 @@ export {
   stringifyMihomoConfig,
 } from './mihomo';
 export { stringifyProxiesSection, stringifyYamlBlocks, toYamlProxies } from './common';
-export { buildLegacyProxies, produceLegacy } from './legacy';
 export type { ProxyNode, ProduceOptions } from '../types';

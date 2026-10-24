@@ -7,6 +7,15 @@
  * - 快捷操作 jumps to the pages with their create form already open (`?new=1`).
  * - 源健康 lists sources that failed their last refresh or never refreshed
  *   (`lastError` set / no `lastOkAt`), name + error summary, linking to /sources.
+ *   The sources are fetched with `useAsyncData`, so they are ready for the
+ *   server-rendered HTML and the first client paint (`$fetch` inside
+ *   `onMounted` left the card empty — and "所有订阅源状态正常" — until hydration
+ *   finished, which is how it showed all-healthy with 16 failing sources).
+ *   The fetch goes through `useRequestFetch()` so the SSR request carries the
+ *   admin cookie (a bare `$fetch` is anonymous on the server); the client still
+ *   refreshes once after hydration for fresh numbers. A client-side error never
+ *   blanks an existing list, and loading / error / empty / healthy / unhealthy
+ *   come from `sourceHealthCard`, so an empty list is never "all healthy".
  * - 最近访问 shows the latest 5 access log rows (GET /api/admin/logs).
  *
  * Stats and logs are the primary data; sources/logs are best-effort, so a
@@ -24,15 +33,13 @@ import {
   logStatusClass,
   logUserName,
   relativeTime,
-  unhealthySources,
+  sourceHealthCard,
 } from '~/core/utils/admin-ui';
 
 const stats = ref<AdminStats | null>(null);
 const loading = ref(true);
 const error = ref('');
 
-const sources = ref<AdminSource[]>([]);
-const sourcesError = ref('');
 const logs = ref<AdminAccessLog[]>([]);
 const logsError = ref('');
 
@@ -51,7 +58,50 @@ const quickActions = [
   { label: '新建规则档', to: '/profiles?new=1' },
 ];
 
-const sick = computed(() => unhealthySources(sources.value));
+// SSR-fetched: the 源健康 card never starts from an empty list. The server
+// render cannot see the admin session cookie, so the client fetches again once
+// after hydration.
+//
+// A *client* failure is deliberately non-destructive: showing a "load failed"
+// banner over an empty card is noise (the card must keep saying "loading" until
+// it has data), and a stale non-empty list is better than blanking the card.
+// Only the SSR-less first load can surface an error, and only if it produced
+// no data at all.
+// `useRequestFetch()` (not the bare `$fetch`) so the admin session cookie is
+// forwarded to the API during the server render; otherwise every SSR request
+// is anonymous and the card could only ever start in its loading state.
+const requestFetch = useRequestFetch();
+
+const {
+  data: sourceData,
+  pending: sourcesLoading,
+  error: sourcesFetchError,
+  refresh: refreshSources,
+} = await useAsyncData('dashboard-sources', () =>
+  requestFetch<{ items: AdminSource[] }>('/api/admin/sources'),
+);
+
+/**
+ * A client refresh ran (after hydration). It always decides the final state:
+ * before it there is either SSR data or nothing.
+ */
+const sourcesChecked = ref(false);
+
+const sources = computed<AdminSource[]>(() => sourceData.value?.items ?? []);
+const sourcesError = computed(() => {
+  // A stale list is shown as-is; a hard failure with no data is reported.
+  if (sources.value.length > 0) return '';
+  return sourcesFetchError.value ? apiErrorMessage(sourcesFetchError.value) : '';
+});
+
+const health = computed(() =>
+  sourceHealthCard(sources.value, {
+    // Loading until the client has a real answer (SSR data or a refresh).
+    loading: sourcesLoading.value || !sourcesChecked.value,
+    error: sourcesError.value,
+  }),
+);
+
 const recent = computed(() => latestLogs(logs.value, 5));
 
 function display(key: CardKey): string {
@@ -72,15 +122,9 @@ async function loadStats() {
   }
 }
 
-async function loadSources() {
-  sourcesError.value = '';
-  try {
-    const res = await $fetch<{ items: AdminSource[] }>('/api/admin/sources');
-    sources.value = res.items;
-  } catch (err) {
-    sources.value = [];
-    sourcesError.value = apiErrorMessage(err);
-  }
+/** Re-fetch the sources (used by the retry link when the card is in error). */
+async function retrySources() {
+  await refreshSources();
 }
 
 async function loadLogs() {
@@ -96,10 +140,16 @@ async function loadLogs() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   loadStats();
-  loadSources();
   loadLogs();
+  try {
+    // Refresh once after hydration so a tab left open overnight shows current
+    // health (the SSR payload only reflects the initial render).
+    await refreshSources();
+  } finally {
+    sourcesChecked.value = true;
+  }
 });
 </script>
 
@@ -173,14 +223,21 @@ onMounted(() => {
         <div class="card-head">
           <h2>
             源健康
-            <span :class="['chip-count', sick.length > 0 ? 'chip-bad' : '']">{{ sick.length }}</span>
+            <span :class="['chip-count', health.state === 'unhealthy' ? 'chip-bad' : '']">
+              {{ health.count }}
+            </span>
           </h2>
           <NuxtLink class="sub" to="/sources">全部订阅源 →</NuxtLink>
         </div>
-        <p v-if="sourcesError" class="error" role="alert">订阅源加载失败：{{ sourcesError }}</p>
-        <p v-else-if="sick.length === 0" class="muted sub">所有订阅源状态正常。</p>
+        <p v-if="health.state === 'error'" class="error" role="alert">
+          订阅源加载失败：{{ health.error }}
+          <button type="button" class="small retry" @click="retrySources">重试</button>
+        </p>
+        <p v-else-if="health.state === 'loading'" class="muted sub">正在加载订阅源…</p>
+        <p v-else-if="health.state === 'empty'" class="muted sub">暂无订阅源。</p>
+        <p v-else-if="health.state === 'healthy'" class="muted sub">所有订阅源状态正常。</p>
         <ul v-else class="health-list">
-          <li v-for="source in sick" :key="source.id">
+          <li v-for="source in health.sources" :key="source.id">
             <span :class="['badge', source.lastError ? 'bad' : 'off']">
               {{ source.lastError ? '失败' : '未刷新' }}
             </span>
@@ -328,6 +385,10 @@ onMounted(() => {
 .chip-bad {
   background: var(--destructive-soft);
   color: var(--destructive);
+}
+
+.retry {
+  margin-left: var(--space-2);
 }
 
 .quick-actions {
