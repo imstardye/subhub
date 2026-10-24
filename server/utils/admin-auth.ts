@@ -8,6 +8,10 @@
  * table yet). The signing key derives from `SUBHUB_SECRET`, so rotating the
  * secret invalidates every existing session.
  *
+ * Secrets fail closed in production: without `SUBHUB_SECRET` no session can be
+ * signed (login errors instead of silently using a public dev key), and the
+ * resulting token can never be verified either.
+ *
  * The cookie/event helpers are written against plain node request/response
  * objects (like `refresh-sources.post.ts`) and h3 is only imported as a type,
  * so this module and its tests need neither auto-imports nor the generated
@@ -92,15 +96,30 @@ export function resolveAdminPassword(opts: AdminAuthOptions = {}): string | null
   return DEV_ADMIN_PASSWORD;
 }
 
-function signingKey(opts: AdminAuthOptions): string {
-  const { secret } = env(opts);
-  // Mirrors server/db/crypto.ts: a public development key when unset, so a
-  // missing SUBHUB_SECRET degrades to "password only" rather than breaking.
-  return secret && secret.length > 0 ? secret : DEV_SIGNING_KEY;
+/**
+ * True when a session cannot be signed/verified because no signing secret is
+ * configured in production. Outside production the fixed dev key applies.
+ */
+export function isSessionSigningUnavailable(opts: AdminAuthOptions = {}): boolean {
+  const { nodeEnv, secret } = env(opts);
+  return !(secret && secret.length > 0) && nodeEnv === 'production';
 }
 
-function sign(payload: string, opts: AdminAuthOptions): string {
-  return createHmac('sha256', signingKey(opts)).update(payload).digest('base64url');
+/** Signing key, or `null` when production is missing SUBHUB_SECRET. */
+function signingKey(opts: AdminAuthOptions): string | null {
+  const { nodeEnv, secret } = env(opts);
+  if (secret && secret.length > 0) return secret;
+  // Mirrors server/db/crypto.ts: outside production a fixed development key is
+  // used. In production a missing secret must never become a public key, so
+  // nothing can be signed or verified (see isSessionSigningUnavailable).
+  if (nodeEnv === 'production') return null;
+  return DEV_SIGNING_KEY;
+}
+
+function sign(payload: string, opts: AdminAuthOptions): string | null {
+  const key = signingKey(opts);
+  if (key === null) return null;
+  return createHmac('sha256', key).update(payload).digest('base64url');
 }
 
 /**
@@ -126,8 +145,16 @@ export function verifyAdminPassword(
   return safeEqual(submitted, expected);
 }
 
-/** Build a signed session token `v1.<expiresAtSeconds>.<hmac>`. */
+/**
+ * Build a signed session token `v1.<expiresAtSeconds>.<hmac>`.
+ *
+ * Throws when NODE_ENV is production and SUBHUB_SECRET is unset: a session must
+ * never be signed with the public development key on a real deployment.
+ */
 export function createSessionToken(opts: AdminAuthOptions = {}): string {
+  if (isSessionSigningUnavailable(opts)) {
+    throw new Error('SUBHUB_SECRET is required in production');
+  }
   const now = (opts.now ?? Date.now)();
   const expiresAt = Math.floor(now / 1000) + ADMIN_SESSION_TTL_SECONDS;
   const payload = `${SESSION_VERSION}.${expiresAt}`;
@@ -146,7 +173,9 @@ export function verifySessionToken(
   if (version !== SESSION_VERSION) return false;
   const expiresAt = Number(expiresRaw);
   if (!Number.isInteger(expiresAt) || expiresAt <= 0) return false;
-  if (!safeEqual(signature, sign(`${version}.${expiresRaw}`, opts))) return false;
+  const expected = sign(`${version}.${expiresRaw}`, opts);
+  // No key in production -> nothing verifies (fail closed).
+  if (expected === null || !safeEqual(signature, expected)) return false;
 
   const now = Math.floor((opts.now ?? Date.now)() / 1000);
   return expiresAt > now;
@@ -232,13 +261,16 @@ export function logoutCookieHeader(): string {
 
 /**
  * Verify the password and return a session on success. Returns `null` when the
- * password is wrong; no cookie is ever produced for a failed attempt.
+ * password is wrong; no cookie is ever produced for a failed attempt. Also
+ * returns `null` (instead of throwing) when production lacks SUBHUB_SECRET —
+ * use `isSessionSigningUnavailable` to report that as a server error.
  */
 export function login(
   password: unknown,
   opts: AdminAuthOptions = {},
 ): { token: string; cookie: string } | null {
   if (!verifyAdminPassword(password, opts)) return null;
+  if (isSessionSigningUnavailable(opts)) return null;
   const token = createSessionToken(opts);
   return { token, cookie: sessionCookieHeader(token, opts) };
 }

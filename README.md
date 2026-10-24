@@ -83,6 +83,21 @@ P1 共 187 个单测，覆盖：
 加密后入库，密钥为 `SUBHUB_SECRET`；未设置且非 production 时仅使用开发用
 测试密钥，生产环境必须显式配置。
 
+## 管理后台登录（P3 骨架）
+
+- `/login` 提交密码，`POST /api/admin/login` 校验后下发 httpOnly
+  `subhub_admin` cookie（HMAC-SHA256 签名，7 天，生产环境 `Secure`）；
+  密码错误返回 401 且不写 cookie。
+- `GET /api/admin/me` 返回 `{ authenticated }`；`admin` 路由中间件在服务端
+  透传 cookie 查询该接口，未登录跳转 `/login?redirect=...`。
+- `POST /api/admin/logout` 删除 cookie。
+- 生产环境（`NODE_ENV=production`）未配置 `SUBHUB_SECRET` 时拒绝签发会话
+  （登录返回 500，已有 token 也无法验证），不会退回公开的开发密钥。
+
+- 登录防爆破：同一 IP 15 分钟内失败 5 次、全局失败 100 次即返回 429（只计失败，成功清零该 IP）。
+  - 注意：全局上限可被恶意刷满，届时正确密码也会暂时收到 429，窗口过后恢复。
+  - 客户端 IP 取自连接本身，不读 `X-Forwarded-For`。部署在反向代理后时，请让代理直连传递真实来源（或仅在内网/VPN 暴露后台），否则所有请求共用代理 IP，5 次失败会锁住所有人。
+
 ## 环境变量
 
 ```bash

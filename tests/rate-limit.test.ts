@@ -93,3 +93,25 @@ describe('rate limiter defaults', () => {
     expect(limiter.check('defaults')).toBe(false);
   });
 });
+
+describe('rate limiter refund', () => {
+  it('gives back the most recent counted request', () => {
+    const limiter = createRateLimiter({ max: 2 });
+    expect(limiter.consume('k').remaining).toBe(1);
+    limiter.refund('k');
+    expect(limiter.consume('k').remaining).toBe(1);
+    expect(limiter.consume('k').remaining).toBe(0);
+    expect(limiter.check('k')).toBe(false);
+  });
+
+  it('never refunds below zero and ignores unseen keys', () => {
+    const limiter = createRateLimiter({ max: 2 });
+    limiter.refund('missing');
+    limiter.refund('missing');
+    expect(limiter.size()).toBe(0);
+    limiter.check('k');
+    limiter.refund('k');
+    limiter.refund('k');
+    expect(limiter.consume('k')).toMatchObject({ allowed: true, remaining: 1 });
+  });
+});

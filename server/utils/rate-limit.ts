@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /**
- * In-memory, per-token fixed-window rate limiter for the subscription export.
+ * In-memory, fixed-window rate limiter keyed by an arbitrary string (subscription
+ * token, client IP, ...) for the subscription export and the admin login.
  *
  * A single Nuxt/Nitro process keeps the counters in a `Map`; the limiter is not
  * shared across workers or restarts. That is intentional for now — when the
@@ -56,6 +57,12 @@ export interface RateLimiter {
   check(key: string): boolean;
   /** Same as `check` but with the counters needed for response headers. */
   consume(key: string): RateLimitResult;
+  /**
+   * Give back the count of the most recent `consume` for `key` (never below
+   * zero). Used when a counted attempt turns out to be successful (e.g. a
+   * correct admin password), so only failures count against the limit.
+   */
+  refund(key: string): void;
   /** Forget all counters (tests only). */
   reset(): void;
   /** Current number of tracked keys (tests/diagnostics). */
@@ -127,6 +134,10 @@ export function createRateLimiter(options: RateLimitOptions = {}): RateLimiter {
   return {
     check: (key) => consume(key).allowed,
     consume,
+    refund: (key) => {
+      const state = windows.get(key);
+      if (state && state.count > 0) state.count -= 1;
+    },
     reset: () => windows.clear(),
     size: () => windows.size,
   };
