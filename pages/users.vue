@@ -11,9 +11,6 @@ definePageMeta({ layout: 'admin', middleware: 'admin' });
 
 import type { AdminUser } from '~/server/utils/admin-users';
 
-/** Fixture origin for building displayed subscription links. */
-const ORIGIN = 'https://example.com';
-
 interface UserForm {
   name: string;
   enabled: boolean;
@@ -41,7 +38,8 @@ function emptyForm(): UserForm {
 }
 
 function subscriptionUrl(user: Pick<AdminUser, 'token'>): string {
-  return `${ORIGIN}/s/${user.token}`;
+  // Client-only: copyLink runs in the browser after mount.
+  return `${window.location.origin}/s/${user.token}`;
 }
 
 function errorMessage(err: unknown): string {
