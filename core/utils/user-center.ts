@@ -15,7 +15,7 @@ import type {
   UserCenterTrafficSource,
   UserCenterTrafficSummary,
 } from '../../server/utils/user-center';
-import { buildSubscriptionUrl, DEFAULT_SUB_PREFIX } from '../../server/utils/sub-prefix';
+import { buildSubscriptionUrl, DEFAULT_SUB_PREFIX } from './sub-prefix';
 import { EXPORT_TARGETS, type ExportTarget } from '../../server/utils/targets';
 
 export type UserCenterPayload = UserCenterData | UserCenterDisabledData;

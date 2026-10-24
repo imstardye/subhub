@@ -44,6 +44,7 @@ export const RESERVED_SUB_PATH_ROOTS = [
   'profiles',
   'preview',
   'logs',
+  'my',
 ] as const;
 
 /**

@@ -174,7 +174,9 @@ describe('settings storage + API', () => {
   it('GET returns the defaults; PUT persists the normalised prefix', async () => {
     const initial = await callSettings('GET');
     expect(initial.status).toBe(200);
-    expect(initial.body).toMatchObject({ subPath: 's', defaultSubPath: 's', adminPath: 'login' });
+    // adminPath default is 'admin' — the admin gate's entrance default
+    // (feat/admin-path); the two must never drift apart again.
+    expect(initial.body).toMatchObject({ subPath: 's', defaultSubPath: 's', adminPath: 'admin' });
     expect(initial.body.reservedRoots).toContain('api');
 
     const saved = await callSettings('PUT', { subPath: ' /dl/ ' });
