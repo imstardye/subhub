@@ -10,6 +10,7 @@
 definePageMeta({ layout: 'admin' });
 
 import type { AdminAccessLog } from '~/server/utils/admin-logs';
+import { apiErrorMessage } from '~/core/utils/api-error';
 import type { AdminUser } from '~/server/utils/admin-users';
 
 interface LogsResponse {
@@ -34,12 +35,6 @@ const filterStatus = ref<string>('');
 
 const hasPrev = computed(() => offset.value > 0);
 const hasNext = computed(() => offset.value + PAGE_SIZE < total.value);
-
-function errorMessage(err: unknown): string {
-  const data = (err as { data?: { error?: string } }).data;
-  if (data?.error) return data.error;
-  return '请求失败，请稍后再试';
-}
 
 function formatTime(value: string): string {
   const date = new Date(value);
@@ -76,7 +71,7 @@ async function load() {
     total.value = res.total;
     loaded.value = true;
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     loading.value = false;
   }

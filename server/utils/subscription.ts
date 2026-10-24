@@ -8,11 +8,21 @@
  * remaining targeted producers (shadowrocket/singbox/surge/loon/uri) are still
  * missing; unsupported targets fall back to the mihomo YAML (see P4 note
  * below).
+ *
+ * The user's rule profile (`users.profileId`) is applied on top of the nodes:
+ * its proxy groups, rules and rule-providers are appended to the rendered YAML.
+ * No profile — or a broken/unreachable one — keeps the plain nodes-only body.
  */
 import { and, eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { accessLogs, users } from '../db/schema';
-import { collectUserNodes, renderTargetBody } from './export-nodes';
+import {
+  buildTargetProxies,
+  collectUserNodes,
+  loadUserProfile,
+  renderTargetBody,
+  type ProfileIniResolver,
+} from './export-nodes';
 import { isExportTarget, type ExportTarget } from './targets';
 import {
   createRateLimiter,
@@ -167,6 +177,11 @@ export interface ExportDeps {
   db?: SubhubDb;
   /** Clock override for tests. */
   now?: () => number;
+  /**
+   * Override how a profile's INI is resolved (tests never hit the network;
+   * the default handles `iniText` and fetches `iniUrl` with a short timeout).
+   */
+  resolveProfileIni?: ProfileIniResolver;
 }
 
 /**
@@ -180,10 +195,10 @@ export interface ExportDeps {
  *  4. missing or disabled user -> 404 (+ access log)
  *  5. build the subscription -> 200
  */
-export function handleSubscriptionExport(
+export async function handleSubscriptionExport(
   request: ExportRequest,
   deps: ExportDeps = {},
-): ExportResult {
+): Promise<ExportResult> {
   const startedAt = (deps.now ?? Date.now)();
   const token = request.token ?? '';
   if (!token || token.length > MAX_TOKEN_LENGTH) {
@@ -254,7 +269,14 @@ export function handleSubscriptionExport(
 
   let body: string;
   try {
-    body = renderTargetBody(target, collectUserNodes(db, user.id));
+    const nodes = collectUserNodes(db, user.id);
+    // Group regexes (`.*`, `((?i)hk)`, ...) are expanded against the names the
+    // producer will emit, i.e. after transformation/filtering.
+    const nodeNames = buildTargetProxies(target, nodes)
+      .map((node) => node.name)
+      .filter(Boolean);
+    const profile = await loadUserProfile(db, user.id, target, deps.resolveProfileIni, nodeNames);
+    body = renderTargetBody(target, nodes, {}, profile);
   } catch {
     logAccess(db, {
       userId: user.id,

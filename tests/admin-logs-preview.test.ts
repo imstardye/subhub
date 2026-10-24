@@ -17,7 +17,7 @@ import logsListHandler from '../server/api/admin/logs/index.get';
 import previewHandler from '../server/api/admin/preview/index.post';
 import { createSessionRevocationStore, type SessionRevocationStore } from '../server/utils/session-revocation';
 import { openDb, type SubhubDb } from '../server/db';
-import { accessLogs, sources, userSources, users } from '../server/db/schema';
+import { accessLogs, profiles, sources, users } from '../server/db/schema';
 import { encrypt } from '../server/db/crypto';
 import { EXPORT_TARGETS } from '../server/utils/targets';
 import type { AdminApiEvent } from '../server/utils/admin-api';
@@ -103,7 +103,8 @@ async function preview(body: Record<string, unknown>) {
   return { status: event.node.res.statusCode, body: result as Record<string, unknown> };
 }
 
-function attachSource(cacheBlob: string | null, ownerId = userId): number {
+/** Insert a source; `ownerId` null makes it public (shared by every user). */
+function attachSource(cacheBlob: string | null, ownerId: number | null = userId): number {
   const source = base.db
     .insert(sources)
     .values({
@@ -112,10 +113,10 @@ function attachSource(cacheBlob: string | null, ownerId = userId): number {
       url: encrypt('https://example.com/fixture-source'),
       type: 'local',
       cacheBlob,
+      ownerUserId: ownerId,
     })
     .returning({ id: sources.id })
     .get()!;
-  base.db.insert(userSources).values({ userId: ownerId, sourceId: source.id, sort: 0 }).run();
   return source.id;
 }
 
@@ -280,6 +281,36 @@ describe('POST /api/admin/preview rendering', () => {
     const { status, body } = await preview({ userId: disabledUserId });
     expect(status).toBe(200);
     expect(body).toMatchObject({ userId: disabledUserId, enabled: false });
+  });
+
+  it('applies the user\'s rule profile so an admin preview matches the export', async () => {
+    attachSource(NODE_LINKS);
+    // Public source in this test: the preview uses the same aggregation as /s/:token.
+    const profile = base.db
+      .insert(profiles)
+      .values({
+        name: 'fixture-profile',
+        iniText: [
+          '[custom]',
+          'custom_proxy_group=🚀 节点选择`select`.*',
+          'ruleset=🚀 节点选择,[]MATCH',
+        ].join('\n'),
+      })
+      .returning({ id: profiles.id })
+      .get()!;
+    base.db.update(users).set({ profileId: profile.id }).where(eq(users.id, userId)).run();
+
+    const { status, body } = await preview({ userId });
+    expect(status).toBe(200);
+    const parsed = parseYaml(body.body as string) as {
+      proxies: Array<{ name: string }>;
+      'proxy-groups': Array<{ name: string; proxies: string[] }>;
+      rules: string[];
+    };
+    expect(parsed.proxies.map((proxy) => proxy.name)).toEqual(['node-one', 'node-two']);
+    expect(parsed['proxy-groups'][0]!.name).toBe('🚀 节点选择');
+    expect(parsed['proxy-groups'][0]!.proxies).toEqual(['node-one', 'node-two']);
+    expect(parsed.rules).toEqual(['MATCH,🚀 节点选择']);
   });
 
   it('does not write access_logs', async () => {

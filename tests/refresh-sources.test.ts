@@ -8,7 +8,7 @@ import { Readable } from 'node:stream';
 import { parse as parseYaml } from 'yaml';
 import { openDb, type SubhubDb } from '../server/db';
 import { decrypt, encrypt } from '../server/db/crypto';
-import { sources, userSources, users } from '../server/db/schema';
+import { sources, users } from '../server/db/schema';
 import {
   isSourceDue,
   refreshAllDueSources,
@@ -161,11 +161,28 @@ describe('refreshAllDueSources', () => {
     expect(summary.refreshed).toBe(1);
   });
 
-  it('refreshSource reports skipped for local sources', async () => {
+  it('refreshSource re-stamps a local source without fetching and keeps its cache', async () => {
+    const id = insertSource({ type: 'local', cacheBlob: OLD_BODY, lastError: 'stale error' });
+    const fetcher = vi.fn<Fetcher>(async () => okResponse(NEW_BODY));
+    expect(await refreshSource(db, id, { fetcher, now: () => NOW })).toEqual({
+      sourceId: id,
+      outcome: 'refreshed',
+      bytes: Buffer.byteLength(OLD_BODY, 'utf8'),
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    const row = db.select().from(sources).where(eq(sources.id, id)).get()!;
+    expect(row.cacheBlob).toBe(OLD_BODY);
+    expect(row.lastError).toBeNull();
+    expect(row.lastOkAt?.getTime()).toBe(NOW);
+  });
+
+  it('refreshSource reports failed for a local source without a cache', async () => {
     const id = insertSource({ type: 'local' });
     const fetcher = vi.fn<Fetcher>(async () => okResponse(NEW_BODY));
-    expect(await refreshSource(db, id, { fetcher, now: () => NOW })).toEqual({ sourceId: id, outcome: 'skipped' });
+    const result = await refreshSource(db, id, { fetcher, now: () => NOW });
+    expect(result).toMatchObject({ sourceId: id, outcome: 'failed' });
     expect(fetcher).not.toHaveBeenCalled();
+    expect(db.select().from(sources).where(eq(sources.id, id)).get()!.lastError).toContain('no cache');
   });
 });
 
@@ -182,8 +199,10 @@ describe('subscription export reads the cache', () => {
 
     const first = insertSource({ lastOkAt: null });
     const second = insertSource({ lastOkAt: null, url: encrypt(SECOND_SOURCE_URL) });
-    db.insert(userSources).values({ userId: user.id, sourceId: first, sort: 0 }).run();
-    db.insert(userSources).values({ userId: user.id, sourceId: second, sort: 1 }).run();
+    // Dedicated sources (ownerUserId): the export reads the owner column, not
+    // the legacy user_sources join table.
+    db.update(sources).set({ ownerUserId: user.id }).where(eq(sources.id, first)).run();
+    db.update(sources).set({ ownerUserId: user.id }).where(eq(sources.id, second)).run();
 
     const fetcher = vi.fn<Fetcher>(async (url) =>
       okResponse(url === SECOND_SOURCE_URL ? OLD_BODY : NEW_BODY),
@@ -191,12 +210,12 @@ describe('subscription export reads the cache', () => {
     await refreshAllDueSources(db, { fetcher, now: () => NOW });
     expect(fetcher).toHaveBeenCalledTimes(2);
 
-    const mihomo = handleSubscriptionExport({ token: TOKEN, target: 'mihomo' }, { db });
+    const mihomo = await handleSubscriptionExport({ token: TOKEN, target: 'mihomo' }, { db });
     expect(mihomo.status).toBe(200);
     const mihomoYaml = parseYaml(mihomo.body) as { proxies: Array<{ name: string }> };
     expect(mihomoYaml.proxies.map((proxy) => proxy.name)).toEqual(['cached-node', 'second-node', 'old-node']);
 
-    const legacy = handleSubscriptionExport({ token: TOKEN, target: 'clash' }, { db });
+    const legacy = await handleSubscriptionExport({ token: TOKEN, target: 'clash' }, { db });
     const legacyYaml = parseYaml(legacy.body) as { proxies: Array<{ name: string }> };
     expect(legacyYaml.proxies.map((proxy) => proxy.name)).toEqual(['cached-node', 'second-node', 'old-node']);
     resetExportRateLimiter();
@@ -210,12 +229,12 @@ describe('subscription export reads the cache', () => {
       .returning({ id: users.id })
       .get()!;
     const id = insertSource({ lastOkAt: new Date(NOW - 120 * 60_000), cacheBlob: OLD_BODY });
-    db.insert(userSources).values({ userId: user.id, sourceId: id, sort: 0 }).run();
+    db.update(sources).set({ ownerUserId: user.id }).where(eq(sources.id, id)).run();
 
     const fetcher = vi.fn<Fetcher>(async () => errorResponse(500));
     await refreshAllDueSources(db, { fetcher, now: () => NOW });
 
-    const response = handleSubscriptionExport({ token: TOKEN, target: 'mihomo' }, { db });
+    const response = await handleSubscriptionExport({ token: TOKEN, target: 'mihomo' }, { db });
     const yaml = parseYaml(response.body) as { proxies: Array<{ name: string }> };
     expect(yaml.proxies.map((proxy) => proxy.name)).toEqual(['old-node']);
     expect(decrypt(db.select().from(sources).where(eq(sources.id, id)).get()!.url)).toBe(SOURCE_URL);

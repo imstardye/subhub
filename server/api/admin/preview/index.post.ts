@@ -19,7 +19,7 @@ import { sendJson, type AdminApiEvent } from '../../../utils/admin-api';
 export default function adminPreviewHandler(event: AdminApiEvent, options?: AdminRequestOptions) {
   return handleAdminRequest(
     event,
-    async (db) => sendJson(event, 200, previewSubscription(db, await parseBody(event))),
+    async (db) => sendJson(event, 200, await previewSubscription(db, await parseBody(event))),
     options,
   );
 }

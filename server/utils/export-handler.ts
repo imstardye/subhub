@@ -51,8 +51,8 @@ export function requestFromEvent(event: ExportEvent): ExportRequest {
 }
 
 /** GET /s/:token and /s/:token/:target. */
-export default function subscriptionExportHandler(event: ExportEvent): string {
-  const result = handleSubscriptionExport(requestFromEvent(event), {
+export default async function subscriptionExportHandler(event: ExportEvent): Promise<string> {
+  const result = await handleSubscriptionExport(requestFromEvent(event), {
     // One better-sqlite3 handle per process; see server/utils/db.ts.
     db: getServerDb(),
   });

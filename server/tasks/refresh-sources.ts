@@ -208,7 +208,31 @@ async function fetchSourceBody(
   }
 }
 
-/** Refresh a single source regardless of whether it is due. Never throws. */
+/**
+ * Mark a `local` source as successfully refreshed: it has no URL to fetch, so
+ * "refresh" only clears a previously recorded error and keeps the cache. A
+ * source without any cache still records that there is nothing to load.
+ */
+function refreshLocalSource(db: SubhubDb, source: Source, now: number): RefreshResult {
+  if (!source.cacheBlob) {
+    const message = 'local source has no cache';
+    db.update(sources).set({ lastError: message }).where(eq(sources.id, source.id)).run();
+    return { sourceId: source.id, outcome: 'failed', error: message };
+  }
+  db.update(sources)
+    .set({ lastOkAt: new Date(now), lastError: null })
+    .where(eq(sources.id, source.id))
+    .run();
+  return { sourceId: source.id, outcome: 'refreshed', bytes: Buffer.byteLength(source.cacheBlob, 'utf8') };
+}
+
+/**
+ * Refresh a single source regardless of whether it is due. Never throws.
+ *
+ * `remote` sources are fetched and cached; `local` sources cannot be fetched,
+ * so they are only re-stamped (their cache is kept). This is also the path the
+ * manual refresh endpoint (`POST /api/admin/sources/:id/refresh`) uses.
+ */
 export async function refreshSource(
   db: SubhubDb,
   sourceId: number,
@@ -216,9 +240,8 @@ export async function refreshSource(
 ): Promise<RefreshResult> {
   const now = (options.now ?? Date.now)();
   const source = db.select().from(sources).where(eq(sources.id, sourceId)).get();
-  if (!source || source.type !== 'remote') {
-    return { sourceId, outcome: 'skipped' };
-  }
+  if (!source) return { sourceId, outcome: 'skipped' };
+  if (source.type !== 'remote') return refreshLocalSource(db, source, now);
 
   try {
     const { body, bytes } = await fetchSourceBody(source, options);

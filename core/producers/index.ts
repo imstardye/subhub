@@ -8,5 +8,6 @@
  */
 
 export { buildMihomoProxies, produceMihomo } from './mihomo';
+export { toYamlProxies } from './common';
 export { buildLegacyProxies, produceLegacy } from './legacy';
 export type { ProxyNode, ProduceOptions } from '../types';

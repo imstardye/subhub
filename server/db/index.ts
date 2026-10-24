@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS sources (
   refresh_minutes INTEGER NOT NULL DEFAULT 60,
   last_ok_at INTEGER,
   last_error TEXT,
-  cache_blob TEXT
+  cache_blob TEXT,
+  owner_user_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS user_sources (
@@ -88,9 +89,33 @@ CREATE INDEX IF NOT EXISTS access_logs_user_created_idx ON access_logs (user_id,
 CREATE INDEX IF NOT EXISTS access_logs_created_idx ON access_logs (created_at);
 `;
 
+/**
+ * Columns added after the first release. `CREATE TABLE IF NOT EXISTS` above is
+ * a no-op on an existing database, so every added column needs an idempotent
+ * `ALTER TABLE ... ADD COLUMN` guarded by `PRAGMA table_info`. Safe to run on
+ * every boot, fresh or migrated databases alike.
+ *
+ * Note: SQLite cannot add a column with a foreign-key constraint via ALTER, so
+ * the guarded column is plain INTEGER (the FK lives in schema.ts for fresh
+ * databases). Integrity is enforced in code: `admin-sources.ts` only writes an
+ * owner that exists, and `deleteUser` removes the user's dedicated sources
+ * before deleting the user.
+ */
+function ensureAddedColumns(sqlite: Database.Database): void {
+  const columns = sqlite.pragma('table_info(sources)') as Array<{ name: string }>;
+  const hasOwner = columns.some((column) => column.name === 'owner_user_id');
+  if (!hasOwner) {
+    sqlite.exec('ALTER TABLE sources ADD COLUMN owner_user_id INTEGER');
+  }
+  sqlite.exec(
+    'CREATE INDEX IF NOT EXISTS sources_owner_id_idx ON sources (owner_user_id, id)',
+  );
+}
+
 export function ensureSchema(sqlite: Database.Database): void {
   sqlite.pragma('foreign_keys = ON');
   sqlite.exec(CREATE_TABLES_SQL);
+  ensureAddedColumns(sqlite);
 }
 
 export function openDb(options: OpenDbOptions = {}): SubhubDb {

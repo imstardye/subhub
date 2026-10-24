@@ -12,7 +12,7 @@
  */
 import { eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
-import { users, type User } from '../db/schema';
+import { sources, userSources, users, type User } from '../db/schema';
 import {
   generateUserToken,
   parseEnabled,
@@ -125,11 +125,33 @@ export function resetUserToken(db: SubhubDb, rawId: unknown): AdminUser {
   throw new Error('could not reset token');
 }
 
-/** Delete a user; source links and nothing else go with it (FK cascade). */
+/**
+ * Delete a user.
+ *
+ * Deletion policy for DEDICATED sources: they are deleted together with the
+ * user (a dedicated source has no other consumer, and keeping it would leak the
+ * previous owner's subscription URL into the public pool). The delete happens
+ * explicitly *before* the user row so it works on both fresh databases (FK with
+ * ON DELETE CASCADE) and migrated ones (plain `owner_user_id` column without
+ * FK), and removes the user's legacy `user_sources` links first for the same
+ * reason. Public sources (ownerUserId null) are never touched.
+ */
 export function deleteUser(db: SubhubDb, rawId: unknown): { ok: true; id: number } {
   const id = parseId(rawId);
   const existing = db.select({ id: users.id }).from(users).where(eq(users.id, id)).get();
   if (!existing) throw new ValidationError('user not found', 404);
-  db.delete(users).where(eq(users.id, id)).run();
+
+  try {
+    db.delete(userSources).where(eq(userSources.userId, id)).run();
+    db.delete(sources).where(eq(sources.ownerUserId, id)).run();
+    db.delete(users).where(eq(users.id, id)).run();
+  } catch (error) {
+    // Last resort for a foreign key we do not know about: detach what points at
+    // the user instead of surfacing a raw FK error to the admin UI.
+    if (!(error instanceof Error) || !/FOREIGN KEY/i.test(error.message)) throw error;
+    db.update(sources).set({ ownerUserId: null }).where(eq(sources.ownerUserId, id)).run();
+    db.update(users).set({ profileId: null }).where(eq(users.id, id)).run();
+    db.delete(users).where(eq(users.id, id)).run();
+  }
   return { ok: true, id };
 }

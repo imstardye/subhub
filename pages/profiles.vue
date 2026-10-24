@@ -10,6 +10,7 @@
 definePageMeta({ layout: 'admin' });
 
 import type { AdminProfile } from '~/server/utils/admin-profiles';
+import { apiErrorMessage } from '~/core/utils/api-error';
 import type { ProfileVariant } from '~/server/utils/admin-validation';
 
 interface ProfileForm {
@@ -38,12 +39,6 @@ function emptyForm(): ProfileForm {
   return { name: '', iniUrl: '', iniText: '', variant: 'mihomo', dnsTemplate: '', options: '' };
 }
 
-function errorMessage(err: unknown): string {
-  const data = (err as { data?: { error?: string } }).data;
-  if (data?.error) return data.error;
-  return '请求失败，请稍后再试';
-}
-
 function validUrl(value: string): boolean {
   try {
     const parsed = new URL(value);
@@ -70,7 +65,7 @@ async function load() {
     const res = await $fetch<{ items: AdminProfile[] }>('/api/admin/profiles');
     profiles.value = res.items;
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     loading.value = false;
   }
@@ -166,7 +161,7 @@ async function submitForm() {
     }
     closeForm();
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     saving.value = false;
   }
@@ -185,7 +180,7 @@ async function confirmDelete() {
     if (editingId.value === profile.id) closeForm();
     deleting.value = null;
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     busyId.value = null;
   }

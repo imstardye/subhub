@@ -8,11 +8,20 @@
  *
  * The rendered body is capped at `PREVIEW_BODY_MAX_BYTES` (~200 KiB) so a user
  * with hundreds of nodes cannot stall the admin page; `truncated` flags it.
+ *
+ * The user's rule profile is applied exactly as in the public export (same
+ * `loadUserProfile` + `renderTargetBody` path), so what an admin sees here is
+ * what `/s/:token` serves.
  */
 import { eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { users } from '../db/schema';
-import { collectUserNodes, renderTargetBody } from './export-nodes';
+import {
+  buildTargetProxies,
+  collectUserNodes,
+  loadUserProfile,
+  renderTargetBody,
+} from './export-nodes';
 import { EXPORT_TARGETS, isExportTarget, type ExportTarget } from './targets';
 import { parseId, ValidationError } from './admin-validation';
 
@@ -59,14 +68,24 @@ function parsePreviewTarget(value: unknown): ExportTarget {
 /**
  * Render a preview for `body.userId`. A missing user is a 404; a disabled user
  * is still rendered (admin debugging) and flagged via `enabled: false`.
+ *
+ * Async because the profile's INI may have to be fetched (`iniUrl`).
  */
-export function previewSubscription(db: SubhubDb, body: Record<string, unknown>): PreviewResult {
+export async function previewSubscription(
+  db: SubhubDb,
+  body: Record<string, unknown>,
+): Promise<PreviewResult> {
   const userId = parseId(body.userId);
   const user = db.select().from(users).where(eq(users.id, userId)).get();
   if (!user) throw new ValidationError('user not found', 404);
 
   const target = parsePreviewTarget(body.target);
-  const rendered = renderTargetBody(target, collectUserNodes(db, user.id));
+  const nodes = collectUserNodes(db, user.id);
+  const nodeNames = buildTargetProxies(target, nodes)
+    .map((node) => node.name)
+    .filter(Boolean);
+  const profile = await loadUserProfile(db, user.id, target, undefined, nodeNames);
+  const rendered = renderTargetBody(target, nodes, {}, profile);
   const { body: text, truncated } = truncateBody(rendered);
 
   return {

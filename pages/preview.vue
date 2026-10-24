@@ -11,6 +11,7 @@
 definePageMeta({ layout: 'admin' });
 
 import type { AdminUser } from '~/server/utils/admin-users';
+import { apiErrorMessage } from '~/core/utils/api-error';
 import { EXPORT_TARGETS, type ExportTarget } from '~/server/utils/targets';
 
 interface PreviewResponse {
@@ -36,12 +37,6 @@ const result = ref<PreviewResponse | null>(null);
 
 const targetOptions = [...EXPORT_TARGETS];
 
-function errorMessage(err: unknown): string {
-  const data = (err as { data?: { error?: string } }).data;
-  if (data?.error) return data.error;
-  return '请求失败，请稍后再试';
-}
-
 async function loadUsers() {
   loadingUsers.value = true;
   error.value = '';
@@ -52,7 +47,7 @@ async function loadUsers() {
       selectedUserId.value = String(res.items[0]!.id);
     }
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     loadingUsers.value = false;
   }
@@ -76,7 +71,7 @@ async function generate() {
     notice.value = res.truncated ? '预览内容过大，已截断到约 200KB' : '预览已生成';
   } catch (err) {
     result.value = null;
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     generating.value = false;
   }

@@ -10,11 +10,15 @@
  *
  * Updates that do not include `url` keep the stored ciphertext untouched, so
  * editing a name does not require re-entering the URL.
+ *
+ * Sharing: a source is either PUBLIC (`ownerUserId` null, shared by every user)
+ * or DEDICATED to exactly one user. `ownerUserId` is validated against the
+ * users table so a dedicated source can never point at a missing user.
  */
 import { eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { encrypt, decrypt } from '../db/crypto';
-import { sources, type Source } from '../db/schema';
+import { sources, users, type Source } from '../db/schema';
 import {
   maskUrl,
   parseId,
@@ -32,6 +36,8 @@ import {
 export interface AdminSource {
   id: number;
   name: string;
+  /** Owning user for a dedicated source; null = public. */
+  ownerUserId: number | null;
   /** Masked URL, e.g. `https://example.com/sub?***`. */
   urlMasked: string;
   type: SourceType;
@@ -55,6 +61,7 @@ export function toAdminSource(row: Source): AdminSource {
   return {
     id: row.id,
     name: row.name,
+    ownerUserId: row.ownerUserId ?? null,
     urlMasked: maskedUrl(row.url),
     type: row.type,
     ua: row.ua ?? null,
@@ -63,6 +70,23 @@ export function toAdminSource(row: Source): AdminSource {
     lastError: row.lastError ?? null,
     hasCache: Boolean(row.cacheBlob),
   };
+}
+
+/**
+ * Parse the optional owner. Absent/null/'' means public (returns null); a
+ * positive integer must reference an existing user, otherwise 400
+ * 'invalid ownerUserId' (same message for a malformed value and a missing
+ * user, so the API does not leak which ids exist).
+ */
+export function parseOwnerUserId(db: SubhubDb, value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null;
+  const id = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) {
+    throw new ValidationError('invalid ownerUserId');
+  }
+  const owner = db.select({ id: users.id }).from(users).where(eq(users.id, id)).get();
+  if (!owner) throw new ValidationError('invalid ownerUserId');
+  return id;
 }
 
 export function listSources(db: SubhubDb): AdminSource[] {
@@ -84,11 +108,12 @@ export function createSource(db: SubhubDb, body: Record<string, unknown>): Admin
   const type = parseSourceType(body.type);
   const ua = parseOptionalText(body.ua, 'ua', UA_MAX_LENGTH);
   const refreshMinutes = parseRefreshMinutes(body.refreshMinutes);
+  const ownerUserId = parseOwnerUserId(db, body.ownerUserId);
 
   const row = db
     .insert(sources)
     // Ciphertext only; the plaintext never reaches the database.
-    .values({ name, url: encrypt(url), type, ua, refreshMinutes })
+    .values({ name, url: encrypt(url), type, ua, refreshMinutes, ownerUserId })
     .returning()
     .get();
   if (!row) throw new Error('could not create source');
@@ -104,12 +129,15 @@ export function updateSource(
   const existing = db.select().from(sources).where(eq(sources.id, id)).get();
   if (!existing) throw new ValidationError('source not found', 404);
 
-  const patch: Partial<Pick<Source, 'name' | 'url' | 'type' | 'ua' | 'refreshMinutes'>> = {};
+  const patch: Partial<
+    Pick<Source, 'name' | 'url' | 'type' | 'ua' | 'refreshMinutes' | 'ownerUserId'>
+  > = {};
   if ('name' in body) patch.name = parseName(body.name);
   if ('url' in body) patch.url = encrypt(parseSourceUrl(body.url));
   if ('type' in body) patch.type = parseSourceType(body.type);
   if ('ua' in body) patch.ua = parseOptionalText(body.ua, 'ua', UA_MAX_LENGTH);
   if ('refreshMinutes' in body) patch.refreshMinutes = parseRefreshMinutes(body.refreshMinutes);
+  if ('ownerUserId' in body) patch.ownerUserId = parseOwnerUserId(db, body.ownerUserId);
 
   if (Object.keys(patch).length === 0) return toAdminSource(existing);
 

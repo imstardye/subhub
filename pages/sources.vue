@@ -7,11 +7,19 @@
  * never stores, echoes or caches an entered URL beyond the create/edit form
  * (which is cleared as soon as the request settles). When editing, leaving the
  * URL field empty means "keep the stored URL unchanged".
+ *
+ * Sharing model: a source is either 公共 (`ownerUserId` null, every user gets
+ * it) or 专属 to one user. The form has an 归属 selector for this, the list
+ * shows a badge with 公共 or the owner's name, and each row can be refreshed
+ * on demand via POST /api/admin/sources/:id/refresh (same path as the
+ * scheduled task).
  */
 definePageMeta({ layout: 'admin' });
 
 import type { AdminSource } from '~/server/utils/admin-sources';
+import type { AdminUser } from '~/server/utils/admin-users';
 import type { SourceType } from '~/server/utils/admin-validation';
+import { apiErrorMessage } from '~/core/utils/api-error';
 
 type SourceForm = {
   name: string;
@@ -19,6 +27,8 @@ type SourceForm = {
   url: string;
   ua: string;
   refreshMinutes: string;
+  /** '' = 公共, otherwise the owning user id as a string. */
+  ownerUserId: string;
 };
 
 const sources = ref<AdminSource[]>([]);
@@ -34,14 +44,27 @@ const form = ref<SourceForm>(emptyForm());
 
 const deleting = ref<AdminSource | null>(null);
 
+/** Users for the 归属 dropdown; a failure only hides 专属 assignment. */
+const users = ref<AdminUser[]>([]);
+const usersError = ref('');
+
 function emptyForm(): SourceForm {
-  return { name: '', type: 'remote', url: '', ua: '', refreshMinutes: '60' };
+  return {
+    name: '',
+    type: 'remote',
+    url: '',
+    ua: '',
+    refreshMinutes: '60',
+    ownerUserId: '',
+  };
 }
 
-function errorMessage(err: unknown): string {
-  const data = (err as { data?: { error?: string } }).data;
-  if (data?.error) return data.error;
-  return '请求失败，请稍后再试';
+const usersById = computed(() => new Map(users.value.map((user) => [user.id, user])));
+
+/** Owner name for the 归属 badge; unknown ids fall back to the raw id. */
+function ownerLabel(source: AdminSource): string {
+  if (source.ownerUserId === null) return '公共';
+  return usersById.value.get(source.ownerUserId)?.name ?? `用户 #${source.ownerUserId}`;
 }
 
 function formatTime(value: string | null): string {
@@ -59,6 +82,17 @@ function validUrl(value: string): boolean {
   }
 }
 
+async function loadUsers() {
+  usersError.value = '';
+  try {
+    const res = await $fetch<{ items: AdminUser[] }>('/api/admin/users');
+    users.value = res.items;
+  } catch {
+    users.value = [];
+    usersError.value = '用户列表加载失败，暂时无法设置专属归属';
+  }
+}
+
 async function load() {
   loading.value = true;
   error.value = '';
@@ -66,10 +100,11 @@ async function load() {
     const res = await $fetch<{ items: AdminSource[] }>('/api/admin/sources');
     sources.value = res.items;
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     loading.value = false;
   }
+  await loadUsers();
 }
 
 function openCreate() {
@@ -89,6 +124,7 @@ function openEdit(source: AdminSource) {
     url: '',
     ua: source.ua ?? '',
     refreshMinutes: String(source.refreshMinutes),
+    ownerUserId: source.ownerUserId === null ? '' : String(source.ownerUserId),
   };
   formOpen.value = true;
   error.value = '';
@@ -130,6 +166,9 @@ async function submitForm() {
     type: form.value.type,
     ua: form.value.ua.trim() || null,
     refreshMinutes,
+    // '' means 公共 -> null; otherwise the selected user id (the API accepts
+    // the numeric string and rejects unknown ids with 400).
+    ownerUserId: form.value.ownerUserId || null,
   };
   // Only send `url` when the user actually typed one; omit it when editing so
   // the stored ciphertext is left untouched.
@@ -154,11 +193,40 @@ async function submitForm() {
     }
     closeForm();
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     // Drop any URL the user typed, successful or not.
     form.value.url = '';
     saving.value = false;
+  }
+}
+
+/**
+ * Manually refresh one source's cache. Reuses the scheduled task's fetch/parse
+ * code path on the server; a `local` source or a failed fetch answers 200 with
+ * `outcome: 'failed'` and the source's `lastError`, which is shown as a banner.
+ */
+async function refreshSource(source: AdminSource) {
+  if (busyId.value !== null) return;
+  busyId.value = source.id;
+  error.value = '';
+  notice.value = '';
+  try {
+    const res = await $fetch<{
+      item: AdminSource;
+      outcome: 'refreshed' | 'skipped' | 'failed';
+      error?: string;
+    }>(`/api/admin/sources/${source.id}/refresh`, { method: 'POST' });
+    sources.value = sources.value.map((s) => (s.id === res.item.id ? res.item : s));
+    if (res.outcome === 'refreshed' && !res.item.lastError) {
+      notice.value = `已刷新订阅源「${res.item.name}」`;
+    } else {
+      error.value = `「${res.item.name}」刷新失败：${res.item.lastError ?? res.error ?? '未知原因'}`;
+    }
+  } catch (err) {
+    error.value = apiErrorMessage(err);
+  } finally {
+    busyId.value = null;
   }
 }
 
@@ -175,7 +243,7 @@ async function confirmDelete() {
     if (editingId.value === source.id) closeForm();
     deleting.value = null;
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     busyId.value = null;
   }
@@ -226,6 +294,19 @@ onMounted(load);
         </select>
       </label>
       <label>
+        归属
+        <select v-model="form.ownerUserId" :disabled="saving || (users.length === 0 && usersError !== '')">
+          <option value="">公共（所有用户共享）</option>
+          <option v-for="user in users" :key="user.id" :value="String(user.id)">
+            专属：{{ user.name }}（#{{ user.id }}）
+          </option>
+        </select>
+        <span v-if="usersError" class="sub">{{ usersError }}</span>
+        <span v-else class="hint">
+          专属订阅源只出现在该用户的订阅中；公共订阅源对所有用户可见。
+        </span>
+      </label>
+      <label>
         User-Agent（可选）
         <input v-model="form.ua" type="text" maxlength="256" :disabled="saving">
       </label>
@@ -265,6 +346,7 @@ onMounted(load);
             <th>ID</th>
             <th>名称</th>
             <th>类型</th>
+            <th>归属</th>
             <th>URL（已脱敏）</th>
             <th>刷新</th>
             <th>上次成功</th>
@@ -283,6 +365,11 @@ onMounted(load);
             <td>
               <span class="type-tag">{{ source.type }}</span>
             </td>
+            <td>
+              <span :class="['badge', source.ownerUserId === null ? 'off' : 'on']">
+                {{ ownerLabel(source) }}
+              </span>
+            </td>
             <td class="url-cell"><code>{{ source.urlMasked }}</code></td>
             <td class="nowrap">{{ source.refreshMinutes }} 分钟</td>
             <td class="nowrap">{{ formatTime(source.lastOkAt) }}</td>
@@ -293,6 +380,15 @@ onMounted(load);
             </td>
             <td class="err">{{ source.lastError ?? '—' }}</td>
             <td class="row-actions">
+              <button
+                type="button"
+                class="small"
+                :disabled="busyId !== null"
+                :title="source.type === 'local' ? '本地订阅源没有可拉取的 URL，仅更新状态' : '立即拉取并更新缓存'"
+                @click="refreshSource(source)"
+              >
+                {{ busyId === source.id ? '刷新中…' : '刷新' }}
+              </button>
               <button type="button" class="small" :disabled="busyId !== null" @click="openEdit(source)">
                 编辑
               </button>

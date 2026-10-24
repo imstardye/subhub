@@ -10,15 +10,21 @@
 definePageMeta({ layout: 'admin' });
 
 import type { AdminUser } from '~/server/utils/admin-users';
-
-interface UserForm {
-  name: string;
-  enabled: boolean;
-  note: string;
-  profileId: string;
-}
+import type { AdminSource } from '~/server/utils/admin-sources';
+import { apiErrorMessage } from '~/core/utils/api-error';
+import {
+  buildUserPayload,
+  emptyUserForm,
+  userFormFromUser,
+  type UserForm,
+} from '~/core/utils/user-form';
 
 const users = ref<AdminUser[]>([]);
+/**
+ * Sources are loaded only to count each user's dedicated (专属) sources. A
+ * failure here must not block user management, so it is loaded best-effort.
+ */
+const sources = ref<AdminSource[]>([]);
 const loading = ref(false);
 const saving = ref(false);
 const busyId = ref<number | null>(null);
@@ -27,14 +33,24 @@ const notice = ref('');
 
 const editingId = ref<number | null>(null);
 const formOpen = ref(false);
-const form = ref<UserForm>(emptyForm());
+const form = ref<UserForm>(emptyUserForm());
 
 const deleting = ref<AdminUser | null>(null);
 
 const copiedToken = ref('');
 
-function emptyForm(): UserForm {
-  return { name: '', enabled: true, note: '', profileId: '' };
+/** Dedicated sources per user id; 公共 sources (no owner) are not counted. */
+const dedicatedCounts = computed(() => {
+  const counts = new Map<number, number>();
+  for (const source of sources.value) {
+    if (source.ownerUserId === null) continue;
+    counts.set(source.ownerUserId, (counts.get(source.ownerUserId) ?? 0) + 1);
+  }
+  return counts;
+});
+
+function dedicatedCount(user: AdminUser): number {
+  return dedicatedCounts.value.get(user.id) ?? 0;
 }
 
 function subscriptionUrl(user: Pick<AdminUser, 'token'>): string {
@@ -42,10 +58,14 @@ function subscriptionUrl(user: Pick<AdminUser, 'token'>): string {
   return `${window.location.origin}/s/${user.token}`;
 }
 
-function errorMessage(err: unknown): string {
-  const data = (err as { data?: { error?: string } }).data;
-  if (data?.error) return data.error;
-  return '请求失败，请稍后再试';
+async function loadSources() {
+  try {
+    const res = await $fetch<{ items: AdminSource[] }>('/api/admin/sources');
+    sources.value = res.items;
+  } catch {
+    // The count is decorative; the user list stays usable without it.
+    sources.value = [];
+  }
 }
 
 async function load() {
@@ -55,15 +75,16 @@ async function load() {
     const res = await $fetch<{ items: AdminUser[] }>('/api/admin/users');
     users.value = res.items;
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     loading.value = false;
   }
+  await loadSources();
 }
 
 function openCreate() {
   editingId.value = null;
-  form.value = emptyForm();
+  form.value = emptyUserForm();
   formOpen.value = true;
   error.value = '';
   notice.value = '';
@@ -71,12 +92,7 @@ function openCreate() {
 
 function openEdit(user: AdminUser) {
   editingId.value = user.id;
-  form.value = {
-    name: user.name,
-    enabled: user.enabled,
-    note: user.note ?? '',
-    profileId: user.profileId === null ? '' : String(user.profileId),
-  };
+  form.value = userFormFromUser(user);
   formOpen.value = true;
   error.value = '';
   notice.value = '';
@@ -85,40 +101,54 @@ function openEdit(user: AdminUser) {
 function closeForm() {
   formOpen.value = false;
   editingId.value = null;
-  form.value = emptyForm();
+  form.value = emptyUserForm();
 }
 
+/**
+ * Submit the create/edit form.
+ *
+ * Never resolves without feedback: validation problems, API errors (the
+ * server's Chinese `error` message is shown as-is), and *unexpected*
+ * exceptions — including ones thrown before `$fetch` is even called — all end
+ * in a visible error banner. The form stays open so the input is not lost.
+ */
 async function submitForm() {
   if (saving.value) return;
-  error.value = '';
-  notice.value = '';
-  if (!form.value.name.trim()) {
-    error.value = '请填写名称';
-    return;
-  }
-  const body: Record<string, unknown> = {
-    name: form.value.name.trim(),
-    enabled: form.value.enabled,
-    note: form.value.note.trim() || null,
-    profileId: form.value.profileId.trim() || null,
-  };
-  saving.value = true;
+  // The whole handler is guarded, not just the request: anything that throws
+  // here (a render/validation bug included) must still produce a visible
+  // banner instead of leaving the form looking like nothing happened.
   try {
+    error.value = '';
+    notice.value = '';
+    saving.value = true;
+
+    const built = buildUserPayload(form.value);
+    if (!built.ok) {
+      error.value = built.error;
+      return;
+    }
+
+    let saved: AdminUser;
     if (editingId.value === null) {
-      const res = await $fetch<{ item: AdminUser }>('/api/admin/users', { method: 'POST', body });
-      users.value = [...users.value, res.item];
+      const res = await $fetch<{ item: AdminUser }>('/api/admin/users', {
+        method: 'POST',
+        body: built.payload,
+      });
+      saved = res.item;
+      users.value = [...users.value, saved];
       notice.value = '用户已创建';
     } else {
       const res = await $fetch<{ item: AdminUser }>(`/api/admin/users/${editingId.value}`, {
         method: 'PATCH',
-        body,
+        body: built.payload,
       });
-      users.value = users.value.map((u) => (u.id === res.item.id ? res.item : u));
+      saved = res.item;
+      users.value = users.value.map((u) => (u.id === saved.id ? saved : u));
       notice.value = '用户已更新';
     }
     closeForm();
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     saving.value = false;
   }
@@ -136,8 +166,10 @@ async function confirmDelete() {
     notice.value = `已删除用户「${user.name}」`;
     if (editingId.value === user.id) closeForm();
     deleting.value = null;
+    // Their dedicated sources went with them.
+    await loadSources();
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     busyId.value = null;
   }
@@ -156,7 +188,7 @@ async function resetToken(user: AdminUser) {
     users.value = users.value.map((u) => (u.id === res.item.id ? res.item : u));
     notice.value = `「${user.name}」的订阅 token 已重置`;
   } catch (err) {
-    error.value = errorMessage(err);
+    error.value = apiErrorMessage(err);
   } finally {
     busyId.value = null;
   }
@@ -238,6 +270,7 @@ onMounted(load);
             <th>名称</th>
             <th>状态</th>
             <th>规则档</th>
+            <th>专属源</th>
             <th>备注</th>
             <th>订阅链接</th>
             <th>操作</th>
@@ -253,6 +286,14 @@ onMounted(load);
               </span>
             </td>
             <td class="mono">{{ user.profileId ?? '—' }}</td>
+            <td>
+              <span
+                :class="['badge', dedicatedCount(user) > 0 ? 'on' : 'off']"
+                :title="dedicatedCount(user) > 0 ? '该用户的专属订阅源数量' : '该用户没有专属订阅源'"
+              >
+                {{ dedicatedCount(user) }}
+              </span>
+            </td>
             <td class="note">{{ user.note ?? '—' }}</td>
             <td class="token">
               <code>{{ user.token }}</code>
@@ -289,7 +330,7 @@ onMounted(load);
     <div v-if="deleting" class="overlay" role="dialog" aria-modal="true">
       <div class="card dialog">
         <h2>删除用户</h2>
-        <p>确定删除「{{ deleting.name }}」？该用户的订阅链接将立即失效。</p>
+        <p>确定删除「{{ deleting.name }}」？该用户的订阅链接将立即失效，其专属订阅源也会一并删除。</p>
         <div class="actions">
           <button class="danger" type="button" :disabled="busyId !== null" @click="confirmDelete">
             {{ busyId === deleting.id ? '删除中…' : '确认删除' }}

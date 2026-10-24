@@ -5,8 +5,9 @@ import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 import { decrypt, DEV_SECRET, encrypt, resetCryptoCache } from '../server/db/crypto';
-import { openDb } from '../server/db';
-import { users } from '../server/db/schema';
+import Database from 'better-sqlite3';
+import { ensureSchema, openDb } from '../server/db';
+import { sources, users } from '../server/db/schema';
 
 const TOKEN = 'f'.repeat(32);
 const dirs: string[] = [];
@@ -46,6 +47,66 @@ describe('sqlite schema', () => {
     expect(found?.createdAt).toBeInstanceOf(Date);
 
     expect(db.select().from(users).where(eq(users.token, 'no-such-token')).get()).toBeUndefined();
+  });
+});
+
+describe('guarded migration: sources.owner_user_id', () => {
+  it('adds the column to a pre-existing database and is safe to re-run', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subhub-migrate-'));
+    dirs.push(dir);
+    const dbPath = join(dir, 'legacy.sqlite');
+
+    // A database created by the first release: no owner_user_id anywhere.
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+        name TEXT NOT NULL,
+        token TEXT NOT NULL,
+        profile_id INTEGER,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        note TEXT,
+        created_at INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        type TEXT NOT NULL DEFAULT 'remote',
+        ua TEXT,
+        refresh_minutes INTEGER NOT NULL DEFAULT 60,
+        last_ok_at INTEGER,
+        last_error TEXT,
+        cache_blob TEXT
+      );
+      INSERT INTO sources (name, url) VALUES ('legacy-source', 'v1:placeholder');
+    `);
+    legacy.close();
+
+    // openDb runs the guarded ALTER TABLE once; a second open must not throw.
+    const first = openDb({ path: dbPath });
+    const rows = first.select().from(sources).all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.ownerUserId).toBeNull();
+    first.insert(sources).values({ name: 'owned', url: 'v1:placeholder2', ownerUserId: null }).run();
+
+    const second = openDb({ path: dbPath });
+    expect(second.select().from(sources).all()).toHaveLength(2);
+
+    // And directly: ensureSchema on an already migrated handle is a no-op.
+    const raw = new Database(dbPath);
+    ensureSchema(raw);
+    ensureSchema(raw);
+    const columns = raw.pragma('table_info(sources)') as Array<{ name: string }>;
+    expect(columns.filter((column) => column.name === 'owner_user_id')).toHaveLength(1);
+    raw.close();
+  });
+
+  it('creates the owner column on a fresh database too', () => {
+    const db = openDb({ path: ':memory:' });
+    const columns = (db as unknown as { $client: Database.Database }).$client
+      .pragma('table_info(sources)') as Array<{ name: string }>;
+    expect(columns.some((column) => column.name === 'owner_user_id')).toBe(true);
   });
 });
 

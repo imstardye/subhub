@@ -19,10 +19,19 @@ export const users = sqliteTable('users', {
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().defaultNow(),
 });
 
-/** Remote/local subscription sources. `url` is stored encrypted (ciphertext only). */
+/**
+ * Remote/local subscription sources. `url` is stored encrypted (ciphertext only).
+ *
+ * Sharing model: every source is either PUBLIC (`ownerUserId` null, shared by
+ * every user) or DEDICATED to exactly one user. A user's export is the union of
+ * their dedicated sources and all public ones. Dedicated sources are deleted
+ * together with their owner (see `deleteUser` in `server/utils/admin-users.ts`).
+ */
 export const sources = sqliteTable('sources', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   name: text('name').notNull(),
+  /** Owning user for a dedicated source; null = public. */
+  ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
   /** Encrypted URL, see crypto.ts. */
   url: text('url').notNull(),
   type: text('type', { enum: ['remote', 'local'] }).notNull().default('remote'),

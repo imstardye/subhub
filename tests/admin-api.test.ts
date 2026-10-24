@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import adminLoginHandler from '../server/api/admin/login.post';
 import adminLogoutHandler from '../server/api/admin/logout.post';
 import adminMeHandler from '../server/api/admin/me.get';
@@ -25,6 +25,7 @@ import sourcesCreateHandler from '../server/api/admin/sources/index.post';
 import sourceGetHandler from '../server/api/admin/sources/[id].get';
 import sourceUpdateHandler from '../server/api/admin/sources/[id].patch';
 import sourceDeleteHandler from '../server/api/admin/sources/[id].delete';
+import sourceRefreshHandler from '../server/api/admin/sources/[id]/refresh.post';
 import adminApiMiddleware, {
   adminApiAuth,
   isPublicAdminApiPath,
@@ -53,9 +54,17 @@ import { resetCryptoCache } from '../server/db/crypto';
 import { sources, users } from '../server/db/schema';
 import type { AdminApiEvent } from '../server/utils/admin-api';
 import { authenticatedEvent, makeApiEvent } from './helpers/admin-api';
+import { refreshSource } from '../server/tasks/refresh-sources';
 
 const PASSWORD = 'correct-horse-battery';
 const ENV_KEYS = ['SUBHUB_ADMIN_PASSWORD', 'SUBHUB_SECRET', 'NODE_ENV'] as const;
+
+// The manual refresh route calls the real task; this spy lets the test decide
+// its outcome without any network access.
+vi.mock('../server/tasks/refresh-sources', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../server/tasks/refresh-sources')>();
+  return { ...original, refreshSource: vi.fn(original.refreshSource) };
+});
 
 type AdminApiHandler = (
   event: AdminApiEvent,
@@ -436,6 +445,7 @@ describe('/api/admin/sources CRUD', () => {
       ['GET', '/api/admin/sources/1', sourceGetHandler],
       ['PATCH', '/api/admin/sources/1', sourceUpdateHandler],
       ['DELETE', '/api/admin/sources/1', sourceDeleteHandler],
+      ['POST', '/api/admin/sources/1/refresh', sourceRefreshHandler],
     ];
     for (const [method, url, handler] of cases) {
       const { anon } = authedAndAnon(url, method, {
@@ -553,6 +563,208 @@ describe('/api/admin/sources CRUD', () => {
     expect(maskUrl('https://example.com')).toBe('https://example.com?***');
     expect(maskUrl('https://example.com?a=1')).toBe('https://example.com?***');
     expect(maskUrl('not a url')).toBe('(invalid)');
+  });
+
+  it('defaults to a public source (ownerUserId null) and stores a valid owner', async () => {
+    const owner = await createFixtureUser('fixture-owner');
+    const publicSource = await createFixtureSource();
+    expect(publicSource.ownerUserId).toBeNull();
+    expect(db.select().from(sources).all()[0]!.ownerUserId).toBeNull();
+
+    const dedicated = await createFixtureSource({ name: 'fixture-dedicated', ownerUserId: owner.id });
+    expect(dedicated.ownerUserId).toBe(owner.id);
+    expect(
+      db.select().from(sources).where(eq(sources.id, dedicated.id as number)).get()?.ownerUserId,
+    ).toBe(owner.id);
+
+    // Explicit null (the "公共" option in the form) means public.
+    const explicitPublic = await createFixtureSource({ name: 'fixture-explicit', ownerUserId: null });
+    expect(explicitPublic.ownerUserId).toBeNull();
+
+    const list = authed({ url: '/api/admin/sources' });
+    const listed = (await sourcesListHandler(list.event, base.options)) as {
+      items: Array<Record<string, unknown>>;
+    };
+    expect(listed.items.map((item) => item.ownerUserId)).toEqual([null, owner.id, null]);
+    // Every pre-existing field keeps its shape.
+    expect(listed.items[0]).toMatchObject({
+      id: publicSource.id,
+      name: 'fixture-source',
+      urlMasked: 'https://example.com/subscribe?***',
+      type: 'remote',
+      ua: null,
+      refreshMinutes: 60,
+      lastOkAt: null,
+      lastError: null,
+      hasCache: false,
+    });
+
+    // PATCH can move a public source to an owner and back to public.
+    const adopt = authed({
+      url: `/api/admin/sources/${publicSource.id}`,
+      method: 'PATCH',
+      body: { ownerUserId: owner.id },
+    });
+    const adopted = (await sourceUpdateHandler(adopt.event, base.options)) as {
+      item: Record<string, unknown>;
+    };
+    expect(adopted.item.ownerUserId).toBe(owner.id);
+
+    const release = authed({
+      url: `/api/admin/sources/${publicSource.id}`,
+      method: 'PATCH',
+      body: { ownerUserId: null },
+    });
+    const released = (await sourceUpdateHandler(release.event, base.options)) as {
+      item: Record<string, unknown>;
+    };
+    expect(released.item.ownerUserId).toBeNull();
+  });
+
+  it('rejects an ownerUserId that is not an existing user', async () => {
+    const owner = await createFixtureUser('fixture-owner');
+    const invalid: unknown[] = [0, -1, 1.5, 'abc', {}, true, 9999];
+    for (const ownerUserId of invalid) {
+      const { event } = authed({
+        url: '/api/admin/sources',
+        method: 'POST',
+        body: { name: 'x', url: 'https://example.com/a', ownerUserId },
+      });
+      expect(await sourcesCreateHandler(event, base.options)).toEqual({
+        error: 'invalid ownerUserId',
+      });
+      expect(event.node.res.statusCode).toBe(400);
+    }
+    expect(db.select().from(sources).all()).toHaveLength(0);
+
+    const created = await createFixtureSource({ ownerUserId: owner.id });
+    const patch = authed({
+      url: `/api/admin/sources/${created.id}`,
+      method: 'PATCH',
+      body: { ownerUserId: 9999 },
+    });
+    expect(await sourceUpdateHandler(patch.event, base.options)).toEqual({
+      error: 'invalid ownerUserId',
+    });
+    expect(patch.event.node.res.statusCode).toBe(400);
+    // Unchanged.
+    expect(
+      db.select().from(sources).where(eq(sources.id, created.id as number)).get()?.ownerUserId,
+    ).toBe(owner.id);
+  });
+
+  it('deletes a user together with their dedicated sources and keeps public ones', async () => {
+    const owner = await createFixtureUser('fixture-owner');
+    const other = await createFixtureUser('fixture-other');
+    const publicSource = await createFixtureSource({ name: 'fixture-public' });
+    const dedicated = await createFixtureSource({ name: 'fixture-dedicated', ownerUserId: owner.id });
+    const kept = await createFixtureSource({ name: 'fixture-other-source', ownerUserId: other.id });
+
+    const removed = authed({ url: `/api/admin/users/${owner.id}`, method: 'DELETE' });
+    expect(await userDeleteHandler(removed.event, base.options)).toEqual({ ok: true, id: owner.id });
+
+    const remaining = db.select().from(sources).all().map((row) => row.id);
+    expect(remaining).not.toContain(dedicated.id);
+    expect(remaining).toContain(publicSource.id);
+    expect(remaining).toContain(kept.id);
+  });
+
+  it('refreshes a single source through the task code path and returns the updated item', async () => {
+    const owner = await createFixtureUser('fixture-refresh-owner');
+    const source = await createFixtureSource({ name: 'fixture-refresh', ownerUserId: owner.id });
+
+    // No test touches the network: the source is `local`, so `refreshSource`
+    // does not fetch anything (a `remote` source would fetch its URL).
+    const before = db.select().from(sources).where(eq(sources.id, source.id as number)).get()!;
+    expect(before.lastOkAt).toBeNull();
+
+    const { event } = authed({
+      url: `/api/admin/sources/${source.id}/refresh`,
+      method: 'POST',
+    });
+    const res = (await sourceRefreshHandler(event, base.options)) as {
+      item: Record<string, unknown>;
+      outcome: string;
+    };
+    expect(event.node.res.statusCode).toBe(200);
+    // A local source has nothing to fetch: the cache stays empty and the
+    // helper records the failure instead of inventing a result.
+    expect(res.outcome).toBe('failed');
+    expect(res.item).toMatchObject({
+      id: source.id,
+      name: 'fixture-refresh',
+      ownerUserId: owner.id,
+      hasCache: false,
+      lastOkAt: null,
+    });
+    expect(db.select().from(sources).where(eq(sources.id, source.id as number)).get()!.lastOkAt).toBeNull();
+
+    const missing = authed({ url: '/api/admin/sources/999/refresh', method: 'POST' });
+    expect(await sourceRefreshHandler(missing.event, base.options)).toEqual({
+      error: 'source not found',
+    });
+    expect(missing.event.node.res.statusCode).toBe(404);
+    // 404 is decided before the task runs (no network for an unknown id).
+    // Only the earlier local refresh reached the task.
+    expect(vi.mocked(refreshSource)).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the refreshed item and the task outcome for a successful refresh', async () => {
+    const owner = await createFixtureUser('fixture-refresh-success');
+    const source = await createFixtureSource({ name: 'fixture-refresh-ok', ownerUserId: owner.id });
+    vi.mocked(refreshSource).mockImplementationOnce(async (handle, id) => {
+      // Simulate what the task does on success: stamp lastOkAt + cache.
+      handle
+        .update(sources)
+        .set({
+          cacheBlob: 'proxies:\n  - {name: "fixture-ss", type: ss, server: example.com, port: 8388}',
+          lastOkAt: new Date('2026-01-02T03:04:05.000Z'),
+          lastError: null,
+        })
+        .where(eq(sources.id, id))
+        .run();
+      return { sourceId: id, outcome: 'refreshed', bytes: 64 };
+    });
+
+    const { event } = authed({
+      url: `/api/admin/sources/${source.id}/refresh`,
+      method: 'POST',
+    });
+    const res = (await sourceRefreshHandler(event, base.options)) as {
+      item: Record<string, unknown>;
+      outcome: string;
+    };
+    expect(event.node.res.statusCode).toBe(200);
+    expect(res.outcome).toBe('refreshed');
+    expect('error' in res).toBe(false);
+    expect(res.item).toMatchObject({
+      id: source.id,
+      name: 'fixture-refresh-ok',
+      ownerUserId: owner.id,
+      hasCache: true,
+      lastOkAt: '2026-01-02T03:04:05.000Z',
+      lastError: null,
+    });
+    // Same id as the route path, i.e. the task path receives the parsed id.
+    expect(vi.mocked(refreshSource).mock.calls.at(-1)?.[1]).toBe(source.id);
+  });
+
+  it('rejects an owner id that no longer exists', async () => {
+    // Guard the FK: PATCH must reject assigning a source to a deleted user too.
+    const owner = await createFixtureUser('fixture-gone');
+    const ownerId = owner.id as number;
+    const source = await createFixtureSource({ ownerUserId: ownerId });
+    db.delete(users).where(eq(users.id, ownerId)).run();
+
+    const patch = authed({
+      url: `/api/admin/sources/${source.id}`,
+      method: 'PATCH',
+      body: { ownerUserId: ownerId },
+    });
+    expect(await sourceUpdateHandler(patch.event, base.options)).toEqual({
+      error: 'invalid ownerUserId',
+    });
+    expect(patch.event.node.res.statusCode).toBe(400);
   });
 
   it('404 for unknown ids', async () => {
