@@ -11,7 +11,7 @@
 
 - Nuxt 3 + TypeScript + pnpm 骨架，core 为纯 TS，不依赖 Nuxt。
 - 节点解析：
-  - 分享链接：`ss`、`vmess`、`vless`（含 Reality / XTLS flow）、`trojan`、
+  - 分享链接：`ss`、`ssr`、`vmess`、`vless`（含 Reality / XTLS flow）、`trojan`、
     `hysteria2` / `hy2`、`tuic`、`anytls`。
   - Clash / mihomo YAML（完整配置中的 `proxies` 或裸数组）。
   - 纯文本与 base64 订阅，可混合多种协议。
@@ -58,9 +58,9 @@ pnpm dev         # Nuxt 开发服务器
 
 ## 单测
 
-P1 共 46 个单测，覆盖：
+P1 共 187 个单测，覆盖：
 
-- 7 种分享链接解析、Clash YAML、base64 / 纯文本订阅。
+- 8 种分享链接解析、Clash YAML、base64 / 纯文本订阅。
 - mihomo / legacy producer 的字段转换、协议过滤与 AnyTLS 默认值。
 - 两份 subconverter ini 样本的 ruleset / custom_proxy_group 解析、
   代理组展开、rule-providers 去重、inline 规则与远端规则集展开。
