@@ -42,6 +42,17 @@ export interface ProduceOptions {
   pretty?: boolean;
   /** Include nodes the target kernel cannot load (off by default). */
   includeUnsupported?: boolean;
+  /**
+   * Raw `dns:` template YAML (a mapping) that replaces the built-in DNS
+   * section. Ignored when empty/invalid; only mihomo/clash targets read it.
+   */
+  dnsTemplate?: string | null;
+  /**
+   * Rules to emit at the head of the generated `rules` list, before any
+   * profile rule (mihomo producer only). The QUIC block is added by default;
+   * `false` disables it. Profile rules are appended after this block.
+   */
+  leadingRules?: string[] | false;
 }
 
 export interface RulesetEntry {

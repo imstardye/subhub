@@ -16,6 +16,7 @@ import {
   resolveTarget,
 } from '../server/utils/subscription';
 import { RATE_LIMIT_MAX } from '../server/utils/rate-limit';
+import { BUILTIN_DNS_TEMPLATE, QUIC_BLOCK_RULE } from '../core';
 
 /** Test-only token; every fixture host below is example.com. */
 const TOKEN = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -170,7 +171,7 @@ describe('GET /s/:token user lookup', () => {
 });
 
 describe('GET /s/:token valid export', () => {
-  it('returns 200 with an empty proxies list when the user has no sources', async () => {
+  it('returns 200 with the built-in DNS template, no proxies and the QUIC block', async () => {
     const response = await call(TOKEN);
     expect(response.status).toBe(200);
     expect(response.headers['content-type']).toContain('text/yaml');
@@ -180,7 +181,16 @@ describe('GET /s/:token valid export', () => {
     expect(response.headers['subscription-userinfo']).toBe(
       'upload=0; download=0; total=0; expire=0',
     );
-    expect(parseYaml(response.body)).toEqual({ proxies: [] });
+    // Every mihomo body now carries the anti-leak template (see
+    // tests/dns-template.test.ts for the detailed assertions). The default
+    // User-Agent here is a Clash client, i.e. mihomo.
+    expect(resolveTarget(undefined, 'clash-verge/v2.0')).toBe('clash');
+    expect(call(TOKEN, 'mihomo')).toBeInstanceOf(Promise);
+    expect(parseYaml((await call(TOKEN, 'mihomo')).body)).toEqual({
+      dns: BUILTIN_DNS_TEMPLATE,
+      proxies: [],
+      rules: [QUIC_BLOCK_RULE],
+    });
   });
 
   it('sends cache-control: no-store and the security headers on 200', async () => {
@@ -198,7 +208,7 @@ describe('GET /s/:token valid export', () => {
     attachSource('   ');
     const response = await call(TOKEN, 'mihomo');
     expect(response.status).toBe(200);
-    expect(parseYaml(response.body)).toEqual({ proxies: [] });
+    expect(parseYaml(response.body)).toMatchObject({ proxies: [] });
   });
 
   it('falls back to mihomo YAML for targets that are not implemented yet (P4)', async () => {
@@ -310,7 +320,13 @@ describe('GET /s/:token rule profile', () => {
       expect(yaml.proxies.map((proxy) => proxy.name)).toEqual(['fixture-ss']);
       expect(yaml['proxy-groups'].map((group) => group.name)).toEqual(['🚀 节点选择', '🎯 全球直连']);
       expect(yaml['proxy-groups'][0]!.proxies).toContain('fixture-ss');
-      expect(yaml.rules).toEqual(['GEOIP,CN,🎯 全球直连', 'MATCH,🚀 节点选择']);
+      // The QUIC block is always the first rule (mihomo only; legacy Clash is
+      // left untouched), ahead of every profile rule.
+      expect(yaml.rules).toEqual(
+        target === 'mihomo'
+          ? [QUIC_BLOCK_RULE, 'GEOIP,CN,🎯 全球直连', 'MATCH,🚀 节点选择']
+          : ['GEOIP,CN,🎯 全球直连', 'MATCH,🚀 节点选择'],
+      );
     }
   });
 
@@ -346,11 +362,13 @@ describe('GET /s/:token rule profile', () => {
       null,
     );
     const response = await call(TOKEN, 'mihomo');
-    expect(parseYaml(response.body)).toEqual({
-      proxies: [
-        { name: 'fixture-ss', type: 'ss', server: 'example.com', port: 8388, cipher: 'aes-128-gcm', password: 'fake' },
-      ],
-    });
+    const yaml = parseYaml(response.body) as Record<string, unknown>;
+    expect(Object.keys(yaml)).toEqual(['dns', 'proxies', 'rules']);
+    expect(yaml.dns).toEqual(BUILTIN_DNS_TEMPLATE);
+    expect(yaml.proxies).toEqual([
+      { name: 'fixture-ss', type: 'ss', server: 'example.com', port: 8388, cipher: 'aes-128-gcm', password: 'fake' },
+    ]);
+    expect(yaml.rules).toEqual([QUIC_BLOCK_RULE]);
   });
 
   it('falls back to nodes only when the profile INI cannot be fetched', async () => {
@@ -367,13 +385,14 @@ describe('GET /s/:token rule profile', () => {
       { db, resolveProfileIni: async () => null },
     );
     expect(response.status).toBe(200);
-    expect(parseYaml(response.body)).toEqual({ proxies: [] });
+    expect(parseYaml(response.body)).toMatchObject({ proxies: [], rules: [QUIC_BLOCK_RULE] });
   });
 
   it('ignores a profile that defines neither groups nor rules', async () => {
     attachProfile('[common]\nfoo=bar');
     const response = await call(TOKEN, 'mihomo');
-    expect(parseYaml(response.body)).toEqual({ proxies: [] });
+    expect(parseYaml(response.body)).toMatchObject({ proxies: [] });
+    expect((parseYaml(response.body) as Record<string, unknown>).rules).toEqual([QUIC_BLOCK_RULE]);
   });
 });
 

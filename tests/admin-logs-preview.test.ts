@@ -20,6 +20,7 @@ import { openDb, type SubhubDb } from '../server/db';
 import { accessLogs, profiles, sources, users } from '../server/db/schema';
 import { encrypt } from '../server/db/crypto';
 import { EXPORT_TARGETS } from '../server/utils/targets';
+import { QUIC_BLOCK_RULE } from '../core';
 import type { AdminApiEvent } from '../server/utils/admin-api';
 import { authenticatedEvent, makeApiEvent } from './helpers/admin-api';
 
@@ -310,7 +311,9 @@ describe('POST /api/admin/preview rendering', () => {
     expect(parsed.proxies.map((proxy) => proxy.name)).toEqual(['node-one', 'node-two']);
     expect(parsed['proxy-groups'][0]!.name).toBe('🚀 节点选择');
     expect(parsed['proxy-groups'][0]!.proxies).toEqual(['node-one', 'node-two']);
-    expect(parsed.rules).toEqual(['MATCH,🚀 节点选择']);
+    // The built-in QUIC block is prepended to the profile rules (see
+    // tests/dns-template.test.ts for the full template coverage).
+    expect(parsed.rules).toEqual([QUIC_BLOCK_RULE, 'MATCH,🚀 节点选择']);
   });
 
   it('does not write access_logs', async () => {

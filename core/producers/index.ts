@@ -7,7 +7,15 @@
  * See the repository LICENSE file.
  */
 
-export { buildMihomoProxies, produceMihomo } from './mihomo';
-export { toYamlProxies } from './common';
+export {
+  buildLeadingRules,
+  buildMihomoProxies,
+  isQuicBlockRule,
+  produceMihomo,
+  produceMihomoProxiesOnly,
+  QUIC_BLOCK_RULE,
+  stringifyMihomoConfig,
+} from './mihomo';
+export { stringifyProxiesSection, stringifyYamlBlocks, toYamlProxies } from './common';
 export { buildLegacyProxies, produceLegacy } from './legacy';
 export type { ProxyNode, ProduceOptions } from '../types';

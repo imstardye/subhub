@@ -33,6 +33,8 @@ import {
   parseSubscription,
   produceLegacy,
   produceMihomo,
+  produceMihomoProxiesOnly,
+  stringifyMihomoConfig,
   type ProxyNode,
   type ProduceOptions,
   type ProxyGroupEntry,
@@ -171,6 +173,12 @@ export interface ExportProfile {
   proxyGroups: unknown[];
   /** Group names declared by the profile, in order. */
   groupNames: string[];
+  /**
+   * The profile's raw `dns:` template, if it has one. Applied by the mihomo
+   * renderer only; it replaces the built-in DNS section (invalid YAML falls
+   * back to the built-in).
+   */
+  dnsTemplate?: string | null;
 }
 
 /** Use legacy Clash (not mihomo) semantics for nodes and rules? */
@@ -239,6 +247,9 @@ export async function loadUserProfile(
       rules: built.rules,
       proxyGroups: built.proxyGroups,
       groupNames: ini.groups.map((group: ProxyGroupEntry) => group.name),
+      // Raw text only: the core parses it at render time and silently falls
+      // back to the built-in DNS section when it is not a YAML mapping.
+      dnsTemplate: row.dnsTemplate ?? null,
     };
   } catch {
     return null;
@@ -247,11 +258,18 @@ export async function loadUserProfile(
 
 /**
  * Render nodes for an export target. Targets without a dedicated producer yet
- * (P4) fall back to the mihomo YAML.
+ * (P4) fall back to the mihomo YAML, but keep the historical nodes-only body:
+ * the DNS/QUIC template is a mihomo (Clash.Meta) feature and those clients
+ * cannot load it.
  *
  * `profile` (from `loadUserProfile`) is optional: with it the body also carries
  * the profile's proxy groups, rules and mihomo rule-providers. Without one the
- * output is exactly the nodes-only body of before.
+ * output is the nodes-only/`dns`+`proxies`+QUIC body.
+ *
+ * Emitted section order (mihomo): `dns`, `proxies`, `rule-providers`,
+ * `proxy-groups`, `rules`. The QUIC block is always the first entry of `rules`
+ * (with or without a profile, and never duplicated when the profile already
+ * blocks QUIC); `profile.dnsTemplate` replaces the built-in `dns` section.
  */
 export function renderTargetBody(
   target: ExportTarget,
@@ -259,22 +277,77 @@ export function renderTargetBody(
   options: ProduceOptions = {},
   profile: ExportProfile | null = null,
 ): string {
-  const legacy = isLegacyTarget(target);
-  const produce = legacy ? produceLegacy : produceMihomo;
-  const body = produce(nodes, options);
-  if (!profile) return body;
+  if (isLegacyTarget(target)) return renderLegacyBody(nodes, options, profile);
+
+  // A future target (P4) still falls back to mihomo YAML; it must stay exactly
+  // what it produced before this template existed.
+  if (target !== 'mihomo') return renderMihomoFallbackBody(nodes, options, profile);
+
+  const dnsOptions: ProduceOptions = {
+    ...options,
+    ...(profile?.dnsTemplate ? { dnsTemplate: profile.dnsTemplate } : {}),
+  };
+
+  if (!profile) {
+    // No profile: dns + proxies + the leading (QUIC) rules.
+    return produceMihomo(nodes, dnsOptions);
+  }
 
   const sections: Record<string, unknown> = {};
   // Legacy Clash cannot load rule-providers; mihomo references them by name.
-  if (!legacy && Object.keys(profile.ruleProviders).length > 0) {
+  if (Object.keys(profile.ruleProviders).length > 0) {
+    sections['rule-providers'] = profile.ruleProviders;
+  }
+  if (profile.proxyGroups.length > 0) sections['proxy-groups'] = profile.proxyGroups;
+
+  // The producer owns the `rules` block so the QUIC rule can be prepended in
+  // front of every profile rule (and de-duplicated) in one place.
+  const head = stringifyMihomoConfig(
+    buildMihomoProxies(nodes, dnsOptions),
+    dnsOptions,
+    profile.rules,
+  );
+  if (Object.keys(sections).length === 0) return head;
+
+  return `${head}${stringifyYaml(sections, { lineWidth: 0, aliasDuplicateObjects: false })}`;
+}
+
+/** Legacy Clash: nodes-only `proxies` (no DNS, no injected rules). */
+function renderLegacyBody(
+  nodes: ProxyNode[],
+  options: ProduceOptions,
+  profile: ExportProfile | null,
+): string {
+  const body = produceLegacy(nodes, options);
+  if (!profile) return body;
+
+  const sections: Record<string, unknown> = {};
+  if (profile.proxyGroups.length > 0) sections['proxy-groups'] = profile.proxyGroups;
+  if (profile.rules.length > 0) sections.rules = profile.rules;
+  if (Object.keys(sections).length === 0) return body;
+
+  const head = body.endsWith('\n') || body === '' ? body : `${body}\n`;
+  const tail = stringifyYaml(sections, { lineWidth: 0, aliasDuplicateObjects: false });
+  return `${head}${tail}`;
+}
+
+/** Unimplemented P4 targets: the historical mihomo nodes-only YAML. */
+function renderMihomoFallbackBody(
+  nodes: ProxyNode[],
+  options: ProduceOptions,
+  profile: ExportProfile | null,
+): string {
+  const body = produceMihomoProxiesOnly(nodes, options);
+  if (!profile) return body;
+
+  const sections: Record<string, unknown> = {};
+  if (Object.keys(profile.ruleProviders).length > 0) {
     sections['rule-providers'] = profile.ruleProviders;
   }
   if (profile.proxyGroups.length > 0) sections['proxy-groups'] = profile.proxyGroups;
   if (profile.rules.length > 0) sections.rules = profile.rules;
   if (Object.keys(sections).length === 0) return body;
 
-  // Reuse the producer for the proxies block (so both variants keep their
-  // pretty/compact format) and append the profile sections after it.
   const head = body.endsWith('\n') || body === '' ? body : `${body}\n`;
   const tail = stringifyYaml(sections, { lineWidth: 0, aliasDuplicateObjects: false });
   return `${head}${tail}`;

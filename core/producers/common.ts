@@ -94,19 +94,53 @@ export function normalizeAlpn(node: ProxyNode): void {
   node.alpn = Array.isArray(node.alpn) ? node.alpn : [node.alpn];
 }
 
-export function toYamlProxies(nodes: ProxyNode[], options: ProduceOptions = {}): string {
+/** `key:\n<indented block YAML>` for a nested mapping in compact mode. */
+function toCompactYamlMapping(key: string, value: unknown): string {
+  const block = stringifyYaml(value, { lineWidth: 0, aliasDuplicateObjects: false });
+  const indented = block
+    .split('\n')
+    .map((line) => (line ? `  ${line}` : line))
+    .join('\n');
+  return `${key}:\n${indented.replace(/\n$/, '')}\n`;
+}
+
+/** The `proxies:` block as YAML only (no DNS/rule sections). */
+export function stringifyProxiesSection(
+  nodes: ProxyNode[],
+  options: ProduceOptions = {},
+): string {
+  return stringifyYamlBlocks({ proxies: nodes }, options);
+}
+
+/**
+ * Serialize an ordered set of top-level blocks. Pretty mode emits block YAML;
+ * compact mode emits one indented JSON line per list item (the historical
+ * `proxies: - {...}` format) while mappings stay YAML.
+ */
+export function stringifyYamlBlocks(
+  blocks: Record<string, unknown>,
+  options: ProduceOptions = {},
+): string {
   if (options.pretty === false) {
-    return (
-      'proxies:\n' +
-      nodes.map((node) => `  - ${JSON.stringify(node)}\n`).join('')
-    );
+    return Object.entries(blocks)
+      .map(([key, value]) => {
+        if (Array.isArray(value)) {
+          return (
+            `${key}:\n` +
+            value.map((entry) => `  - ${JSON.stringify(entry)}\n`).join('')
+          );
+        }
+        return toCompactYamlMapping(key, value);
+      })
+      .join('');
   }
 
-  return stringifyYaml(
-    { proxies: nodes },
-    {
-      lineWidth: 0,
-      aliasDuplicateObjects: false,
-    },
-  );
+  return stringifyYaml(blocks, {
+    lineWidth: 0,
+    aliasDuplicateObjects: false,
+  });
+}
+
+export function toYamlProxies(nodes: ProxyNode[], options: ProduceOptions = {}): string {
+  return stringifyProxiesSection(nodes, options);
 }

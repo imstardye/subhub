@@ -8,6 +8,7 @@
  */
 
 export * from './types';
+export * from './dns';
 export * from './parsers';
 export * from './producers';
 export * from './rules';
