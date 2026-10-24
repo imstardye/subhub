@@ -25,6 +25,14 @@ export {
   excludeRemarkNodes,
   type RemarkExcluder,
 } from './exclude-remarks';
+export {
+  BUILTIN_GROUP_MEMBERS,
+  minGroupMembers,
+  pruneEmptyGroups,
+  rulePolicy,
+  type PrunedProfileTree,
+  type PruneGroupsOptions,
+} from './prune-groups';
 
 const MAX_YAML_ALIAS_COUNT = 100;
 
