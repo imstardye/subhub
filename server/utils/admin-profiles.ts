@@ -20,7 +20,7 @@
  */
 import { eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
-import { profiles, type Profile } from '../db/schema';
+import { profiles, users, type Profile } from '../db/schema';
 import {
   DNS_TEMPLATE_MAX_LENGTH,
   parseId,
@@ -142,6 +142,10 @@ export function deleteProfile(db: SubhubDb, rawId: unknown): { ok: true; id: num
   const id = parseId(rawId);
   const existing = db.select({ id: profiles.id }).from(profiles).where(eq(profiles.id, id)).get();
   if (!existing) throw new ValidationError('profile not found', 404);
+  // Match the UI copy: users that pointed at this profile fall back to the
+  // default (null profileId). Clear the FK before removing the row so we do
+  // not leave dangling references.
+  db.update(users).set({ profileId: null }).where(eq(users.profileId, id)).run();
   db.delete(profiles).where(eq(profiles.id, id)).run();
   return { ok: true, id };
 }

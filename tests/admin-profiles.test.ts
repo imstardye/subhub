@@ -9,6 +9,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import profilesListHandler from '../server/api/admin/profiles/index.get';
 import profilesCreateHandler from '../server/api/admin/profiles/index.post';
@@ -27,7 +28,7 @@ import {
   parseProfileVariant,
 } from '../server/utils/admin-validation';
 import { openDb, type SubhubDb } from '../server/db';
-import { profiles } from '../server/db/schema';
+import { profiles, users } from '../server/db/schema';
 import type { AdminApiEvent } from '../server/utils/admin-api';
 import { authenticatedEvent, makeApiEvent } from './helpers/admin-api';
 
@@ -191,6 +192,48 @@ describe('/api/admin/profiles CRUD', () => {
       id: created.id,
     });
     expect(base.db.select().from(profiles).all()).toHaveLength(0);
+  });
+
+  it('clears users.profileId when the referenced profile is deleted', async () => {
+    const created = await createFixtureProfile({ name: 'fixture-linked', iniText: INI_TEXT });
+    const createdId = created.id as number;
+    base.db
+      .insert(users)
+      .values({
+        name: 'linked-user',
+        token: 'tok-linked-profile-clear-01',
+        enabled: true,
+        note: null,
+        profileId: createdId,
+      })
+      .run();
+    const other = await createFixtureProfile({ name: 'fixture-keep', iniText: INI_TEXT });
+    const otherId = other.id as number;
+    base.db
+      .insert(users)
+      .values({
+        name: 'other-user',
+        token: 'tok-other-profile-keep-02',
+        enabled: true,
+        note: null,
+        profileId: otherId,
+      })
+      .run();
+
+    const removed = authed({
+      url: `/api/admin/profiles/${createdId}`,
+      method: 'DELETE',
+    });
+    expect(await profileDeleteHandler(removed.event, base.options)).toEqual({
+      ok: true,
+      id: createdId,
+    });
+
+    const linked = base.db.select().from(users).where(eq(users.token, 'tok-linked-profile-clear-01')).get();
+    const kept = base.db.select().from(users).where(eq(users.token, 'tok-other-profile-keep-02')).get();
+    expect(linked?.profileId).toBeNull();
+    expect(kept?.profileId).toBe(otherId);
+    expect(base.db.select().from(profiles).where(eq(profiles.id, createdId)).get()).toBeUndefined();
   });
 
   it('accepts options as a JSON string from form-ish callers', async () => {
