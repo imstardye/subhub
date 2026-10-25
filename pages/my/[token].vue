@@ -294,6 +294,35 @@ async function confirmDelete(target: UserCenterOwnSource) {
   }
 }
 
+/* ----------------------------------------------------- refresh sources -- */
+const refreshingSources = ref(false);
+
+/**
+ * Manual refresh of the owner's DEDICATED sources only. The server reuses the
+ * periodic task's fetch path and skips paused sources; this handler just
+ * reloads the dashboard afterwards so cards/counts reflect the new cache.
+ */
+async function refreshOwnSources() {
+  if (refreshingSources.value) return;
+  refreshingSources.value = true;
+  try {
+    const result = await $fetch<{ refreshed: number; failed: number }>(
+      userCenterApiPath(token.value, 'refresh-sources'),
+      { method: 'POST' },
+    );
+    await refresh();
+    if (result.failed > 0) {
+      message.warning(`已刷新 ${result.refreshed} 个，${result.failed} 个失败`);
+    } else {
+      message.success(`已刷新 ${result.refreshed} 个订阅源`);
+    }
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+  } finally {
+    refreshingSources.value = false;
+  }
+}
+
 /* ------------------------------------------------------------ token refresh -- */
 const rotating = ref(false);
 
@@ -670,7 +699,18 @@ useHead({ title: '我的订阅 · subhub' });
         <n-card class="panel panel-sources">
           <template #header>我的订阅源</template>
           <template #header-extra>
-            <n-button type="primary" size="small" round @click="openAdd">添加订阅源</n-button>
+            <div style="display: flex; gap: 8px">
+              <n-button
+                secondary
+                size="small"
+                round
+                :loading="refreshingSources"
+                @click="refreshOwnSources"
+              >
+                刷新订阅
+              </n-button>
+              <n-button type="primary" size="small" round @click="openAdd">添加订阅源</n-button>
+            </div>
           </template>
 
           <div v-if="cards.length" class="source-list">

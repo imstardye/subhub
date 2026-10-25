@@ -43,12 +43,13 @@ import userSourceUpdateHandler from '../server/api/user/[token]/sources/[id].pat
 import userSourceDeleteHandler from '../server/api/user/[token]/sources/[id].delete';
 import userChoiceHandler from '../server/api/user/[token]/choices.post';
 import userRefreshHandler from '../server/api/user/[token]/refresh.post';
+import userSourcesRefreshHandler from '../server/api/user/[token]/refresh-sources.post';
 import userCustomTokenHandler from '../server/api/user/[token]/token.put';
 import { handleSubscriptionExport, resetExportRateLimiter } from '../server/utils/subscription';
 import { requestFromEvent } from '../server/utils/export-handler';
 import { hashPassword } from '../server/utils/user-password';
 import { issueUserSession, USER_SESSION_COOKIE } from '../server/utils/user-session';
-import type { RefreshOptions } from '../server/tasks/refresh-sources';
+import type { RefreshOptions } from '../server/utils/refresh-sources';
 import {
   summarizeTraffic,
   type UserCenterData,
@@ -226,6 +227,9 @@ const choose = (token: string, body: unknown) =>
 
 const rotate = (token: string) =>
   call(userRefreshHandler, { path: `/api/user/${token}/refresh`, method: 'POST' });
+
+const refreshSources = (token: string) =>
+  call(userSourcesRefreshHandler, { path: `/api/user/${token}/refresh-sources`, method: 'POST' });
 
 /** Render one user's mihomo export (the real handler path). */
 async function exportProxyNames(token: string): Promise<string[]> {
@@ -752,5 +756,92 @@ describe('DELETE /api/user/:token/sources/:id — delete an own dedicated source
     const again = await deleteSource(ALICE_TOKEN, aliceSourceId);
     expect(again.status).toBe(404);
     expect(again.body).toEqual({ error: 'source not found' });
+  });
+});
+
+describe('POST /api/user/:token/refresh-sources — manual refresh of own dedicated sources', () => {
+  it('requires the unlocked session (password gate)', async () => {
+    const eventOptions = { path: `/api/user/${ALICE_TOKEN}/refresh-sources`, method: 'POST' };
+    const result = await call(userSourcesRefreshHandler, eventOptions, { session: false });
+    expect(result.status).toBe(401);
+    expect(result.body.status).toBe('needs-password');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('refreshes only the token owner’s dedicated source and updates cache + userinfo', async () => {
+    const before = new Map(
+      db.select({ id: sources.id, cacheBlob: sources.cacheBlob }).from(sources).all().map((row) => [row.id, row.cacheBlob]),
+    );
+
+    const result = await refreshSources(ALICE_TOKEN);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      refreshed: 1,
+      failed: 0,
+      skipped: 0,
+      results: [{ id: aliceSourceId, name: 'alice-own', ok: true, skipped: false }],
+    });
+
+    // Exactly one upstream call: Alice's source. Bob's, public and shared are
+    // untouched (their caches are byte-identical to before).
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe(SECRET_URLS.alice);
+    for (const id of [bomOnlySourceId, publicSourceId, sharedSourceId]) {
+      expect(db.select({ cacheBlob: sources.cacheBlob }).from(sources).where(eq(sources.id, id)).get()!.cacheBlob).toBe(before.get(id));
+    }
+
+    const alice = db.select().from(sources).where(eq(sources.id, aliceSourceId)).get()!;
+    expect(alice.cacheBlob).toBe(FETCHED_BODY);
+    expect(alice.lastOkAt).not.toBeNull();
+    expect(alice.lastError).toBeNull();
+    expect(alice.userinfoUpload).toBe(1);
+    expect(alice.userinfoDownload).toBe(2);
+    expect(alice.userinfoTotal).toBe(100);
+    expect(alice.userinfoExpire).toBe(1_900_000_000);
+
+    // The read API reflects the new cache/userinfo.
+    const data = ready(await read());
+    expect(data.ownSources.find((item) => item.id === aliceSourceId)).toMatchObject({ hasCache: true, nodeCount: 1 });
+    const card = data.traffic.sources.find((item) => item.id === aliceSourceId)!;
+    expect(card.userinfo).toEqual({ upload: 1, download: 2, total: 100, expire: 1_900_000_000 });
+  });
+
+  it('skips a paused source and leaves its cache untouched', async () => {
+    db.update(sources).set({ enabled: false }).where(eq(sources.id, aliceSourceId)).run();
+    const before = db.select({ cacheBlob: sources.cacheBlob }).from(sources).where(eq(sources.id, aliceSourceId)).get()!.cacheBlob;
+
+    const result = await refreshSources(ALICE_TOKEN);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      refreshed: 0,
+      failed: 0,
+      skipped: 1,
+      results: [{ id: aliceSourceId, name: 'alice-own', ok: false, skipped: true }],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(db.select({ cacheBlob: sources.cacheBlob }).from(sources).where(eq(sources.id, aliceSourceId)).get()!.cacheBlob).toBe(before);
+  });
+
+  it('counts an upstream failure and keeps the previous cache', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 502,
+      headers: { get: () => null },
+      text: async () => '',
+    });
+    const before = db.select({ cacheBlob: sources.cacheBlob }).from(sources).where(eq(sources.id, aliceSourceId)).get()!.cacheBlob;
+
+    const result = await refreshSources(ALICE_TOKEN);
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      refreshed: 0,
+      failed: 1,
+      skipped: 0,
+      results: [{ id: aliceSourceId, name: 'alice-own', ok: false, skipped: false, error: 'HTTP 502' }],
+    });
+
+    const alice = db.select().from(sources).where(eq(sources.id, aliceSourceId)).get()!;
+    expect(alice.cacheBlob).toBe(before);
+    expect(alice.lastError).toBe('HTTP 502');
   });
 });
