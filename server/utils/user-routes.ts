@@ -15,10 +15,21 @@ import { getServerDb } from './db';
 import type { SubhubDb } from '../db';
 import { ValidationError } from './admin-validation';
 import { requestPath, sendJson, type AdminApiEvent } from './admin-api';
+import { requireUnlockedUserByToken, type PasswordAttemptOptions } from './user-center';
+import { UserCenterAuthError, type UserSessionOptions } from './user-session';
 
 /** Options forwarded by every user-center route (tests inject a database). */
 export interface UserRequestOptions {
   db?: SubhubDb;
+  /**
+   * Password setup/unlock are the only endpoints callable before unlocking.
+   * Every other route keeps the default (gate enforced) — never opt out there.
+   */
+  skipUnlock?: boolean;
+  /** Signing/clock overrides for the session check (tests). */
+  session?: UserSessionOptions;
+  /** Throttle/sleep/IP overrides for password verification (tests). */
+  password?: PasswordAttemptOptions;
 }
 
 /** Path segments after `/api/user/`: `[token, resource?, id?]`. */
@@ -53,6 +64,9 @@ export function sourceIdFromPath(event: AdminApiEvent): string | undefined {
 
 /** Same shape as the admin routes; no session is involved. */
 function errorResponse(event: AdminApiEvent, error: unknown): unknown {
+  if (error instanceof UserCenterAuthError) {
+    return sendJson(event, 401, { error: error.message, status: error.status });
+  }
   if (error instanceof ValidationError) {
     return sendJson(event, error.statusCode, { error: error.message });
   }
@@ -67,7 +81,13 @@ export async function handleUserRequest<T>(
   options: UserRequestOptions = {},
 ): Promise<unknown> {
   try {
-    return await work(options.db ?? getServerDb());
+    const db = options.db ?? getServerDb();
+    // The token identifies the user, the cookie proves the password gate was
+    // passed. Password setup/unlock are the only opt-outs.
+    if (!options.skipUnlock) {
+      requireUnlockedUserByToken(db, tokenFromPath(event), event, options.session);
+    }
+    return await work(db);
   } catch (error) {
     return errorResponse(event, error);
   }

@@ -16,6 +16,18 @@ export const users = sqliteTable('users', {
   profileId: integer('profile_id'),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
   note: text('note'),
+  /**
+   * User-center password: scrypt hash (`server/utils/user-password.ts`).
+   * NULL = no password yet — opening /my starts the 设置密码 flow. Never
+   * serialised by any API (the admin DTO only exposes `passwordSet`).
+   */
+  passwordHash: text('password_hash'),
+  /**
+   * Bumped on every password set/change/reset. The signed session cookie
+   * carries it, so a bump invalidates every older /my session while leaving
+   * token rotation and subscription exports untouched.
+   */
+  passwordVersion: integer('password_version').notNull().default(0),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().defaultNow(),
 });
 

@@ -409,23 +409,46 @@ export function editFormFromSource(source: UserCenterOwnSource): {
   return { name: source.name, enabled: source.enabled, userAgent: source.userAgent ?? '', url: '' };
 }
 
-/** What the page shows for a first paint: one of five explicit states. */
+/** What the page shows for a first paint: one of six explicit states. */
 export type UserCenterView =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
+  | { kind: 'locked'; lock: UserCenterLock }
   | { kind: 'disabled'; title: string; message: string }
   | { kind: 'ready'; data: UserCenterData };
 
+/** The two password-gate forms the page can render. */
+export type UserCenterLock = 'needs-setup' | 'needs-password';
+
+/**
+ * Extract the gate state from a failed `/api/user/:token` request.
+ *
+ * The server answers 401 `{ error, status: 'needs-setup' | 'needs-password' }`;
+ * `$fetch` exposes the JSON body as `err.data`. Anything else (404, network,
+ * 500) is not a password state and must stay an ordinary error.
+ */
+export function userCenterLockFromError(error: unknown): UserCenterLock | null {
+  if (!error || typeof error !== 'object') return null;
+  const candidate = error as {
+    data?: { status?: unknown };
+    response?: { _data?: { status?: unknown } };
+  };
+  const status = candidate.data?.status ?? candidate.response?._data?.status;
+  return status === 'needs-setup' || status === 'needs-password' ? status : null;
+}
+
 /**
  * Decide the page state from the fetch result. Kept pure so the (bug-prone)
- * "blank page while loading vs. disabled vs. empty" branches are unit-tested
+ * "blank page while loading vs. disabled vs. locked" branches are unit-tested
  * instead of being re-derived inline in the template.
  */
 export function userCenterView(input: {
   data?: UserCenterPayload | null;
   error?: string | null;
   pending?: boolean;
+  lock?: UserCenterLock | null;
 }): UserCenterView {
+  if (input.lock) return { kind: 'locked', lock: input.lock };
   if (input.error) return { kind: 'error', message: input.error };
   if (input.pending && !input.data) return { kind: 'loading' };
   if (!input.data) return { kind: 'error', message: '加载失败，请稍后再试' };

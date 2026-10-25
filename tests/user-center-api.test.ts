@@ -45,6 +45,8 @@ import userChoiceHandler from '../server/api/user/[token]/choices.post';
 import userRefreshHandler from '../server/api/user/[token]/refresh.post';
 import { handleSubscriptionExport, resetExportRateLimiter } from '../server/utils/subscription';
 import { requestFromEvent } from '../server/utils/export-handler';
+import { hashPassword } from '../server/utils/user-password';
+import { issueUserSession, USER_SESSION_COOKIE } from '../server/utils/user-session';
 import type { RefreshOptions } from '../server/tasks/refresh-sources';
 import {
   summarizeTraffic,
@@ -72,6 +74,14 @@ const NODE_ALICE = 'ALICE-NODE 节点';
 const NODE_BOB = 'BOB-NODE 节点';
 const NODE_PUBLIC = 'PUBLIC-NODE 节点';
 const NODE_SHARED = 'SHARED-NODE 节点';
+
+/**
+ * Seed hash for the existing user-center tests: after the password gate these
+ * flows are reached through a real session cookie, exactly as in the browser.
+ * The hash itself is covered by tests/user-password.test.ts.
+ */
+const SEED_PASSWORD = 'user-center-test-password';
+const SEED_HASH = hashPassword(SEED_PASSWORD);
 
 /** Cache YAML holding a single ss node with the given name. */
 function cacheWith(name: string): string {
@@ -118,6 +128,9 @@ beforeEach(() => {
   aliceId = db.insert(users).values({ name: 'alice', token: ALICE_TOKEN, enabled: true, note: '爱丽丝' }).returning({ id: users.id }).get()!.id;
   bobId = db.insert(users).values({ name: 'bob', token: BOB_TOKEN, enabled: true }).returning({ id: users.id }).get()!.id;
   disabledId = db.insert(users).values({ name: 'dora', token: DISABLED_TOKEN, enabled: false }).returning({ id: users.id }).get()!.id;
+  // Every seeded user has a password so the pre-gate flows keep their meaning;
+  // the session cookie is added per request by `call` below.
+  db.update(users).set({ passwordHash: SEED_HASH, passwordVersion: 1 }).run();
 
   /** Make a clean remote source row (URL encrypted, as the admin API stores it). */
   const source = (row: {
@@ -168,8 +181,22 @@ interface ApiResult {
 async function call(
   handler: Handler,
   options: { path: string; method?: string; body?: unknown },
+  behavior: { session?: boolean } = {},
 ): Promise<ApiResult> {
   const { event } = makeApiEvent({ url: options.path, method: options.method ?? 'GET', body: options.body });
+  if (behavior.session !== false) {
+    // Attach the browser-equivalent session cookie for the user named in the
+    // path. Unknown/empty tokens get none (the route answers 404 first).
+    const match = /^\/api\/user\/([^/]+)/.exec(options.path);
+    const rawToken = match ? decodeURIComponent(match[1]!) : '';
+    const row = rawToken
+      ? db.select().from(users).where(eq(users.token, rawToken)).get()
+      : undefined;
+    if (row?.passwordHash) {
+      const session = issueUserSession(row);
+      event.node.req.headers.cookie = `${USER_SESSION_COOKIE}=${encodeURIComponent(session.token)}`;
+    }
+  }
   const body = (await handler(event, { db })) as Record<string, unknown>;
   return { status: event.node.res.statusCode, body, json: JSON.stringify(body ?? null) };
 }
