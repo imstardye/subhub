@@ -482,6 +482,27 @@ onMounted(() => {
           :disabled="saving"
         />
       </n-form-item>
+      <template v-if="editingId !== null">
+        <n-form-item label="自定义规则（可选）" :show-feedback="false">
+          <n-input
+            v-model:value="form.customRules"
+            type="textarea"
+            :autosize="{ minRows: 3, maxRows: 8 }"
+            placeholder="一行一条 Clash 规则，如 DOMAIN-SUFFIX,example.com,DIRECT；清空即删除全部"
+            :disabled="saving"
+          />
+        </n-form-item>
+        <n-form-item label="规则位置" :show-feedback="false">
+          <n-select
+            v-model:value="form.customRulesPosition"
+            :options="[
+              { label: '前置（优先于规则档规则）', value: 'prepend' },
+              { label: '后置（规则档之后、MATCH 之前）', value: 'append' },
+            ]"
+            :disabled="saving"
+          />
+        </n-form-item>
+      </template>
       <div class="actions">
         <n-button type="primary" attr-type="submit" :loading="saving">
           {{ saving ? '保存中…' : '保存' }}

@@ -58,6 +58,7 @@ function payload(overrides: Partial<UserCenterData> = {}): UserCenterData {
   return {
     user: { name: 'alice', note: null, enabled: true, token: TOKEN },
     profile: { assignedProfile: null, profileNames: [] },
+    customRules: { text: '', position: 'prepend', count: 0 },
     traffic: {
       summary: {
         upload: null,

@@ -48,6 +48,22 @@ export {
   type PrunedProfileTree,
   type PruneGroupsOptions,
 } from './prune-groups';
+export {
+  CUSTOM_RULE_MAX_COUNT,
+  CUSTOM_RULE_MAX_LENGTH,
+  CUSTOM_RULE_TYPES,
+  builtinRulePolicies,
+  customRuleType,
+  filterCustomRulesForExport,
+  mergeCustomRules,
+  parseCustomRulePosition,
+  parseCustomRules,
+  validateCustomRulePolicies,
+  type CustomRuleEntry,
+  type CustomRuleError,
+  type CustomRulePosition,
+  type ParsedCustomRules,
+} from './custom-rules';
 
 const MAX_YAML_ALIAS_COUNT = 100;
 

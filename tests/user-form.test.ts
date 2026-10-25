@@ -84,10 +84,24 @@ async function createUser(body: Record<string, unknown> = { name: 'fixture-user'
 
 describe('users page form: payload building', () => {
   it('builds exactly the body the API accepts, including a string profileId', () => {
-    const form: UserForm = { name: '  fixture-user  ', enabled: true, note: ' note ', profileId: '1' };
+    const form: UserForm = {
+      name: '  fixture-user  ',
+      enabled: true,
+      note: ' note ',
+      profileId: '1',
+      customRules: 'DOMAIN-SUFFIX,example.com,DIRECT',
+      customRulesPosition: 'append',
+    };
     expect(buildUserPayload(form)).toEqual({
       ok: true,
-      payload: { name: 'fixture-user', enabled: true, note: 'note', profileId: '1' },
+      payload: {
+        name: 'fixture-user',
+        enabled: true,
+        note: 'note',
+        profileId: '1',
+        customRules: 'DOMAIN-SUFFIX,example.com,DIRECT',
+        customRulesPosition: 'append',
+      },
     });
   });
 
@@ -95,14 +109,14 @@ describe('users page form: payload building', () => {
     for (const profileId of ['', '   ']) {
       expect(buildUserPayload({ ...emptyUserForm(), name: 'x', profileId })).toEqual({
         ok: true,
-        payload: { name: 'x', enabled: true, note: null, profileId: null },
+        payload: { name: 'x', enabled: true, note: null, profileId: null, customRules: '', customRulesPosition: 'prepend' },
       });
     }
     // Every field is present even when the form was reset.
     const built = buildUserPayload({ ...emptyUserForm(), name: 'x' });
     expect(built).toEqual({
       ok: true,
-      payload: { name: 'x', enabled: true, note: null, profileId: null },
+      payload: { name: 'x', enabled: true, note: null, profileId: null, customRules: '', customRulesPosition: 'prepend' },
     });
   });
 
@@ -125,6 +139,8 @@ describe('users page form: payload building', () => {
       enabled: false,
       note: '',
       profileId: '7',
+      customRules: '',
+      customRulesPosition: 'prepend',
     });
     expect(userFormFromUser({ name: 'b', enabled: true, profileId: null }).profileId).toBe('');
     // A missing column (older API shape) is treated as "no profile" too.
@@ -149,6 +165,8 @@ describe('users page form: submit path against the API', () => {
       enabled: true,
       note: 'updated note',
       profileId: '1',
+      customRules: '',
+      customRulesPosition: 'prepend',
     });
 
     const res = await send(userUpdateHandler, {
