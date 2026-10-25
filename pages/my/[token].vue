@@ -137,10 +137,26 @@ const currentMainLink = computed(() =>
     : '',
 );
 
+/**
+ * Link panel display state: which target's link is shown in the single
+ * link box ('' = the bare main link). All seven full URLs used to be listed
+ * at once — a long repetitive column; now one link is shown and the target
+ * chips switch it (the QR follows).
+ */
+const selectedTarget = ref('');
+const activeLink = computed(
+  () =>
+    links.value.find((link) => link.target === selectedTarget.value)?.url ??
+    currentMainLink.value,
+);
+const activeTargetLabel = computed(
+  () => links.value.find((link) => link.target === selectedTarget.value)?.label ?? '',
+);
+
 /* ----------------------------------------------------------------- QR code -- */
 const qrSvg = ref<string | null>(null);
 watch(
-  currentMainLink,
+  activeLink,
   async (link) => {
     // A relative link (pre-mount, origin unknown) is useless in a QR code;
     // wait for the absolute form once the client origin is known.
@@ -670,26 +686,38 @@ useHead({ title: '我的订阅 · subhub' });
             <n-select v-model:value="selectedProfileValue" :options="profileSelectOptions" />
           </div>
 
-          <div class="main-link">
-            <code>{{ currentMainLink }}</code>
-            <n-button type="primary" size="small" @click="copy(currentMainLink, 'main')">
-              {{ copied === 'main' ? '已复制' : '复制' }}
-            </n-button>
-          </div>
-          <div v-if="qrSvg" class="qr" aria-label="当前主链接二维码">
-            <div class="qr-image" v-html="qrSvg" />
-            <p class="hint tiny">扫描导入当前主链接</p>
+          <div class="target-chips" role="group" aria-label="选择客户端类型">
+            <button
+              type="button"
+              class="chip"
+              :class="{ active: selectedTarget === '' }"
+              @click="selectedTarget = ''"
+            >
+              主链接
+            </button>
+            <button
+              v-for="link in links"
+              :key="link.target"
+              type="button"
+              class="chip"
+              :class="{ active: selectedTarget === link.target }"
+              @click="selectedTarget = link.target"
+            >
+              {{ link.label }}
+            </button>
           </div>
 
-          <ul class="links">
-            <li v-for="link in links" :key="link.target">
-              <span class="link-chip">{{ link.label }}</span>
-              <code>{{ link.url }}</code>
-              <n-button size="tiny" secondary @click="copy(link.url, link.target)">
-                {{ copied === link.target ? '已复制' : '复制' }}
-              </n-button>
-            </li>
-          </ul>
+          <div class="main-link">
+            <code>{{ activeLink }}</code>
+            <n-button type="primary" size="small" @click="copy(activeLink, 'active')">
+              {{ copied === 'active' ? '已复制' : '复制' }}
+            </n-button>
+          </div>
+          <div v-if="qrSvg" class="qr" :aria-label="`${activeTargetLabel || '主'}链接二维码`">
+            <div class="qr-image" v-html="qrSvg" />
+            <p class="hint tiny">{{ selectedTarget ? `扫描导入 ${activeTargetLabel} 链接` : '扫描导入当前主链接' }}</p>
+          </div>
+
           <p class="hint tiny">
             切换规则档只改变上面的链接，不会修改账号默认规则档。Token：{{ maskUserToken(center.user.token) }}
           </p>
@@ -1325,36 +1353,33 @@ useHead({ title: '我的订阅 · subhub' });
   height: 100%;
   display: block;
 }
-.links {
-  list-style: none;
-  margin: 14px 0 10px;
-  padding: 0;
-}
-.links li {
+.target-chips {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  border-radius: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
 }
-.links li:hover {
-  background: #f6f9ff;
-}
-.link-chip {
-  flex: none;
-  min-width: 86px;
+.chip {
+  padding: 6px 14px;
+  border: 1px solid #d7e3f8;
+  border-radius: 999px;
+  background: #f4f8ff;
+  color: #3c5a8f;
+  font-family: inherit;
   font-size: 13px;
   font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
-.links code {
-  flex: 1;
-  min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--muted-foreground, #64748b);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.chip:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+}
+.chip.active {
+  background: linear-gradient(135deg, #2563eb, #38bdf8);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 5px 12px rgba(37, 99, 235, 0.3);
 }
 
 /* ----------------------------------------------------------- sources */
