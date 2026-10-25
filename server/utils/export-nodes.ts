@@ -31,6 +31,7 @@
  */
 import { and, eq, exists, isNull, or } from 'drizzle-orm';
 import {
+  applyOperators,
   BUILTIN_GROUP_MEMBERS,
   buildLoonProxies,
   buildMihomoProxies,
@@ -42,6 +43,7 @@ import {
   filterInfoAndRemarkNodes,
   mergeCustomRules,
   parseCustomRules,
+  parseOperatorsJson,
   parseIni,
   parseSubscription,
   prepareNode,
@@ -55,6 +57,7 @@ import {
   pruneEmptyGroups,
   stringifyMihomoConfig,
   type ClashProxyGroup,
+  type NodeOperator,
   type ProxyNode,
   type ProduceOptions,
 } from '../../core';
@@ -192,6 +195,18 @@ export function collectNodes(caches: CachedSource[]): ProxyNode[] {
 /** Aggregate the cached sources of a user into proxy nodes. */
 export function collectUserNodes(db: SubhubDb, userId: number): ProxyNode[] {
   return collectNodes(loadUserSourceCaches(db, userId));
+}
+
+/**
+ * Run a user's stored operator pipeline over a node list. Used for the
+ * nodes-only fallback (no usable profile): inside `loadUserProfile` the
+ * pipeline already ran, so callers apply this only when that returned
+ * null — the two paths can never double-apply.
+ */
+export function applyStoredOperators(db: SubhubDb, userId: number, nodes: ProxyNode[]): ProxyNode[] {
+  const row = db.select({ operators: users.operators }).from(users).where(eq(users.id, userId)).get();
+  const pipeline = parseOperatorsJson(row?.operators);
+  return pipeline.length > 0 ? applyOperators(nodes, pipeline) : nodes;
 }
 
 /**
@@ -399,6 +414,12 @@ export async function loadUserProfile(
    * an unknown override never reaches this function.
    */
   profileId?: number | null,
+  /**
+   * Operator pipeline override: `undefined` runs the user's stored
+   * pipeline, an array (possibly empty) runs exactly that. The /my dry-run
+   * preview uses it to show a candidate pipeline's effect before saving.
+   */
+  operatorsOverride?: readonly NodeOperator[],
 ): Promise<LoadedUserProfile | null> {
   try {
     let effectiveProfileId = profileId ?? null;
@@ -411,6 +432,7 @@ export async function loadUserProfile(
         profileId: users.profileId,
         customRules: users.customRules,
         customRulesPosition: users.customRulesPosition,
+        operators: users.operators,
       })
       .from(users)
       .where(eq(users.id, userId))
@@ -433,7 +455,14 @@ export async function loadUserProfile(
     // `((?i)hk)`, ...) must only ever see the nodes the export will emit. The
     // dropped set is the union of both (`exclude_remarks` still means exactly
     // what subconverter means). Doing it here keeps the INI fetch single-pass.
-    const visibleNodes = filterInfoAndRemarkNodes(nodes, compileExcludeRemarks(ini));
+    const filteredNodes = filterInfoAndRemarkNodes(nodes, compileExcludeRemarks(ini));
+    // The user's operator pipeline runs here, on the filtered list, before
+    // group expansion: groups and rules only ever see the operated nodes.
+    // It belongs to the user (stored pipeline unless a preview overrides
+    // it) and applies to every target, since it transforms the nodes
+    // themselves. `applyOperators` never throws (see core/operators.ts).
+    const pipeline = operatorsOverride ?? parseOperatorsJson(userRow?.operators);
+    const visibleNodes = pipeline.length > 0 ? applyOperators(filteredNodes, pipeline) : filteredNodes;
     const nodeNames = targetProxyNames(exportTarget, visibleNodes);
     // The profile variant decides which Clash dialect the rules target; the
     // export target only picks the node producer (see `withProfile`).

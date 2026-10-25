@@ -59,6 +59,8 @@ import {
 } from '../../core';
 import { isSourceDisabled } from './export-nodes';
 import { readUserCustomRules, type UserCustomRules } from './custom-rules';
+import { readUserOperators } from './operators';
+import type { NodeOperator } from '../../core';
 import { refreshSource, type Fetcher, type RefreshOptions } from './refresh-sources';
 import { mergeUserInfo, rawTrafficInfoFromCache, type SubscriptionUserInfo } from './userinfo';
 import { findUserByToken, rotateUserToken } from './user-token';
@@ -246,6 +248,8 @@ export interface UserCenterData {
   profile: UserCenterProfileInfo;
   /** The user's own extra Clash rules (mihomo/clash exports only). */
   customRules: UserCustomRules;
+  /** The user's node operator pipeline (applies to every export target). */
+  operators: NodeOperator[];
   traffic: {
     summary: UserCenterTrafficSummary;
     sources: UserCenterTrafficSource[];
@@ -616,6 +620,7 @@ export function loadUserCenterData(
     user: { name: user.name, note: user.note ?? null, enabled: true, token: user.token },
     profile: loadProfileInfo(db, user),
     customRules: readUserCustomRules(user),
+    operators: readUserOperators(user).operators,
     traffic: { summary: summarizeTraffic(cards, dedicated.length), sources: cards },
     ownSources: dedicated.map(toOwnSource),
     availableSources: listAvailableSources(db, user.id),

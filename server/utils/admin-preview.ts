@@ -19,6 +19,7 @@ import { eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { users } from '../db/schema';
 import {
+  applyStoredOperators,
   collectUserNodes,
   loadUserProfile,
   renderTargetBody,
@@ -119,7 +120,12 @@ export async function previewSubscription(
     undefined,
     overrideProfileId,
   );
-  const rendered = renderTargetBody(target, loaded?.nodes ?? nodes, {}, loaded?.profile ?? null);
+  const rendered = renderTargetBody(
+    target,
+    loaded?.nodes ?? applyStoredOperators(db, user.id, nodes),
+    {},
+    loaded?.profile ?? null,
+  );
   const { body: text, truncated } = truncateBody(rendered);
 
   return {

@@ -46,6 +46,8 @@ import userRefreshHandler from '../server/api/user/[token]/refresh.post';
 import userSourcesRefreshHandler from '../server/api/user/[token]/refresh-sources.post';
 import userCustomTokenHandler from '../server/api/user/[token]/token.put';
 import userCustomRulesHandler from '../server/api/user/[token]/rules.put';
+import userOperatorsHandler from '../server/api/user/[token]/operators.put';
+import userOperatorsPreviewHandler from '../server/api/user/[token]/operators/preview.post';
 import { handleSubscriptionExport, resetExportRateLimiter } from '../server/utils/subscription';
 import { requestFromEvent } from '../server/utils/export-handler';
 import { hashPassword } from '../server/utils/user-password';
@@ -917,5 +919,68 @@ describe('custom rules (PUT /api/user/:token/rules)', () => {
     const cleared = await putRules(ALICE_TOKEN, { rules: '' });
     expect(cleared.status).toBe(200);
     expect(cleared.body).toMatchObject({ customRules: { text: '', count: 0 } });
+  });
+});
+
+describe('operators (PUT /api/user/:token/operators + preview)', () => {
+  const GROUP = '🚀 节点选择';
+  const putOps = (token: string, body: unknown, behavior: { session?: boolean } = {}) =>
+    call(userOperatorsHandler, { path: `/api/user/${token}/operators`, method: 'PUT', body }, behavior);
+  const previewOps = (token: string, body: unknown) =>
+    call(userOperatorsPreviewHandler, { path: `/api/user/${token}/operators/preview`, method: 'POST', body });
+
+  function assignProfile() {
+    const profile = db
+      .insert(profiles)
+      .values({
+        name: 'ops-profile',
+        iniText: ['[custom]', `custom_proxy_group=${GROUP}\`select\`.*`, `ruleset=${GROUP},[]MATCH`].join('\n'),
+      })
+      .returning({ id: profiles.id })
+      .get()!;
+    db.update(users).set({ profileId: profile.id }).where(eq(users.id, aliceId)).run();
+  }
+
+  it('is behind the password gate', async () => {
+    const locked = await putOps(ALICE_TOKEN, { operators: [] }, { session: false });
+    expect(locked.status).toBe(401);
+  });
+
+  it('saves a validated pipeline and the read payload carries it', async () => {
+    assignProfile();
+    const saved = await putOps(ALICE_TOKEN, {
+      operators: [{ type: 'regex-filter', pattern: 'PUBLIC', mode: 'drop' }],
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body).toMatchObject({ count: 1 });
+    const data = ready(await read());
+    expect(data.operators).toEqual([{ type: 'regex-filter', pattern: 'PUBLIC', mode: 'drop' }]);
+    // The export itself drops the public node now.
+    const exported = await exportProxyNames(ALICE_TOKEN);
+    expect(exported).not.toContain(NODE_PUBLIC);
+    expect(exported).toContain(NODE_ALICE);
+  });
+
+  it('rejects an uncompilable regex with a 400 naming the operator', async () => {
+    const bad = await putOps(ALICE_TOKEN, {
+      operators: [{ type: 'sort', mode: 'name-asc' }, { type: 'regex-filter', pattern: '(', mode: 'drop' }],
+    });
+    expect(bad.status).toBe(400);
+    expect(String((bad.body as { error?: string }).error)).toContain('第 2 个算子');
+  });
+
+  it('the dry-run reports the effect without persisting anything', async () => {
+    assignProfile();
+    const result = await previewOps(ALICE_TOKEN, {
+      operators: [{ type: 'regex-filter', pattern: 'PUBLIC', mode: 'drop' }],
+    });
+    expect(result.status).toBe(200);
+    const preview = (result.body as { preview: { beforeNames: string[]; afterNames: string[]; droppedNames: string[]; groups: string[] } }).preview;
+    expect(preview.beforeNames).toContain(NODE_PUBLIC);
+    expect(preview.afterNames).not.toContain(NODE_PUBLIC);
+    expect(preview.droppedNames).toEqual([NODE_PUBLIC]);
+    expect(preview.groups).toEqual([GROUP]);
+    const row = db.select().from(users).where(eq(users.id, aliceId)).get()!;
+    expect(row.operators).toBeNull();
   });
 });

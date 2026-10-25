@@ -67,6 +67,31 @@ const editingId = ref<number | null>(null);
 const formOpen = ref(false);
 const form = ref<UserForm>(emptyUserForm());
 
+/** Operator count of the user being edited (the pipeline itself lives in /my). */
+const editingOperatorsCount = computed(
+  () => users.value.find((user) => user.id === editingId.value)?.operatorsCount ?? 0,
+);
+
+/** Clear a user's operator pipeline at once (PATCH operators: []). */
+function askClearOperators() {
+  const user = users.value.find((entry) => entry.id === editingId.value);
+  if (!user || user.operatorsCount === 0) return;
+  dialog.warning({
+    title: '清空节点处理管线',
+    content: `确定要清空「${user.name}」的全部 ${user.operatorsCount} 个算子吗？清空后其导出恢复为未处理状态。`,
+    positiveText: '确认清空',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await patchUser(user, { operators: [] });
+        message.success(`「${user.name}」的节点处理管线已清空`);
+      } catch (err) {
+        message.error(apiErrorMessage(err));
+      }
+    },
+  });
+}
+
 const copiedToken = ref('');
 
 const origin = ref('');
@@ -502,6 +527,23 @@ onMounted(() => {
             :disabled="saving"
           />
         </n-form-item>
+        <n-form-item label="节点处理管线" :show-feedback="false">
+          <div class="ops-admin-row">
+            <span class="muted">
+              已配置 {{ editingOperatorsCount }} 个算子（在用户自己的 /my 里编辑）
+            </span>
+            <n-button
+              v-if="editingOperatorsCount > 0"
+              size="small"
+              secondary
+              type="error"
+              :disabled="saving"
+              @click="askClearOperators"
+            >
+              清空管线
+            </n-button>
+          </div>
+        </n-form-item>
       </template>
       <div class="actions">
         <n-button type="primary" attr-type="submit" :loading="saving">
@@ -684,6 +726,11 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.ops-admin-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 .entity-layout {
   display: grid;
   grid-template-columns: minmax(14rem, 1fr) minmax(0, 2fr) auto;
