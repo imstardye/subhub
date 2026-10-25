@@ -714,6 +714,9 @@ useHead({ title: '我的订阅 · subhub' });
               {{ copied === 'active' ? '已复制' : '复制' }}
             </n-button>
           </div>
+          <p class="hint tiny link-hint">
+            切换规则档只改变上面的链接，不会修改账号默认规则档。Token：{{ maskUserToken(center.user.token) }}
+          </p>
           </div>
           <div v-if="qrSvg" class="links-qr">
             <div class="qr" :aria-label="`${activeTargetLabel || '主'}链接二维码`">
@@ -722,10 +725,6 @@ useHead({ title: '我的订阅 · subhub' });
             </div>
           </div>
         </div>
-
-          <p class="hint tiny">
-            切换规则档只改变上面的链接，不会修改账号默认规则档。Token：{{ maskUserToken(center.user.token) }}
-          </p>
         </n-card>
 
       <div class="lower-grid">
@@ -1286,6 +1285,12 @@ useHead({ title: '我的订阅 · subhub' });
 .links-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.link-hint {
+  margin: auto 0 0;
+  padding-top: 14px;
 }
 .links-qr {
   flex: none;
