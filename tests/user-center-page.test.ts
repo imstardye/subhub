@@ -15,6 +15,8 @@ import {
   TARGET_LABELS,
   URL_WRITE_ONLY_HINT,
   applyInclusion,
+  applySourceDelete,
+  deleteSourceConfirmText,
   editFormFromSource,
   formatBytes,
   formatExpire,
@@ -62,6 +64,7 @@ function payload(overrides: Partial<UserCenterData> = {}): UserCenterData {
         used: null,
         remaining: null,
         expire: null,
+        expireText: null,
         sourcesWithUserinfo: 0,
         dedicatedCount: 0,
       },
@@ -213,6 +216,9 @@ describe('traffic presentation', () => {
       health: { state: 'failed', error: 'HTTP 502', lastOkAt: '2026-10-24T09:00:00Z' },
       userinfo: null,
       userinfoRefreshedAt: null,
+      remaining: null,
+      expireText: null,
+      rawFields: [],
     };
     expect(trafficCard(card)).toMatchObject({
       name: '机场 A',
@@ -385,5 +391,83 @@ describe('page SFC wiring', () => {
       (name) => new RegExp(`\\b${name}\\b`).test(vue) && !imported.has(name),
     );
     expect(missing).toEqual([]);
+  });
+});
+
+describe('raw subscription info on the cards', () => {
+  const GB = 1024 ** 3;
+  const card: UserCenterTrafficSource = {
+    id: 7,
+    name: 'xxcloud',
+    enabled: true,
+    health: { state: 'ok', error: null, lastOkAt: null },
+    userinfo: { upload: null, download: null, total: 1024 * GB, expire: null },
+    userinfoRefreshedAt: null,
+    remaining: Math.round(579.45 * GB),
+    expireText: '长期有效',
+    rawFields: ['remaining', 'expire'],
+  };
+
+  it('shows the subscription’s own remaining/expiry and 已用 = 总量 − 剩余', () => {
+    const view = trafficCard(card);
+    expect(view).toMatchObject({ empty: false, totalLabel: '1.00 TB', remainingLabel: '579 GB', expireLabel: '长期有效' });
+    expect(view.usedLabel).not.toBe('—');
+    expect(view.rawFields).toEqual(['remaining', 'expire']);
+  });
+
+  it('shows a lone reported remaining even without any header numbers', () => {
+    const view = trafficCard({ ...card, userinfo: null });
+    expect(view).toMatchObject({ empty: false, usedLabel: '—', totalLabel: '—', remainingLabel: '579 GB' });
+  });
+
+  it('is empty only when nothing at all was reported', () => {
+    expect(trafficCard({ ...card, userinfo: null, remaining: null, expireText: null, rawFields: [] })).toMatchObject({
+      empty: true,
+      remainingLabel: '—',
+      expireLabel: '—',
+    });
+  });
+
+  it('the summary header uses the same figures', () => {
+    const bar = summaryBar({
+      upload: null,
+      download: null,
+      total: 1024 * GB,
+      used: 444,
+      remaining: Math.round(579.45 * GB),
+      expire: null,
+      expireText: '长期有效',
+      sourcesWithUserinfo: 1,
+      dedicatedCount: 1,
+    });
+    expect(bar).toMatchObject({ remainingLabel: '579 GB', expireLabel: '长期有效', usedLabel: '444 B' });
+  });
+});
+
+describe('delete own source', () => {
+  it('spells the source name out in the confirmation', () => {
+    expect(deleteSourceConfirmText('xxcloud')).toContain('「xxcloud」');
+    expect(deleteSourceConfirmText('xxcloud')).toContain('确定删除');
+  });
+
+  it('removes the source from both lists locally', () => {
+    const data = payload({
+      ownSources: [
+        { id: 1, name: 'a', enabled: true, userAgent: null, health: { state: 'ok', error: null, lastOkAt: null }, nodeCount: 1, hasCache: true },
+        { id: 2, name: 'b', enabled: true, userAgent: null, health: { state: 'ok', error: null, lastOkAt: null }, nodeCount: 1, hasCache: true },
+      ],
+      traffic: {
+        summary: payload().traffic.summary,
+        sources: [
+          { id: 1, name: 'a', enabled: true, health: { state: 'ok', error: null, lastOkAt: null }, userinfo: null, userinfoRefreshedAt: null, remaining: null, expireText: null, rawFields: [] },
+          { id: 2, name: 'b', enabled: true, health: { state: 'ok', error: null, lastOkAt: null }, userinfo: null, userinfoRefreshedAt: null, remaining: null, expireText: null, rawFields: [] },
+        ],
+      },
+    });
+    const next = applySourceDelete(data, 1);
+    expect(next.ownSources.map((source) => source.id)).toEqual([2]);
+    expect(next.trafficSources.map((source) => source.id)).toEqual([2]);
+    // Pure: the input payload is untouched.
+    expect(data.ownSources).toHaveLength(2);
   });
 });

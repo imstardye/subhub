@@ -193,48 +193,88 @@ export function trafficBar(info: {
   download: number | null;
   total: number | null;
   expire: number | null;
-} | null): TrafficBar {
+} | null, options: {
+  /** Remaining reported by the subscription itself (header or info node). */
+  remaining?: number | null;
+  /** 套餐到期 wording when it is not a date (`长期有效`). */
+  expireText?: string | null;
+  /** 已用 already computed by the server (summary), instead of upload+download. */
+  used?: number | null;
+} = {}): TrafficBar {
+  const reportedRemaining =
+    options.remaining === null || options.remaining === undefined ? null : Math.max(0, options.remaining);
   if (!info) {
+    // No header numbers at all, but the subscription's own node reported how
+    // much is left: show that one figure instead of 暂无流量数据.
+    if (reportedRemaining === null && !options.expireText) {
+      return {
+        used: null,
+        total: null,
+        remaining: null,
+        percent: null,
+        empty: true,
+        usedLabel: '—',
+        totalLabel: '—',
+        remainingLabel: '—',
+        expireLabel: '—',
+      };
+    }
     return {
       used: null,
       total: null,
-      remaining: null,
+      remaining: reportedRemaining,
       percent: null,
-      empty: true,
+      empty: false,
       usedLabel: '—',
       totalLabel: '—',
-      remainingLabel: '—',
-      expireLabel: '—',
+      remainingLabel: formatBytes(reportedRemaining),
+      expireLabel: options.expireText || '—',
     };
   }
-  const used = info.upload === null && info.download === null ? null : (info.upload ?? 0) + (info.download ?? 0);
+  const used =
+    options.used !== null && options.used !== undefined
+      ? options.used
+      : info.upload === null && info.download === null
+        ? null
+        : (info.upload ?? 0) + (info.download ?? 0);
   const total = info.total;
-  const remaining = total !== null && used !== null ? Math.max(0, total - used) : total;
-  const percent = total !== null && total > 0 && used !== null
-    ? Math.min(100, Math.max(0, (used / total) * 100))
+  // The subscription's own "remaining" is used as is; `total - used` is only the
+  // derived fallback. An unknown total with a known remaining still shows it.
+  const remaining =
+    reportedRemaining ?? (total !== null && used !== null ? Math.max(0, total - used) : null);
+  // 已用 = 总量 − 剩余 when the total and the remaining are both known (a total
+  // from the header plus a remaining from an info node is fine); otherwise the
+  // upload+download sum, else unknown. Never invented.
+  const derivedUsed =
+    used ?? (total !== null && remaining !== null ? Math.max(0, total - remaining) : null);
+  const percent = total !== null && total > 0 && derivedUsed !== null
+    ? Math.min(100, Math.max(0, (derivedUsed / total) * 100))
     : null;
   return {
-    used,
+    used: derivedUsed,
     total,
     remaining,
     percent,
     empty: false,
-    usedLabel: formatBytes(used),
+    usedLabel: formatBytes(derivedUsed),
     totalLabel: formatBytes(total),
     remainingLabel: formatBytes(remaining),
-    expireLabel: formatExpire(info.expire),
+    expireLabel: options.expireText || formatExpire(info.expire),
   };
 }
 
 /** Summary header of the traffic section (dedicated sources only). */
 export function summaryBar(summary: UserCenterTrafficSummary | null | undefined): TrafficBar {
   if (!summary || summary.sourcesWithUserinfo === 0) return trafficBar(null);
-  return trafficBar({
-    upload: summary.upload,
-    download: summary.download,
-    total: summary.total,
-    expire: summary.expire === null ? null : summary.expire,
-  });
+  return trafficBar(
+    {
+      upload: summary.upload,
+      download: summary.download,
+      total: summary.total,
+      expire: summary.expire === null ? null : summary.expire,
+    },
+    { remaining: summary.remaining, expireText: summary.expireText ?? null, used: summary.used },
+  );
 }
 
 /** What a dedicated card shows: numbers, or 暂无流量数据 when it has none. */
@@ -244,8 +284,13 @@ export function trafficCard(card: UserCenterTrafficSource): TrafficBar & {
   healthError: string | null;
   healthState: 'ok' | 'failed' | 'never';
   lastRefresh: string;
+  /** Which fields are the subscription's own report (not the header). */
+  rawFields: Array<'remaining' | 'expire'>;
 } {
-  const bar = trafficBar(card.userinfo);
+  const bar = trafficBar(card.userinfo, {
+    remaining: card.remaining ?? null,
+    expireText: card.expireText ?? null,
+  });
   return {
     ...bar,
     name: card.name,
@@ -253,6 +298,7 @@ export function trafficCard(card: UserCenterTrafficSource): TrafficBar & {
     healthError: card.health.error,
     healthState: card.health.state,
     lastRefresh: lastRefreshLabel(card.health.lastOkAt),
+    rawFields: card.rawFields ?? [],
   };
 }
 
@@ -298,6 +344,26 @@ export function ownSourceStats(own: readonly UserCenterOwnSource[]): {
     nodes += source.nodeCount ?? 0;
   }
   return { total: own.length, healthy, failing, nodes };
+}
+
+/** Confirmation text before deleting an own source (the name must be visible). */
+export function deleteSourceConfirmText(name: string): string {
+  return `确定删除订阅源「${name}」吗？删除后其订阅链接将不再包含该源，且无法恢复。`;
+}
+
+/**
+ * Apply a successful delete locally: drop the source from every list the page
+ * keeps, so the cards and the traffic summary update without waiting for a
+ * refetch (the page also refreshes from the server afterwards).
+ */
+export function applySourceDelete(data: UserCenterData, sourceId: number): {
+  ownSources: UserCenterOwnSource[];
+  trafficSources: UserCenterTrafficSource[];
+} {
+  return {
+    ownSources: data.ownSources.filter((source) => source.id !== sourceId),
+    trafficSources: data.traffic.sources.filter((source) => source.id !== sourceId),
+  };
 }
 
 /** Payload for `PATCH /api/user/:token/sources/:id` (URL only when non-empty). */

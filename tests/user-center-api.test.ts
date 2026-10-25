@@ -40,6 +40,7 @@ import { resolveSubPrefix } from '../server/utils/sub-prefix';
 import userCenterReadHandler from '../server/api/user/[token].get';
 import userSourceCreateHandler from '../server/api/user/[token]/sources/index.post';
 import userSourceUpdateHandler from '../server/api/user/[token]/sources/[id].patch';
+import userSourceDeleteHandler from '../server/api/user/[token]/sources/[id].delete';
 import userChoiceHandler from '../server/api/user/[token]/choices.post';
 import userRefreshHandler from '../server/api/user/[token]/refresh.post';
 import { handleSubscriptionExport, resetExportRateLimiter } from '../server/utils/subscription';
@@ -188,6 +189,9 @@ const createSource = (token: string, body: unknown) =>
 
 const patchSource = (token: string, id: number | string, body: unknown) =>
   call(userSourceUpdateHandler, { path: `/api/user/${token}/sources/${id}`, method: 'PATCH', body });
+
+const deleteSource = (token: string, id: number | string) =>
+  call(userSourceDeleteHandler, { path: `/api/user/${token}/sources/${id}`, method: 'DELETE' });
 
 const choose = (token: string, body: unknown) =>
   call(userChoiceHandler, { path: `/api/user/${token}/choices`, method: 'POST', body });
@@ -612,5 +616,70 @@ describe('profile data for the link switcher', () => {
     // Reading (and the page's switcher, which is pure) never touches the row.
     expect(ready(await read()).profile.assignedProfile).toBe('v2');
     expect(db.select({ profileId: users.profileId }).from(users).where(eq(users.id, aliceId)).get()!.profileId).toBe(assignedId);
+  });
+});
+
+describe('DELETE /api/user/:token/sources/:id — delete an own dedicated source', () => {
+  it('deletes the token owner’s own source and cascades its related rows', async () => {
+    // Related rows that must not survive the source.
+    db.insert(sourceAllowedUsers).values({ sourceId: aliceSourceId, userId: bobId }).run();
+    db.insert(userSourceChoices).values({ userId: aliceId, sourceId: aliceSourceId, included: false }).run();
+
+    const result = await deleteSource(ALICE_TOKEN, aliceSourceId);
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ ok: true, id: aliceSourceId, name: 'alice-own' });
+    // The URL never comes back (write-only rule), not even masked.
+    expect(result.json).not.toContain('alice-provider.example.com');
+    expect(result.json).not.toContain('alice-secret-123');
+
+    expect(db.select().from(sources).where(eq(sources.id, aliceSourceId)).get()).toBeUndefined();
+    expect(db.select().from(sourceAllowedUsers).where(eq(sourceAllowedUsers.sourceId, aliceSourceId)).all()).toEqual([]);
+    expect(db.select().from(userSourceChoices).where(eq(userSourceChoices.sourceId, aliceSourceId)).all()).toEqual([]);
+
+    // Gone from the page payload and from every export.
+    const data = ready(await read());
+    expect(data.ownSources.map((item) => item.id)).not.toContain(aliceSourceId);
+    expect(data.traffic.sources.map((card) => card.id)).not.toContain(aliceSourceId);
+    expect(await exportProxyNames(ALICE_TOKEN)).not.toContain(NODE_ALICE);
+    // Bob and the public/shared sources are untouched.
+    expect(db.select().from(sources).where(eq(sources.id, bomOnlySourceId)).get()).toBeDefined();
+    expect(db.select().from(sources).where(eq(sources.id, publicSourceId)).get()).toBeDefined();
+  });
+
+  it('refuses another user’s source, a public/shared source and an unknown id', async () => {
+    const before = db.select().from(sources).all().length;
+    const attempts: Array<[string, number | string]> = [
+      [ALICE_TOKEN, bomOnlySourceId], // Bob's dedicated source
+      [ALICE_TOKEN, publicSourceId], // public
+      [ALICE_TOKEN, sharedSourceId], // shared (Alice is allowlisted, still not hers)
+      [ALICE_TOKEN, 999_999], // unknown
+      [ALICE_TOKEN, 'abc'], // malformed
+    ];
+    for (const [token, id] of attempts) {
+      const result = await deleteSource(token, id);
+      expect(result.status).toBe(404);
+      expect(result.body).toEqual({ error: 'source not found' });
+    }
+    // Nothing was removed by any refused attempt.
+    expect(db.select().from(sources).all().length).toBe(before);
+    expect(db.select({ id: sources.id }).from(sources).where(eq(sources.id, bomOnlySourceId)).get()).toBeDefined();
+  });
+
+  it('answers 404 for an unknown/empty token and 403 for a disabled user', async () => {
+    for (const token of ['f'.repeat(32), '']) {
+      const result = await deleteSource(token, aliceSourceId);
+      expect(result.status).toBe(404);
+      // A missing token with an *existing* id must not leak that the id exists.
+      expect(result.body).toEqual({ error: 'not found' });
+    }
+    expect((await deleteSource(DISABLED_TOKEN, aliceSourceId)).status).toBe(403);
+    expect(db.select().from(sources).where(eq(sources.id, aliceSourceId)).get()).toBeDefined();
+  });
+
+  it('is idempotent-once: the second delete of the same id is a 404', async () => {
+    expect((await deleteSource(ALICE_TOKEN, aliceSourceId)).status).toBe(200);
+    const again = await deleteSource(ALICE_TOKEN, aliceSourceId);
+    expect(again.status).toBe(404);
+    expect(again.body).toEqual({ error: 'source not found' });
   });
 });
