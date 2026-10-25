@@ -15,6 +15,7 @@ definePageMeta({ layout: 'admin' });
 
 import type { AdminProfile } from '~/server/utils/admin-profiles';
 import type { AdminUser } from '~/server/utils/admin-users';
+import { NAlert, NButton, NCard, NEmpty, NForm, NFormItem, NIcon, NInput, NSelect, NSpin, NTag, useDialog, useMessage } from 'naive-ui';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import { profileUsers, truncate } from '~/core/utils/admin-ui';
 import type { ProfileVariant } from '~/server/utils/admin-validation';
@@ -35,18 +36,22 @@ const users = ref<AdminUser[]>([]);
 const loading = ref(false);
 const saving = ref(false);
 const busyId = ref<number | null>(null);
-const error = ref('');
-const notice = ref('');
+const loadError = ref('');
+const message = useMessage();
+const dialog = useDialog();
 
 const editingId = ref<number | null>(null);
 const formOpen = ref(false);
 const form = ref<ProfileForm>(emptyForm());
 
-const deleting = ref<AdminProfile | null>(null);
-
 function emptyForm(): ProfileForm {
   return { name: '', iniUrl: '', iniText: '', variant: 'mihomo', dnsTemplate: '', options: '' };
 }
+
+const variantOptions = [
+  { label: 'mihomo', value: 'mihomo' },
+  { label: 'legacy（老 Clash）', value: 'legacy' },
+];
 
 function usersOf(profile: AdminProfile): Array<Pick<AdminUser, 'id' | 'name' | 'profileId'>> {
   return profileUsers(users.value, profile.id);
@@ -89,12 +94,12 @@ async function loadUsers() {
 
 async function load() {
   loading.value = true;
-  error.value = '';
+  loadError.value = '';
   try {
     const res = await $fetch<{ items: AdminProfile[] }>('/api/admin/profiles');
     profiles.value = res.items;
   } catch (err) {
-    error.value = apiErrorMessage(err);
+    loadError.value = apiErrorMessage(err);
   } finally {
     loading.value = false;
   }
@@ -105,8 +110,6 @@ function openCreate() {
   editingId.value = null;
   form.value = emptyForm();
   formOpen.value = true;
-  error.value = '';
-  notice.value = '';
   if (import.meta.client) {
     nextTick(() => {
       document.getElementById('profile-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -125,8 +128,6 @@ function openEdit(profile: AdminProfile) {
     options: optionsText(profile),
   };
   formOpen.value = true;
-  error.value = '';
-  notice.value = '';
   if (import.meta.client) {
     nextTick(() => {
       document.getElementById('profile-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -142,21 +143,19 @@ function closeForm() {
 
 async function submitForm() {
   if (saving.value) return;
-  error.value = '';
-  notice.value = '';
   const name = form.value.name.trim();
   const iniUrl = form.value.iniUrl.trim();
   const iniText = form.value.iniText;
   if (!name) {
-    error.value = '请填写名称';
+    message.error('请填写名称');
     return;
   }
   if (!iniUrl && !iniText.trim()) {
-    error.value = 'iniUrl 与 iniText 至少填写一个';
+    message.error('iniUrl 与 iniText 至少填写一个');
     return;
   }
   if (iniUrl && !validUrl(iniUrl)) {
-    error.value = 'iniUrl 必须是 http 或 https 地址';
+    message.error('iniUrl 必须是 http 或 https 地址');
     return;
   }
   const options = form.value.options.trim();
@@ -164,11 +163,11 @@ async function submitForm() {
     try {
       const parsed: unknown = JSON.parse(options);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        error.value = 'options 必须是 JSON 对象';
+        message.error('options 必须是 JSON 对象');
         return;
       }
     } catch {
-      error.value = 'options 不是合法的 JSON';
+      message.error('options 不是合法的 JSON');
       return;
     }
   }
@@ -190,41 +189,47 @@ async function submitForm() {
         body,
       });
       profiles.value = [...profiles.value, res.item];
-      notice.value = '规则档已创建';
+      message.success('规则档已创建');
     } else {
       const res = await $fetch<{ item: AdminProfile }>(`/api/admin/profiles/${editingId.value}`, {
         method: 'PATCH',
         body,
       });
       profiles.value = profiles.value.map((p) => (p.id === res.item.id ? res.item : p));
-      notice.value = '规则档已更新';
+      message.success('规则档已更新');
     }
     closeForm();
   } catch (err) {
-    error.value = apiErrorMessage(err);
+    message.error(apiErrorMessage(err));
   } finally {
     saving.value = false;
   }
 }
 
-async function confirmDelete() {
-  const profile = deleting.value;
-  if (!profile || busyId.value !== null) return;
+async function confirmDelete(profile: AdminProfile) {
+  if (busyId.value !== null) return;
   busyId.value = profile.id;
-  error.value = '';
-  notice.value = '';
   try {
     await $fetch(`/api/admin/profiles/${profile.id}`, { method: 'DELETE' });
     profiles.value = profiles.value.filter((p) => p.id !== profile.id);
-    notice.value = `已删除规则档「${profile.name}」`;
+    message.success(`已删除规则档「${profile.name}」`);
     if (editingId.value === profile.id) closeForm();
-    deleting.value = null;
     await loadUsers();
   } catch (err) {
-    error.value = apiErrorMessage(err);
+    message.error(apiErrorMessage(err));
   } finally {
     busyId.value = null;
   }
+}
+
+function askDelete(profile: AdminProfile) {
+  dialog.warning({
+    title: '删除规则档',
+    content: `确定删除「${profile.name}」？引用该规则档的用户将回退到默认规则。`,
+    positiveText: '确认删除',
+    negativeText: '取消',
+    onPositiveClick: () => confirmDelete(profile),
+  });
 }
 
 onMounted(() => {
@@ -236,107 +241,101 @@ onMounted(() => {
 <template>
   <section class="page">
     <PageTopbar title="规则档" subtitle="规则 INI 与变体，以及被哪些用户使用">
-      <button class="primary" type="button" @click="openCreate">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M12 5v14" />
-          <path d="M5 12h14" />
-        </svg>
+      <n-button type="primary" @click="openCreate">
+        <template #icon>
+          <n-icon><NavIcon name="plus" /></n-icon>
+        </template>
         新建规则档
-      </button>
+      </n-button>
     </PageTopbar>
 
-    <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <p v-if="notice" class="notice">{{ notice }}</p>
+    <n-alert v-if="loadError" type="error" :bordered="false" role="alert">{{ loadError }}</n-alert>
 
-    <form
+    <n-form
       v-if="formOpen"
       id="profile-form"
       class="card form"
       @submit.prevent="submitForm"
     >
       <h2>{{ editingId === null ? '新建规则档' : `编辑规则档「${profiles.find((p) => p.id === editingId)?.name ?? ''}」` }}</h2>
-      <label>
-        名称
-        <input
-          v-model="form.name"
-          type="text"
+      <n-form-item label="名称" :show-feedback="false">
+        <n-input
+          v-model:value="form.name"
           maxlength="100"
-          required
           autocomplete="off"
+          :input-props="{ required: true }"
           :disabled="saving"
-        >
-      </label>
-      <label>
-        INI URL（可选）
-        <input
-          v-model="form.iniUrl"
-          type="url"
+        />
+      </n-form-item>
+      <n-form-item label="INI URL（可选）" :show-feedback="false">
+        <n-input
+          v-model:value="form.iniUrl"
+          type="text"
           inputmode="url"
           autocomplete="off"
           placeholder="https://example.com/rules.ini"
           :disabled="saving"
-        >
-      </label>
-      <label>
-        INI 内容（可选）
-        <textarea
-          v-model="form.iniText"
+        />
+      </n-form-item>
+      <n-form-item label="INI 内容（可选）" :show-feedback="false">
+        <n-input
+          v-model:value="form.iniText"
           class="mono-input"
-          rows="6"
+          type="textarea"
+          :autosize="{ minRows: 6, maxRows: 14 }"
           spellcheck="false"
           placeholder="[custom_proxy_group]&#10;…"
           :disabled="saving"
         />
-      </label>
+      </n-form-item>
       <p class="hint">INI URL 与 INI 内容至少填写一项。</p>
-      <label>
-        变体
-        <select v-model="form.variant" :disabled="saving">
-          <option value="mihomo">mihomo</option>
-          <option value="legacy">legacy（老 Clash）</option>
-        </select>
-      </label>
-      <label>
-        DNS 模板（可选）
-        <textarea v-model="form.dnsTemplate" class="mono-input" rows="3" :disabled="saving" />
-      </label>
-      <label>
-        options（JSON 对象，可选）
-        <textarea
-          v-model="form.options"
+      <n-form-item label="变体" :show-feedback="false">
+        <n-select v-model:value="form.variant" :options="variantOptions" :disabled="saving" />
+      </n-form-item>
+      <n-form-item label="DNS 模板（可选）" :show-feedback="false">
+        <n-input
+          v-model:value="form.dnsTemplate"
           class="mono-input"
-          rows="3"
+          type="textarea"
+          :autosize="{ minRows: 3, maxRows: 10 }"
+          :disabled="saving"
+        />
+      </n-form-item>
+      <n-form-item label="options（JSON 对象，可选）" :show-feedback="false">
+        <n-input
+          v-model:value="form.options"
+          class="mono-input"
+          type="textarea"
+          :autosize="{ minRows: 3, maxRows: 10 }"
           spellcheck="false"
           placeholder='{ "ruleProviderCache": true }'
           :disabled="saving"
         />
-      </label>
+      </n-form-item>
       <div class="actions">
-        <button class="primary" type="submit" :disabled="saving">
+        <n-button type="primary" attr-type="submit" :loading="saving">
           {{ saving ? '保存中…' : '保存' }}
-        </button>
-        <button type="button" :disabled="saving" @click="closeForm">取消</button>
+        </n-button>
+        <n-button :disabled="saving" @click="closeForm">取消</n-button>
       </div>
-    </form>
+    </n-form>
 
-    <p v-if="loading" class="muted empty">加载中…</p>
-    <p v-else-if="profiles.length === 0" class="muted empty">
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="m12 2 9 5-9 5-9-5 9-5Z" />
-        <path d="m3 12 9 5 9-5" />
-        <path d="m3 17 9 5 9-5" />
-      </svg>
-      暂无规则档，点击右上角「新建规则档」开始。
-    </p>
+    <div v-if="loading" class="empty">
+      <n-spin size="small" />
+      <span class="muted">加载中…</span>
+    </div>
+    <n-empty v-else-if="profiles.length === 0" description="暂无规则档，点击右上角「新建规则档」开始。" class="empty" />
 
     <div v-else class="card-grid">
-      <article v-for="profile in profiles" :key="profile.id" class="card profile">
-        <div class="card-head">
-          <h2 :title="profile.name">{{ profile.name }}</h2>
-          <span :class="['badge', profile.variant === 'mihomo' ? 'on' : 'off']">
+      <n-card v-for="profile in profiles" :key="profile.id" class="profile">
+        <template #header>
+          <span class="profile-name" :title="profile.name">{{ profile.name }}</span>
+        </template>
+        <template #header-extra>
+          <n-tag size="small" round :type="profile.variant === 'mihomo' ? 'success' : 'default'">
             {{ profile.variant }}
-          </span>
-        </div>
+          </n-tag>
+        </template>
 
         <dl class="facts">
           <div>
@@ -365,49 +364,43 @@ onMounted(() => {
         </dl>
 
         <div class="entity-actions">
-          <button type="button" class="small" :disabled="busyId !== null" @click="openEdit(profile)">
+          <n-button size="small" secondary :disabled="busyId !== null" @click="openEdit(profile)">
             编辑
-          </button>
-          <button
-            type="button"
-            class="small danger"
+          </n-button>
+          <n-button
+            size="small"
+            secondary
+            type="error"
             :disabled="busyId !== null"
-            @click="deleting = profile"
+            @click="askDelete(profile)"
           >
             删除
-          </button>
+          </n-button>
         </div>
-      </article>
-    </div>
-
-    <div v-if="deleting" class="overlay" role="dialog" aria-modal="true" aria-labelledby="delete-profile-title">
-      <div class="card dialog">
-        <h2 id="delete-profile-title">删除规则档</h2>
-        <p>确定删除「{{ deleting.name }}」？引用该规则档的用户将回退到默认规则。</p>
-        <div class="actions">
-          <button class="danger" type="button" :disabled="busyId !== null" @click="confirmDelete">
-            {{ busyId === deleting.id ? '删除中…' : '确认删除' }}
-          </button>
-          <button type="button" :disabled="busyId !== null" @click="deleting = null">取消</button>
-        </div>
-      </div>
+      </n-card>
     </div>
   </section>
 </template>
 
 <style scoped>
 .profile {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
   min-width: 0;
 }
 
-.profile .card-head h2 {
+.profile :deep(.n-card__content) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.profile-name {
+  display: block;
   max-width: 16rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: var(--text-md);
+  font-weight: 600;
 }
 
 .facts {
@@ -440,8 +433,21 @@ onMounted(() => {
   word-break: break-word;
 }
 
-.mono-input {
+.entity-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.mono-input :deep(textarea) {
   font-family: var(--font-mono);
+}
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 @media (max-width: 640px) {

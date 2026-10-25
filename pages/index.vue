@@ -23,6 +23,7 @@
  */
 definePageMeta({ layout: 'admin' });
 
+import { NAlert, NButton, NCard, NIcon, NTag } from 'naive-ui';
 import type { AdminStats } from '~/server/utils/admin-stats';
 import type { AdminSource } from '~/server/utils/admin-sources';
 import type { AdminAccessLog } from '~/server/utils/admin-logs';
@@ -51,6 +52,21 @@ const cards: Array<{ key: CardKey; label: string; hint: string; to: string }> = 
   { key: 'profiles', label: '规则档', hint: '管理规则档', to: '/profiles' },
   { key: 'accessLogs24h', label: '24h 访问', hint: '查看访问日志', to: '/logs' },
 ];
+
+function cardIcon(key: CardKey): string {
+  if (key === 'users') return 'users';
+  if (key === 'sources') return 'rss';
+  if (key === 'profiles') return 'layers';
+  return 'list';
+}
+
+function logType(status: number | null): 'success' | 'warning' | 'error' | 'default' {
+  const cls = logStatusClass(status);
+  if (cls.includes('bad')) return 'error';
+  if (cls.includes('warn')) return 'warning';
+  if (cls.includes('on')) return 'success';
+  return 'default';
+}
 
 const quickActions = [
   { label: '新建用户', to: '/users?new=1' },
@@ -156,109 +172,93 @@ onMounted(async () => {
 <template>
   <section class="page">
     <PageTopbar title="仪表盘" subtitle="概览、常见操作与需要关注的订阅源" />
-    <p v-if="error" class="error" role="alert">统计数据加载失败：{{ error }}</p>
+    <n-alert v-if="error" type="error" :bordered="false" role="alert">
+      统计数据加载失败：{{ error }}
+    </n-alert>
 
     <div class="cards">
-      <NuxtLink v-for="card in cards" :key="card.key" class="card stat" :to="card.to">
-        <div class="stat-head">
-          <span class="stat-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <template v-if="card.key === 'users'">
-                <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-                <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-              </template>
-              <template v-else-if="card.key === 'sources'">
-                <path d="M4 11a9 9 0 0 1 9 9" />
-                <path d="M4 4a16 16 0 0 1 16 16" />
-                <circle cx="5" cy="19" r="1" />
-              </template>
-              <template v-else-if="card.key === 'profiles'">
-                <path d="m12 2 9 5-9 5-9-5 9-5Z" />
-                <path d="m3 12 9 5 9-5" />
-                <path d="m3 17 9 5 9-5" />
-              </template>
-              <template v-else>
-                <path d="M3 3v16a2 2 0 0 0 2 2h16" />
-                <path d="m7 15 4-4 3 3 5-6" />
-              </template>
-            </svg>
+      <NuxtLink v-for="card in cards" :key="card.key" class="stat-link" :to="card.to">
+        <n-card class="stat" hoverable>
+          <div class="stat-head">
+            <span class="stat-icon" aria-hidden="true">
+              <NavIcon :name="cardIcon(card.key)" />
+            </span>
+            <span class="label">{{ card.label }}</span>
+          </div>
+          <div class="value">{{ display(card.key) }}</div>
+          <span class="hint">
+            {{ card.hint }}
+            <NavIcon name="chevron-right" />
           </span>
-          <span class="label">{{ card.label }}</span>
-        </div>
-        <div class="value">{{ display(card.key) }}</div>
-        <span class="hint">
-          {{ card.hint }}
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M5 12h14" />
-            <path d="m12 5 7 7-7 7" />
-          </svg>
-        </span>
+        </n-card>
       </NuxtLink>
     </div>
 
     <div class="panels">
-      <section class="card panel">
-        <div class="card-head">
-          <h2>快捷操作</h2>
-        </div>
+      <n-card class="panel" title="快捷操作">
         <div class="quick-actions">
-          <NuxtLink
+          <n-button
             v-for="action in quickActions"
             :key="action.to"
             class="quick-action"
-            :to="action.to"
+            secondary
+            block
+            @click="navigateTo(action.to)"
           >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 5v14" />
-              <path d="M5 12h14" />
-            </svg>
+            <template #icon>
+              <n-icon><NavIcon name="plus" /></n-icon>
+            </template>
             {{ action.label }}
-          </NuxtLink>
+          </n-button>
         </div>
-      </section>
+      </n-card>
 
-      <section class="card panel">
-        <div class="card-head">
-          <h2>
-            源健康
-            <span :class="['chip-count', health.state === 'unhealthy' ? 'chip-bad' : '']">
+      <n-card class="panel">
+        <template #header>
+          <div class="panel-title">
+            <span>源健康</span>
+            <n-tag size="small" :type="health.state === 'unhealthy' ? 'error' : 'default'">
               {{ health.count }}
-            </span>
-          </h2>
+            </n-tag>
+          </div>
+        </template>
+        <template #header-extra>
           <NuxtLink class="sub" to="/sources">全部订阅源 →</NuxtLink>
-        </div>
-        <p v-if="health.state === 'error'" class="error" role="alert">
-          订阅源加载失败：{{ health.error }}
-          <button type="button" class="small retry" @click="retrySources">重试</button>
-        </p>
+        </template>
+        <n-alert v-if="health.state === 'error'" type="error" :bordered="false" role="alert">
+          <div class="alert-row">
+            <span>订阅源加载失败：{{ health.error }}</span>
+            <n-button size="small" secondary @click="retrySources">重试</n-button>
+          </div>
+        </n-alert>
         <p v-else-if="health.state === 'loading'" class="muted sub">正在加载订阅源…</p>
         <p v-else-if="health.state === 'empty'" class="muted sub">暂无订阅源。</p>
         <p v-else-if="health.state === 'healthy'" class="muted sub">所有订阅源状态正常。</p>
         <ul v-else class="health-list">
           <li v-for="source in health.sources" :key="source.id">
-            <span :class="['badge', source.lastError ? 'bad' : 'off']">
+            <n-tag size="small" round :type="source.lastError ? 'error' : 'warning'">
               {{ source.lastError ? '失败' : '未刷新' }}
-            </span>
+            </n-tag>
             <span class="health-name" :title="source.name">{{ source.name }}</span>
             <span class="sub health-detail" :title="source.lastError ?? '尚未成功刷新过'">
               {{ source.lastError ?? '尚未成功刷新过' }}
             </span>
           </li>
         </ul>
-      </section>
+      </n-card>
 
-      <section class="card panel">
-        <div class="card-head">
-          <h2>最近访问</h2>
+      <n-card class="panel">
+        <template #header>最近访问</template>
+        <template #header-extra>
           <NuxtLink class="sub" to="/logs">全部日志 →</NuxtLink>
-        </div>
-        <p v-if="logsError" class="error" role="alert">日志加载失败：{{ logsError }}</p>
+        </template>
+        <n-alert v-if="logsError" type="error" :bordered="false" role="alert">
+          日志加载失败：{{ logsError }}
+        </n-alert>
         <p v-else-if="recent.length === 0" class="muted sub">暂无访问记录。</p>
         <ul v-else class="visit-list">
           <li v-for="log in recent" :key="log.id">
-            <span :class="logStatusClass(log.status)">{{ log.status ?? '—' }}</span>
+            <n-tag size="small" round :type="logType(log.status)">{{ log.status ?? '—' }}</n-tag>
             <span class="visit-user" :title="logUserName(log)">{{ logUserName(log) }}</span>
             <span class="sub visit-target">{{ log.target ?? '—' }}</span>
             <span class="sub visit-time" :title="formatDateTime(log.createdAt)">
@@ -266,7 +266,7 @@ onMounted(async () => {
             </span>
           </li>
         </ul>
-      </section>
+      </n-card>
     </div>
   </section>
 </template>
@@ -278,21 +278,19 @@ onMounted(async () => {
   gap: var(--space-4);
 }
 
-.stat {
+.stat-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.stat-link:hover {
+  color: inherit;
+}
+
+.stat :deep(.n-card__content) {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  color: inherit;
-  text-decoration: none;
-  transition:
-    border-color var(--transition),
-    box-shadow var(--transition);
-}
-
-.stat:hover {
-  border-color: var(--muted-foreground);
-  box-shadow: var(--shadow-md);
-  color: inherit;
 }
 
 .stat-head {
@@ -311,16 +309,6 @@ onMounted(async () => {
   border-radius: var(--radius);
   background: var(--accent-soft);
   color: var(--primary);
-}
-
-.stat-icon svg {
-  width: 1rem;
-  height: 1rem;
-  stroke: currentColor;
-  stroke-width: 1.75;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .label {
@@ -349,23 +337,8 @@ onMounted(async () => {
   color: var(--muted-foreground);
 }
 
-.hint svg {
-  width: 0.85rem;
-  height: 0.85rem;
-  stroke: currentColor;
-  stroke-width: 2;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transition: transform var(--transition-fast);
-}
-
 .stat:hover .hint {
   color: var(--primary);
-}
-
-.stat:hover .hint svg {
-  transform: translateX(2px);
 }
 
 .panels {
@@ -376,19 +349,21 @@ onMounted(async () => {
 }
 
 .panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
   min-width: 0;
 }
 
-.chip-bad {
-  background: var(--destructive-soft);
-  color: var(--destructive);
+.panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
-.retry {
-  margin-left: var(--space-2);
+.alert-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
 
 .quick-actions {
@@ -398,36 +373,7 @@ onMounted(async () => {
 }
 
 .quick-action {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0.55rem var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--card);
-  color: var(--foreground);
-  font-size: var(--text-sm);
-  text-decoration: none;
-  transition:
-    border-color var(--transition-fast),
-    background-color var(--transition-fast),
-    color var(--transition-fast);
-}
-
-.quick-action svg {
-  width: 1rem;
-  height: 1rem;
-  stroke: currentColor;
-  stroke-width: 2;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.quick-action:hover {
-  border-color: var(--primary);
-  background: var(--accent-soft);
-  color: var(--primary);
+  justify-content: flex-start;
 }
 
 .health-list,

@@ -11,6 +11,8 @@
  */
 definePageMeta({ layout: 'admin' });
 
+import { NAlert, NButton, NDataTable, NEmpty, NForm, NFormItem, NIcon, NSelect, NSpin, NTag, type DataTableColumns } from 'naive-ui';
+import { h } from 'vue';
 import type { AdminAccessLog } from '~/server/utils/admin-logs';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import type { AdminUser } from '~/server/utils/admin-users';
@@ -30,7 +32,7 @@ const items = ref<AdminAccessLog[]>([]);
 const total = ref(0);
 const offset = ref(0);
 const loading = ref(false);
-const error = ref('');
+const loadError = ref('');
 const loaded = ref(false);
 
 const filterUserId = ref<string>('');
@@ -58,9 +60,72 @@ async function loadUsers() {
   }
 }
 
+const userOptions = computed(() => [
+  { label: '全部用户', value: '' },
+  ...users.value.map((user) => ({ label: user.name, value: String(user.id) })),
+]);
+
+const statusOptions = STATUS_FILTERS;
+
+function statusType(status: number | null): 'success' | 'warning' | 'error' | 'default' {
+  const cls = logStatusClass(status);
+  if (cls.includes('bad')) return 'error';
+  if (cls.includes('warn')) return 'warning';
+  if (cls.includes('on')) return 'success';
+  return 'default';
+}
+
+const columns = computed<DataTableColumns<AdminAccessLog>>(() => [
+  {
+    title: 'ID',
+    key: 'id',
+    render: (row) => h('span', { class: 'mono cell-muted' }, row.id),
+  },
+  {
+    title: '时间',
+    key: 'createdAt',
+    render: (row) => h('span', { class: 'mono cell-muted nowrap' }, formatDateTime(row.createdAt)),
+  },
+  {
+    title: '用户',
+    key: 'userId',
+    render: (row) => logUserName(row),
+  },
+  {
+    title: 'target',
+    key: 'target',
+    render: (row) => h('span', { class: 'mono' }, row.target ?? '—'),
+  },
+  {
+    title: 'IP',
+    key: 'ip',
+    render: (row) => h('span', { class: 'mono' }, row.ip ?? '—'),
+  },
+  {
+    title: '状态',
+    key: 'status',
+    render: (row) =>
+      h(
+        NTag,
+        { size: 'small', round: true, type: statusType(row.status) },
+        { default: () => row.status ?? '—' },
+      ),
+  },
+  {
+    title: '耗时',
+    key: 'ms',
+    render: (row) => h('span', { class: 'mono nowrap' }, row.ms === null ? '—' : `${row.ms} ms`),
+  },
+  {
+    title: 'UA',
+    key: 'ua',
+    render: (row) => h('span', { class: 'mono ua', title: row.ua ?? '' }, row.ua ?? '—'),
+  },
+]);
+
 async function load() {
   loading.value = true;
-  error.value = '';
+  loadError.value = '';
   try {
     const query: Record<string, string> = {
       limit: String(PAGE_SIZE),
@@ -73,7 +138,7 @@ async function load() {
     total.value = res.total;
     loaded.value = true;
   } catch (err) {
-    error.value = apiErrorMessage(err);
+    loadError.value = apiErrorMessage(err);
   } finally {
     loading.value = false;
   }
@@ -111,100 +176,61 @@ onMounted(() => {
 <template>
   <section class="page">
     <PageTopbar title="访问日志" subtitle="订阅访问记录，最新在前">
-      <button type="button" :disabled="loading" @click="load">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
-          <path d="M21 3v5h-5" />
-        </svg>
+      <n-button secondary :loading="loading" @click="load">
+        <template #icon>
+          <n-icon><NavIcon name="refresh" /></n-icon>
+        </template>
         {{ loading ? '刷新中…' : '刷新' }}
-      </button>
+      </n-button>
     </PageTopbar>
 
-    <p v-if="error" class="error" role="alert">{{ error }}</p>
+    <n-alert v-if="loadError" type="error" :bordered="false" role="alert">{{ loadError }}</n-alert>
 
-    <form class="card form filters" @submit.prevent="applyFilters">
-      <label>
-        用户
-        <select v-model="filterUserId" :disabled="loading">
-          <option value="">全部用户</option>
-          <option v-for="user in users" :key="user.id" :value="String(user.id)">
-            {{ user.name }}
-          </option>
-        </select>
-      </label>
-      <label>
-        状态码
-        <select v-model="filterStatus" :disabled="loading">
-          <option v-for="item in STATUS_FILTERS" :key="item.value" :value="item.value">
-            {{ item.label }}
-          </option>
-        </select>
-      </label>
+    <n-form class="card form filters" @submit.prevent="applyFilters">
+      <n-form-item label="用户" :show-feedback="false">
+        <n-select v-model:value="filterUserId" :options="userOptions" :disabled="loading" />
+      </n-form-item>
+      <n-form-item label="状态码" :show-feedback="false">
+        <n-select v-model:value="filterStatus" :options="statusOptions" :disabled="loading" />
+      </n-form-item>
       <div class="actions">
-        <button class="primary" type="submit" :disabled="loading">筛选</button>
-        <button type="button" :disabled="loading" @click="resetFilters">重置</button>
+        <n-button type="primary" attr-type="submit" :disabled="loading">筛选</n-button>
+        <n-button :disabled="loading" @click="resetFilters">重置</n-button>
       </div>
-    </form>
+    </n-form>
 
-    <p v-if="loading && !loaded" class="muted empty">加载中…</p>
-    <p v-else-if="loaded && items.length === 0" class="muted empty">
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M8 6h13" />
-        <path d="M8 12h13" />
-        <path d="M8 18h13" />
-        <path d="M3 6h.01" />
-        <path d="M3 12h.01" />
-        <path d="M3 18h.01" />
-      </svg>
-      暂无日志。
-    </p>
+    <n-spin v-if="loading && !loaded" size="small" class="loading-state">
+      <span class="muted">加载中…</span>
+    </n-spin>
+    <n-empty v-else-if="loaded && items.length === 0" description="暂无日志。" class="empty" />
 
-    <div v-else-if="items.length > 0" class="table-wrap">
-      <table class="list">
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>时间</th>
-            <th>用户</th>
-            <th>target</th>
-            <th>IP</th>
-            <th>状态</th>
-            <th>耗时</th>
-            <th>UA</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="log in items" :key="log.id">
-            <td class="id-cell">{{ log.id }}</td>
-            <td class="nowrap log-time">{{ formatDateTime(log.createdAt) }}</td>
-            <td>{{ logUserName(log) }}</td>
-            <td class="mono">{{ log.target ?? '—' }}</td>
-            <td class="mono">{{ log.ip ?? '—' }}</td>
-            <td>
-              <span :class="logStatusClass(log.status)">{{ log.status ?? '—' }}</span>
-            </td>
-            <td class="mono nowrap">{{ log.ms === null ? '—' : `${log.ms} ms` }}</td>
-            <td class="ua" :title="log.ua ?? ''">{{ log.ua ?? '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+    <n-data-table
+      v-else-if="items.length > 0"
+      :columns="columns"
+      :data="items"
+      :loading="loading"
+      :pagination="false"
+      :bordered="false"
+      :single-line="false"
+      :scroll-x="920"
+      size="small"
+    />
 
     <div class="pager">
       <span class="muted">共 {{ total }} 条 · 第 {{ offset + 1 }}–{{ Math.min(offset + PAGE_SIZE, total) }} 条</span>
       <div class="actions">
-        <button type="button" :disabled="!hasPrev || loading" @click="prevPage">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="m15 18-6-6 6-6" />
-          </svg>
+        <n-button secondary :disabled="!hasPrev || loading" @click="prevPage">
+          <template #icon>
+            <n-icon><NavIcon name="chevron-left" /></n-icon>
+          </template>
           上一页
-        </button>
-        <button type="button" :disabled="!hasNext || loading" @click="nextPage">
+        </n-button>
+        <n-button secondary :disabled="!hasNext || loading" @click="nextPage">
           下一页
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="m9 18 6-6-6-6" />
-          </svg>
-        </button>
+          <template #icon>
+            <n-icon><NavIcon name="chevron-right" /></n-icon>
+          </template>
+        </n-button>
       </div>
     </div>
   </section>
@@ -217,32 +243,41 @@ onMounted(() => {
   gap: var(--space-4);
   max-width: none;
 }
-.filters label {
+
+.filters :deep(.n-form-item) {
   width: 12rem;
-  align-self: flex-end;
 }
+
 .filters .actions {
   padding-bottom: 1px;
 }
-.id-cell {
+
+.cell-muted {
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
-.log-time {
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-}
+
 .ua {
+  display: inline-block;
   max-width: 18rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--muted-foreground);
-  font-family: var(--font-mono);
   font-size: var(--text-xs);
+  vertical-align: bottom;
 }
+
+.loading-state {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.empty {
+  padding: var(--space-8) 0;
+}
+
 .pager {
   display: flex;
   flex-wrap: wrap;
@@ -258,9 +293,8 @@ onMounted(() => {
     align-items: stretch;
   }
 
-  .filters label {
+  .filters :deep(.n-form-item) {
     width: 100%;
-    align-self: stretch;
   }
 
   .pager {

@@ -7,6 +7,7 @@
  */
 definePageMeta({ layout: false });
 
+import { NAlert, NButton, NInput } from 'naive-ui';
 import { safeRedirectPath } from '~/server/utils/safe-redirect';
 
 const route = useRoute();
@@ -65,20 +66,24 @@ async function handleSubmit() {
         <h1>subhub</h1>
       </div>
       <p class="hint">管理后台登录</p>
-      <label for="password">密码</label>
-      <input
+      <label class="field-label" for="password">密码</label>
+      <n-input
         id="password"
-        v-model="password"
+        v-model:value="password"
         type="password"
+        size="large"
         name="password"
         autocomplete="current-password"
-        autofocus
+        :input-props="{ autofocus: true }"
         :disabled="submitting"
-      >
-      <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <button class="primary" type="submit" :disabled="submitting">
+        placeholder="请输入密码"
+      />
+      <n-alert v-if="error" class="login-error" type="error" :bordered="false" role="alert">
+        {{ error }}
+      </n-alert>
+      <n-button class="login-submit" type="primary" size="large" attr-type="submit" :loading="submitting" block>
         {{ submitting ? '登录中…' : '登录' }}
-      </button>
+      </n-button>
     </form>
   </main>
 </template>
@@ -136,20 +141,15 @@ h1 {
   color: var(--muted-foreground);
   font-size: var(--text-sm);
 }
-label {
+.field-label {
   color: var(--muted-foreground);
   font-size: var(--text-sm);
   font-weight: 500;
 }
-input {
-  margin-bottom: var(--space-1);
-  padding: 0.6rem 0.75rem;
-  font-size: var(--text-md);
+.login-error {
+  margin-top: var(--space-1);
 }
-button {
+.login-submit {
   margin-top: var(--space-3);
-  min-height: 2.6rem;
-  font-size: var(--text-md);
-  width: 100%;
 }
 </style>
