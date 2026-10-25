@@ -2,10 +2,10 @@
 /*
  * subhub design system — "clean light + trust blue".
  *
- * Single source of truth for colours, type, spacing, radii and the shared
- * component styles (buttons, inputs, tables, cards, badges, forms, dialogs,
- * empty states, error banners). Pages keep only layout-specific rules scoped
- * to themselves; everything visual lives here.
+ * Single source of truth for colours, type, spacing, radii and page chrome.
+ * Controls (buttons, inputs, selects, switches, tags, tables, modals, toasts)
+ * are Naive UI components styled by `assets/naive-theme.ts`; this file keeps
+ * only the layout glue (page scaffold, cards, grids, topbar, utilities).
  */
 
 /* ---------------------------------------------------------------- tokens -- */
@@ -183,16 +183,6 @@ pre {
   min-width: 0;
 }
 
-.page-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding-bottom: var(--space-4);
-  border-bottom: 1px solid var(--border);
-}
-
 /* ------------------------------------------------------------------ cards -- */
 .card {
   padding: var(--space-5);
@@ -207,109 +197,8 @@ pre {
   border-bottom: 1px solid var(--border);
 }
 
-/* ---------------------------------------------------------------- buttons -- */
-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  min-height: 2.25rem;
-  padding: 0.4rem 0.85rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--card);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--text-sm);
-  font-weight: 500;
-  line-height: 1.2;
-  white-space: nowrap;
-  cursor: pointer;
-  transition:
-    background-color var(--transition-fast),
-    border-color var(--transition-fast),
-    color var(--transition-fast),
-    box-shadow var(--transition-fast);
-}
-
-button:hover:not(:disabled) {
-  background: var(--hover-surface);
-  border-color: var(--border);
-  color: var(--primary);
-}
-
-button:active:not(:disabled) {
-  background: var(--muted);
-}
-
-button:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
-}
-
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Primary — the trust-blue CTA (the only green-free emphasis colour) */
-button.primary {
-  border-color: var(--primary);
-  background: var(--primary);
-  color: var(--primary-foreground);
-  font-weight: 600;
-}
-
-button.primary:hover:not(:disabled) {
-  border-color: var(--primary-hover);
-  background: var(--primary-hover);
-  color: var(--primary-foreground);
-  box-shadow: var(--glow-accent);
-}
-
-button.primary:active:not(:disabled) {
-  background: var(--primary);
-}
-
-/* Destructive */
-button.danger {
-  border-color: color-mix(in srgb, var(--destructive) 55%, transparent);
-  background: var(--destructive-soft);
-  color: var(--destructive-hover);
-}
-
-button.danger:hover:not(:disabled) {
-  border-color: var(--destructive);
-  background: var(--destructive);
-  color: var(--primary-foreground);
-}
-
-/* Compact row action */
-button.small {
-  min-height: 1.85rem;
-  padding: 0.2rem 0.55rem;
-  font-size: var(--text-xs);
-}
-
-/* Icon-only button (always ships with an aria-label) */
-button.icon-button {
-  min-height: 2rem;
-  min-width: 2rem;
-  padding: 0;
-}
-
-button svg,
-.btn-icon {
-  width: 1rem;
-  height: 1rem;
-  flex-shrink: 0;
-  stroke: currentColor;
-  stroke-width: 1.75;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
+/* ---------------------------------------------------------------- actions -- */
+/* Layout glue only: the buttons themselves come from Naive UI. */
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -318,6 +207,7 @@ button svg,
 }
 
 /* ----------------------------------------------------------------- forms -- */
+/* Layout glue only: inputs/selects/switches are Naive UI components now. */
 .form {
   display: flex;
   flex-direction: column;
@@ -329,200 +219,10 @@ button svg,
   margin-bottom: var(--space-1);
 }
 
-.form label {
-  display: flex;
-  flex-direction: column;
-  align-self: flex-start;
-  gap: var(--space-2);
-  color: var(--muted-foreground);
-  font-size: var(--text-sm);
-  font-weight: 500;
-}
-
-.form label.inline {
-  flex-direction: row;
-  align-self: flex-start;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--foreground);
-  cursor: pointer;
-}
-
-label {
-  font-size: var(--text-sm);
-}
-
-input,
-select,
-textarea {
-  width: 100%;
-  padding: 0.5rem 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--card);
-  color: var(--foreground);
-  font: inherit;
-  font-size: var(--text-base);
-  transition:
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast),
-    background-color var(--transition-fast);
-}
-
-input::placeholder,
-textarea::placeholder {
-  color: var(--muted-foreground);
-  opacity: 0.8;
-}
-
-input:hover:not(:disabled),
-select:hover:not(:disabled),
-textarea:hover:not(:disabled) {
-  border-color: var(--muted-foreground);
-}
-
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-  outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
-}
-
-input:disabled,
-select:disabled,
-textarea:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-select {
-  cursor: pointer;
-  appearance: none;
-  padding-right: 2rem;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2364748B' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 0.6rem center;
-  background-size: 1rem;
-}
-
-textarea {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  line-height: 1.55;
-  resize: vertical;
-  min-height: 4.5rem;
-}
-
-input[type='checkbox'] {
-  width: 1.05rem;
-  height: 1.05rem;
-  padding: 0;
-  accent-color: var(--primary);
-  cursor: pointer;
-}
-
 .hint {
   margin: calc(var(--space-1) * -1) 0 0;
   color: var(--muted-foreground);
   font-size: var(--text-xs);
-}
-
-/* ---------------------------------------------------------------- tables -- */
-.table-wrap {
-  overflow-x: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--card);
-}
-
-table.list {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--text-sm);
-}
-
-.list th,
-.list td {
-  padding: 0.65rem 0.85rem;
-  border-bottom: 1px solid var(--border);
-  text-align: left;
-  vertical-align: top;
-}
-
-.list thead th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--muted);
-  color: var(--muted-foreground);
-  font-size: var(--text-xs);
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
-.list tbody tr {
-  transition: background-color var(--transition-fast);
-}
-
-.list tbody tr:hover {
-  background: var(--hover-surface);
-}
-
-.list tbody tr:last-child td {
-  border-bottom: none;
-}
-
-.list code {
-  font-size: var(--text-xs);
-  color: var(--foreground);
-  word-break: break-all;
-}
-
-.table-wrap > .list {
-  border-radius: var(--radius-lg);
-}
-
-/* ---------------------------------------------------------------- badges -- */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.1rem 0.55rem;
-  border: 1px solid transparent;
-  border-radius: var(--radius-pill);
-  font-size: var(--text-xs);
-  font-weight: 500;
-  line-height: 1.5;
-  white-space: nowrap;
-}
-
-.badge::before {
-  content: '';
-  width: 0.4rem;
-  height: 0.4rem;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.badge.on {
-  border-color: rgba(22, 163, 74, 0.3);
-  background: var(--success-soft);
-  color: var(--success);
-}
-
-.badge.off {
-  border-color: var(--border);
-  background: var(--muted);
-  color: var(--muted-foreground);
-}
-
-.badge.warn {
-  border-color: rgba(217, 119, 6, 0.3);
-  background: var(--warning-soft);
-  color: var(--warning-text);
 }
 
 /* --------------------------------------------------------------- topbar -- */
@@ -599,299 +299,6 @@ table.list {
   gap: var(--space-3);
 }
 
-/* -------------------------------------------------------------- toggle -- */
-/* Inline switch (replaces a checkbox for "apply immediately" settings). */
-.switch {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 2rem;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--muted-foreground);
-  font: inherit;
-  font-size: var(--text-xs);
-  cursor: pointer;
-}
-
-.switch:hover:not(:disabled) {
-  background: none;
-  color: var(--primary);
-}
-
-.switch-track {
-  position: relative;
-  display: inline-block;
-  width: 2.35rem;
-  height: 1.3rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--muted);
-  transition: background-color var(--transition-fast), border-color var(--transition-fast);
-}
-
-.switch-thumb {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 0.95rem;
-  height: 0.95rem;
-  border-radius: 50%;
-  background: var(--card);
-  box-shadow: var(--shadow-sm);
-  transition: transform var(--transition-fast);
-}
-
-.switch[aria-checked='true'] {
-  color: var(--success);
-}
-
-.switch[aria-checked='true'] .switch-track {
-  border-color: var(--success);
-  background: var(--success);
-}
-
-.switch[aria-checked='true'] .switch-thumb {
-  background: #ffffff;
-  transform: translateX(1.05rem);
-}
-
-.switch[aria-checked='false'] .switch-track {
-  background: var(--muted);
-}
-
-.switch[aria-busy='true'] {
-  opacity: 0.6;
-  cursor: progress;
-}
-
-/* --------------------------------------------------------------- chips -- */
-.badge.bad {
-  border-color: rgba(220, 38, 38, 0.3);
-  background: var(--destructive-soft);
-  color: var(--destructive);
-}
-
-.badge.info {
-  border-color: rgba(37, 99, 235, 0.3);
-  background: var(--accent-soft);
-  color: var(--primary);
-}
-
-.chip-count {
-  display: inline-flex;
-  align-items: center;
-  min-width: 1.4rem;
-  justify-content: center;
-  padding: 0 0.4rem;
-  border-radius: var(--radius-pill);
-  background: var(--muted);
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
-}
-
-/* --------------------------------------------------------------- entity -- */
-/* A rich, responsive row used by users / sources / profiles. Two columns on
-   wide screens (identity + actions), stacking below 640px. */
-.entity {
-  display: grid;
-  grid-template-columns: minmax(14rem, 1fr) minmax(0, 2fr) auto;
-  gap: var(--space-3) var(--space-5);
-  align-items: center;
-  padding: var(--space-4);
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
-}
-
-.entity:hover {
-  border-color: color-mix(in srgb, var(--primary) 25%, var(--border));
-  box-shadow: var(--shadow-md);
-}
-
-.entity.is-disabled {
-  background: color-mix(in srgb, var(--muted) 55%, var(--card));
-}
-
-.entity-identity {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.entity-name {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  font-size: var(--text-base);
-  font-weight: 600;
-}
-
-.entity-name > span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.entity-body {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-4);
-  min-width: 0;
-  color: var(--muted-foreground);
-  font-size: var(--text-xs);
-}
-
-.entity-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-2);
-}
-
-.entity-field {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  color: var(--muted-foreground);
-  font-size: var(--text-xs);
-}
-
-.entity-field > select {
-  width: auto;
-  min-width: 7rem;
-  min-height: 1.9rem;
-  padding: 0.15rem 1.9rem 0.15rem 0.5rem;
-  font-size: var(--text-xs);
-}
-
-.entity-field > code,
-.entity-field .mono {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 18rem;
-}
-
-.counts {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-3);
-  font-variant-numeric: tabular-nums;
-}
-
-.counts b {
-  font-weight: 600;
-  color: var(--foreground);
-}
-
-/* Link with a 复制 action next to it. */
-.link-row {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-width: 0;
-  max-width: 100%;
-}
-
-.link-row code {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* --------------------------------------------------------- radio group -- */
-.radio-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-
-.radio-group legend {
-  margin-bottom: var(--space-2);
-  padding: 0;
-  color: var(--muted-foreground);
-  font-size: var(--text-sm);
-  font-weight: 500;
-}
-
-.radio-option {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0.45rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--card);
-  color: var(--foreground);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: border-color var(--transition-fast), background-color var(--transition-fast);
-}
-
-.radio-option:hover {
-  border-color: var(--muted-foreground);
-}
-
-.radio-option input[type='radio'] {
-  width: 1rem;
-  height: 1rem;
-  margin: 0;
-  accent-color: var(--primary);
-}
-
-.radio-option:has(input:checked) {
-  border-color: var(--primary);
-  background: var(--accent-soft);
-  color: var(--primary);
-  font-weight: 500;
-}
-
-/* Scrollable checkbox list (allowlist picker). */
-.check-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  max-height: 15rem;
-  overflow-y: auto;
-  padding: var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--card);
-}
-
-.check-list label {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0.3rem 0.4rem;
-  border-radius: var(--radius-sm);
-  color: var(--foreground);
-  font-size: var(--text-sm);
-  cursor: pointer;
-}
-
-.check-list label:hover {
-  background: var(--hover-surface);
-}
-
 /* ------------------------------------------------------- text & messages -- */
 .muted {
   margin: 0;
@@ -909,102 +316,6 @@ table.list {
   font-family: var(--font-mono);
 }
 
-.error {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid rgba(220, 38, 38, 0.25);
-  border-left: 3px solid var(--destructive);
-  border-radius: var(--radius);
-  background: var(--destructive-soft);
-  color: #b91c1c;
-  font-size: var(--text-sm);
-}
-
-.notice {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid rgba(22, 163, 74, 0.25);
-  border-left: 3px solid var(--success);
-  border-radius: var(--radius);
-  background: var(--success-soft);
-  color: #15803d;
-  font-size: var(--text-sm);
-}
-
-/* ------------------------------------------------------- empty state -- */
-.empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-2);
-  margin: 0;
-  padding: var(--space-10) var(--space-6);
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--card);
-  color: var(--muted-foreground);
-  text-align: center;
-}
-
-.empty svg {
-  width: 1.75rem;
-  height: 1.75rem;
-  stroke: var(--muted-foreground);
-  stroke-width: 1.5;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-/* ---------------------------------------------------------- dialog/modal -- */
-.overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-4);
-  background: var(--scrim);
-  backdrop-filter: blur(3px);
-  animation: overlay-in var(--transition) ease both;
-}
-
-.dialog {
-  width: min(26rem, calc(100vw - 2rem));
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  border-color: var(--border);
-  box-shadow: var(--shadow-lg);
-  animation: dialog-in var(--transition) ease both;
-}
-
-.dialog p {
-  margin: 0;
-  color: var(--muted-foreground);
-}
-
-@keyframes overlay-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes dialog-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px) scale(0.99);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
 /* -------------------------------------------------------------- utility -- */
 .mono {
   font-family: var(--font-mono);
@@ -1013,12 +324,6 @@ table.list {
 
 .nowrap {
   white-space: nowrap;
-}
-
-.row-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
 }
 
 .sr-only {
@@ -1067,16 +372,6 @@ table.list {
 }
 
 /* ---------------------------------------------------------- responsive -- */
-@media (max-width: 900px) {
-  .entity {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .entity-body {
-    grid-column: 1 / -1;
-  }
-}
-
 @media (max-width: 640px) {
   .card {
     padding: var(--space-4);
@@ -1087,67 +382,16 @@ table.list {
     align-items: flex-start;
   }
 
-  .topbar > .actions,
-  .topbar > button {
+  .topbar > .actions {
     width: 100%;
-  }
-
-  .topbar > button {
-    justify-content: center;
   }
 
   .card-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  /* Entity rows stack full-width instead of shrinking side by side. */
-  .entity {
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-3);
-  }
-
-  .entity-body,
-  .entity-field,
-  .entity-field > select,
-  .entity-field > code,
-  .entity-field .mono,
-  .link-row {
-    max-width: 100%;
-    width: 100%;
-    min-width: 0;
-  }
-
-  .entity-field > select {
-    flex: 1;
-  }
-
-  .entity-actions {
-    justify-content: flex-start;
-  }
-
-  .entity-actions button {
-    flex: 1 1 auto;
-  }
-
-  .table-wrap {
-    /* Never widen the page: the wrapper scrolls, the layout does not. */
-    max-width: 100%;
-  }
-
   .form {
     max-width: none;
   }
 
-  .page-head {
-    align-items: stretch;
-  }
-
-  .page-head > .actions,
-  .page-head > button {
-    width: 100%;
-  }
-
-  .page-head > button {
-    justify-content: center;
-  }
 }

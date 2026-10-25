@@ -11,6 +11,7 @@
 definePageMeta({ layout: 'admin' });
 
 import type { AdminUser } from '~/server/utils/admin-users';
+import { NButton, NCard, NForm, NFormItem, NIcon, NSelect, NTag, useMessage } from 'naive-ui';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import { previewBodyText } from '~/core/utils/admin-ui';
 import { EXPORT_TARGETS, type ExportTarget } from '~/server/utils/targets';
@@ -29,8 +30,7 @@ interface PreviewResponse {
 const users = ref<AdminUser[]>([]);
 const loadingUsers = ref(false);
 const generating = ref(false);
-const error = ref('');
-const notice = ref('');
+const message = useMessage();
 
 const selectedUserId = ref<string>('');
 const target = ref<ExportTarget>('mihomo');
@@ -47,14 +47,20 @@ const shown = computed(() =>
     : { text: '', decoded: false },
 );
 
-const targetOptions = [...EXPORT_TARGETS];
+const targetOptions = EXPORT_TARGETS.map((item) => ({ label: item, value: item }));
+
+const userOptions = computed(() =>
+  users.value.map((user) => ({
+    label: `${user.name}${user.enabled ? '' : '（已停用）'}`,
+    value: String(user.id),
+  })),
+);
 
 /** Query preselects the user (`/preview?userId=3`), e.g. from the users hub. */
 const route = useRoute();
 
 async function loadUsers() {
   loadingUsers.value = true;
-  error.value = '';
   try {
     const res = await $fetch<{ items: AdminUser[] }>('/api/admin/users');
     users.value = res.items;
@@ -65,7 +71,7 @@ async function loadUsers() {
       selectedUserId.value = String(res.items[0]!.id);
     }
   } catch (err) {
-    error.value = apiErrorMessage(err);
+    message.error(apiErrorMessage(err));
   } finally {
     loadingUsers.value = false;
   }
@@ -73,11 +79,9 @@ async function loadUsers() {
 
 async function generate() {
   if (generating.value) return;
-  error.value = '';
-  notice.value = '';
   copied.value = false;
   if (!selectedUserId.value) {
-    error.value = '请选择用户';
+    message.error('请选择用户');
     return;
   }
   generating.value = true;
@@ -87,10 +91,10 @@ async function generate() {
       body: { userId: Number(selectedUserId.value), target: target.value },
     });
     result.value = res;
-    notice.value = res.truncated ? '预览内容过大，已截断到约 200KB' : '预览已生成';
+    message.success(res.truncated ? '预览内容过大，已截断到约 200KB' : '预览已生成');
   } catch (err) {
     result.value = null;
-    error.value = apiErrorMessage(err);
+    message.error(apiErrorMessage(err));
   } finally {
     generating.value = false;
   }
@@ -106,7 +110,7 @@ async function copyResult() {
       copied.value = false;
     }, 2000);
   } catch {
-    error.value = '复制失败，请手动选择内容';
+    message.error('复制失败，请手动选择内容');
   }
 }
 
@@ -117,56 +121,49 @@ onMounted(loadUsers);
   <section class="page">
     <PageTopbar title="预览" subtitle="按用户渲染订阅输出，无需 token" />
 
-    <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <p v-if="notice" class="notice">{{ notice }}</p>
-
-    <form class="card form inline-form" @submit.prevent="generate">
-      <label>
-        用户
-        <select v-model="selectedUserId" :disabled="loadingUsers || generating">
-          <option v-if="users.length === 0" value="" disabled>
-            {{ loadingUsers ? '加载中…' : '暂无用户' }}
-          </option>
-          <option v-for="user in users" :key="user.id" :value="String(user.id)">
-            {{ user.name }}{{ user.enabled ? '' : '（已停用）' }}
-          </option>
-        </select>
-      </label>
-      <label>
-        输出目标
-        <select v-model="target" :disabled="generating">
-          <option v-for="item in targetOptions" :key="item" :value="item">{{ item }}</option>
-        </select>
-      </label>
+    <n-form class="card form inline-form" @submit.prevent="generate">
+      <n-form-item label="用户" :show-feedback="false">
+        <n-select
+          v-model:value="selectedUserId"
+          :options="userOptions"
+          :disabled="loadingUsers || generating"
+          :placeholder="loadingUsers ? '加载中…' : '暂无用户'"
+        />
+      </n-form-item>
+      <n-form-item label="输出目标" :show-feedback="false">
+        <n-select v-model:value="target" :options="targetOptions" :disabled="generating" />
+      </n-form-item>
       <div class="actions">
-        <button class="primary" type="submit" :disabled="generating || loadingUsers">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="m5 3 14 9-14 9V3Z" />
-          </svg>
+        <n-button type="primary" attr-type="submit" :loading="generating" :disabled="loadingUsers">
+          <template #icon>
+            <n-icon><NavIcon name="play" /></n-icon>
+          </template>
           {{ generating ? '生成中…' : '生成' }}
-        </button>
+        </n-button>
       </div>
-    </form>
+    </n-form>
 
-    <div v-if="result" class="card result">
-      <div class="card-head">
-        <h2>
-          {{ result.name }}
-          <span :class="['badge', result.enabled ? 'on' : 'off']">
+    <n-card v-if="result" class="result">
+      <template #header>
+        <div class="result-title">
+          <span>{{ result.name }}</span>
+          <n-tag size="small" round :type="result.enabled ? 'success' : 'default'">
             {{ result.enabled ? '启用' : '停用' }}
-          </span>
-          <span v-if="result.truncated" class="badge warn">已截断</span>
-        </h2>
+          </n-tag>
+          <n-tag v-if="result.truncated" size="small" round type="warning">已截断</n-tag>
+        </div>
+      </template>
+      <template #header-extra>
         <div class="actions">
           <span class="meta">{{ result.target }} · {{ result.status }}</span>
-          <span v-if="shown.decoded" class="badge">已解码分享链接</span>
-          <button type="button" class="small" @click="copyResult">
+          <n-tag v-if="shown.decoded" size="small" round>已解码分享链接</n-tag>
+          <n-button size="small" secondary @click="copyResult">
             {{ copied ? '已复制' : '复制结果' }}
-          </button>
+          </n-button>
         </div>
-      </div>
+      </template>
       <pre class="body"><code>{{ shown.text }}</code></pre>
-    </div>
+    </n-card>
   </section>
 </template>
 
@@ -179,9 +176,8 @@ onMounted(loadUsers);
   max-width: none;
 }
 
-.inline-form label {
+.inline-form :deep(.n-form-item) {
   width: 14rem;
-  align-self: flex-end;
 }
 
 .inline-form .actions {
@@ -189,20 +185,16 @@ onMounted(loadUsers);
 }
 
 .result {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
   min-width: 0;
 }
 
-.result .card-head h2 {
+.result-title {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  margin: 0;
-  border: none;
-  padding: 0;
+  font-size: var(--text-md);
+  font-weight: 600;
 }
 
 .body {
@@ -227,9 +219,8 @@ onMounted(loadUsers);
     align-items: stretch;
   }
 
-  .inline-form label {
+  .inline-form :deep(.n-form-item) {
     width: 100%;
-    align-self: stretch;
   }
 }
 </style>

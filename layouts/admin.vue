@@ -12,6 +12,11 @@
  * the live prefix without each page fetching the settings itself. A settings
  * save updates the same state immediately (pages/settings.vue).
  */
+import { NButton, NIcon, NMenu, type MenuOption } from 'naive-ui';
+import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue';
+import NavIcon from '~/components/NavIcon.vue';
+
+const route = useRoute();
 const subPathState = useState<string>('admin-sub-path', () => 's');
 const requestFetch = useRequestFetch();
 
@@ -32,6 +37,37 @@ const links = [
   { to: '/logs', label: '日志', icon: 'list' },
   { to: '/settings', label: '设置', icon: 'settings' },
 ];
+
+const menuOptions = computed<MenuOption[]>(() =>
+  links.map((link) => ({
+    key: link.to,
+    label: link.label,
+    icon: () => h(NIcon, null, { default: () => h(NavIcon, { name: link.icon }) }),
+  })),
+);
+
+/** Vertical rail on desktop, horizontal strip under the brand on phones. */
+const narrow = ref(false);
+let media: MediaQueryList | null = null;
+const menuMode = computed(() => (narrow.value ? 'horizontal' : 'vertical'));
+
+function syncNarrow() {
+  narrow.value = media?.matches ?? false;
+}
+
+onMounted(() => {
+  media = window.matchMedia('(max-width: 640px)');
+  syncNarrow();
+  media.addEventListener('change', syncNarrow);
+});
+
+onBeforeUnmount(() => {
+  media?.removeEventListener('change', syncNarrow);
+});
+
+function handleNavigate(key: string) {
+  if (key !== route.path) navigateTo(key);
+}
 
 const loggingOut = ref(false);
 
@@ -58,72 +94,27 @@ async function handleLogout() {
         </span>
         <span class="brand-name">subhub</span>
       </div>
-      <nav aria-label="主导航">
-        <NuxtLink
-          v-for="link in links"
-          :key="link.to"
-          :to="link.to"
-          class="nav-link"
-          active-class="active"
-          :aria-label="link.label"
-        >
-          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <template v-if="link.icon === 'dashboard'">
-              <rect x="3" y="3" width="7" height="9" rx="1.5" />
-              <rect x="14" y="3" width="7" height="5" rx="1.5" />
-              <rect x="14" y="12" width="7" height="9" rx="1.5" />
-              <rect x="3" y="16" width="7" height="5" rx="1.5" />
-            </template>
-            <template v-else-if="link.icon === 'users'">
-              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-              <circle cx="9" cy="7" r="4" />
-              <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-            </template>
-            <template v-else-if="link.icon === 'rss'">
-              <path d="M4 11a9 9 0 0 1 9 9" />
-              <path d="M4 4a16 16 0 0 1 16 16" />
-              <circle cx="5" cy="19" r="1" />
-            </template>
-            <template v-else-if="link.icon === 'layers'">
-              <path d="m12 2 9 5-9 5-9-5 9-5Z" />
-              <path d="m3 12 9 5 9-5" />
-              <path d="m3 17 9 5 9-5" />
-            </template>
-            <template v-else-if="link.icon === 'eye'">
-              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
-              <circle cx="12" cy="12" r="3" />
-            </template>
-            <template v-else-if="link.icon === 'list'">
-              <path d="M8 6h13" />
-              <path d="M8 12h13" />
-              <path d="M8 18h13" />
-              <path d="M3 6h.01" />
-              <path d="M3 12h.01" />
-              <path d="M3 18h.01" />
-            </template>
-            <template v-else>
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
-            </template>
-          </svg>
-          <span class="nav-label">{{ link.label }}</span>
-        </NuxtLink>
+      <nav class="nav" aria-label="主导航">
+        <n-menu
+          :value="route.path"
+          :options="menuOptions"
+          :mode="menuMode"
+          @update:value="handleNavigate"
+        />
       </nav>
-      <button
+      <n-button
         class="logout"
-        type="button"
-        :disabled="loggingOut"
+        quaternary
+        block
+        :loading="loggingOut"
         aria-label="退出登录"
         @click="handleLogout"
       >
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-          <path d="m16 17 5-5-5-5" />
-          <path d="M21 12H9" />
-        </svg>
-        <span class="nav-label">{{ loggingOut ? '退出中…' : '退出登录' }}</span>
-      </button>
+        <template #icon>
+          <n-icon><NavIcon name="logout" /></n-icon>
+        </template>
+        {{ loggingOut ? '退出中…' : '退出登录' }}
+      </n-button>
     </aside>
     <div class="main">
       <main class="content">
@@ -191,78 +182,15 @@ async function handleLogout() {
   letter-spacing: -0.02em;
 }
 
-nav {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+.nav {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-}
-
-.nav-link {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: 0.5rem var(--space-3);
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  color: var(--muted-foreground);
-  font-size: var(--text-sm);
-  font-weight: 500;
-  text-decoration: none;
-  cursor: pointer;
-  transition:
-    background-color var(--transition-fast),
-    color var(--transition-fast),
-    border-color var(--transition-fast);
-}
-
-.nav-icon {
-  width: 1.05rem;
-  height: 1.05rem;
-  flex-shrink: 0;
-  stroke: currentColor;
-  stroke-width: 1.75;
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.nav-link:hover {
-  background: var(--muted);
-  color: var(--foreground);
-}
-
-.nav-link.active {
-  background: var(--accent-soft);
-  border-color: transparent;
-  color: var(--primary);
-  font-weight: 600;
-}
-
-.nav-link:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
 }
 
 .logout {
   margin-top: var(--space-4);
   justify-content: flex-start;
-  padding: 0.5rem var(--space-3);
-  background: transparent;
-  color: var(--muted-foreground);
-}
-
-.logout:hover:not(:disabled) {
-  background: var(--muted);
-  border-color: var(--border);
-  color: var(--destructive-hover);
-}
-
-.logout svg {
-  width: 1.05rem;
-  height: 1.05rem;
 }
 
 .main {
@@ -286,8 +214,8 @@ nav {
   }
 }
 
-/* Narrow screens: sidebar collapses to an icon rail so the cards keep their
-   room. Labels stay in the DOM for assistive tech via the nav aria-labels. */
+/* Narrow screens: sidebar becomes a horizontal rail so the cards keep their
+   room. The menu switches to horizontal mode in script. */
 @media (max-width: 640px) {
   .admin {
     flex-direction: column;
@@ -314,36 +242,20 @@ nav {
     border-right: 1px solid var(--border);
   }
 
-  nav {
-    flex-direction: row;
-    gap: var(--space-1);
-    flex: 1;
-  }
-
-  .nav-link {
-    padding: 0.5rem;
-  }
-
-  .nav-label,
-  .brand-name {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
   .brand-name {
     display: none;
   }
 
+  .nav {
+    flex: 1;
+    overflow-x: auto;
+    overflow-y: visible;
+  }
+
   .logout {
     margin-top: 0;
-    padding: 0.5rem;
+    width: auto;
+    flex-shrink: 0;
   }
 
   .main {

@@ -1,4 +1,24 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<script setup lang="ts">
+/**
+ * App shell: Naive UI providers only.
+ *
+ * `n-config-provider` carries the light-only theme overrides (the palette lives
+ * in `assets/naive-theme.ts`); the message/dialog providers make `useMessage()`
+ * and `useDialog()` available to every page. No global style component is
+ * mounted on purpose — the design system's own `main.css` stays authoritative
+ * for page chrome, and Naive's styles are component-scoped CSS-in-JS.
+ */
+import { NConfigProvider, NDialogProvider, NMessageProvider } from 'naive-ui';
+import { naiveThemeOverrides } from '~/assets/naive-theme';
+</script>
+
 <template>
-  <NuxtPage />
+  <n-config-provider :theme-overrides="naiveThemeOverrides">
+    <n-message-provider>
+      <n-dialog-provider>
+        <NuxtPage />
+      </n-dialog-provider>
+    </n-message-provider>
+  </n-config-provider>
 </template>

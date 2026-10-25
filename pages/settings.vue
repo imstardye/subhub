@@ -16,6 +16,7 @@
  */
 definePageMeta({ layout: 'admin' });
 
+import { NAlert, NButton, NCard, NForm, NFormItem, NInput, NSpin, useMessage } from 'naive-ui';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import { validateSubPathInput, type SettingsView } from '~/core/utils/admin-ui';
 
@@ -28,8 +29,7 @@ const fetchError = ref<unknown>(null);
 
 const draft = ref('');
 const saving = ref(false);
-const error = ref('');
-const notice = ref('');
+const message = useMessage();
 
 const currentPrefix = computed(() => settings.value?.subPath ?? effectivePrefix.value);
 const reserved = computed(() => settings.value?.reservedRoots ?? []);
@@ -66,15 +66,13 @@ onMounted(refresh);
 
 async function save() {
   if (saving.value || !settings.value) return;
-  error.value = '';
-  notice.value = '';
   const checked = validateSubPathInput(draft.value, settings.value);
   if (!checked.ok) {
-    error.value = checked.error;
+    message.error(checked.error);
     return;
   }
   if (checked.value === currentPrefix.value) {
-    notice.value = '前缀未变化';
+    message.info('前缀未变化');
     return;
   }
   saving.value = true;
@@ -87,9 +85,9 @@ async function save() {
     draft.value = saved.subPath;
     // Every link builder reads this state (see layouts/admin.vue).
     effectivePrefix.value = saved.subPath;
-    notice.value = `订阅链接前缀已改为「${saved.subPath}」，旧链接全部失效。`;
+    message.success(`订阅链接前缀已改为「${saved.subPath}」，旧链接全部失效。`);
   } catch (err) {
-    error.value = apiErrorMessage(err);
+    message.error(apiErrorMessage(err));
   } finally {
     saving.value = false;
   }
@@ -104,17 +102,16 @@ function useDefault() {
   <section class="page">
     <PageTopbar title="设置" subtitle="站点级配置，保存后立即生效" />
 
-    <p v-if="pageError" class="error" role="alert">{{ pageError }}</p>
-    <p v-if="error" class="error" role="alert">{{ error }}</p>
-    <p v-if="notice" class="notice">{{ notice }}</p>
+    <n-alert v-if="pageError" type="error" :bordered="false" role="alert">{{ pageError }}</n-alert>
 
-    <section class="card settings-card">
-      <div class="card-head">
-        <h2>订阅链接</h2>
-        <button type="button" class="small" :disabled="loading" @click="refresh()">重新加载</button>
-      </div>
+    <n-card class="settings-card" title="订阅链接">
+      <template #header-extra>
+        <n-button size="small" secondary :disabled="loading" @click="refresh()">重新加载</n-button>
+      </template>
 
-      <p v-if="loading" class="muted">加载中…</p>
+      <n-spin v-if="loading" size="small">
+        <span class="muted">加载中…</span>
+      </n-spin>
       <template v-else-if="settings">
         <p class="hint">
           订阅链接的前缀，当前为 <code class="mono">/{{ currentPrefix }}/</code>。
@@ -122,38 +119,38 @@ function useDefault() {
           <code class="mono">/s/</code> 与常见机场完全一致，容易被针对，可改成任意其他路径。
         </p>
 
-        <form class="form" @submit.prevent="save">
-          <label>
-            订阅前缀
-            <input
-              v-model="draft"
-              type="text"
-              class="short"
-              maxlength="64"
-              autocomplete="off"
-              spellcheck="false"
-              :disabled="saving"
-            >
-            <span class="field-hint">
-              仅小写字母、数字、- 和 _，可用多段（如 <code class="mono">x/y</code>）；
-              不能与后台入口 <code class="mono">/{{ settings?.adminPath }}</code>
-              或系统路径（{{ reserved.join('、') }}）冲突。
-            </span>
-          </label>
+        <n-form class="form" @submit.prevent="save">
+          <n-form-item label="订阅前缀" :show-feedback="false">
+            <div class="field-stack">
+              <n-input
+                v-model:value="draft"
+                maxlength="64"
+                autocomplete="off"
+                spellcheck="false"
+                :disabled="saving"
+                class="short"
+              />
+              <span class="field-hint">
+                仅小写字母、数字、- 和 _，可用多段（如 <code class="mono">x/y</code>）；
+                不能与后台入口 <code class="mono">/{{ settings?.adminPath }}</code>
+                或系统路径（{{ reserved.join('、') }}）冲突。
+              </span>
+            </div>
+          </n-form-item>
 
-          <p class="warn" role="note">
+          <n-alert type="warning" :bordered="false" role="note">
             修改前缀会<strong>立即让所有已分享的订阅链接失效</strong>，需要把新链接重新发给每个客户端。
-          </p>
+          </n-alert>
 
           <div class="actions">
-            <button class="primary" type="submit" :disabled="saving || !dirty">
+            <n-button type="primary" attr-type="submit" :loading="saving" :disabled="!dirty">
               {{ saving ? '保存中…' : '保存前缀' }}
-            </button>
-            <button type="button" :disabled="saving" @click="useDefault">恢复默认（{{ settings?.defaultSubPath }}）</button>
+            </n-button>
+            <n-button :disabled="saving" @click="useDefault">恢复默认（{{ settings?.defaultSubPath }}）</n-button>
           </div>
-        </form>
+        </n-form>
       </template>
-    </section>
+    </n-card>
   </section>
 </template>
 
@@ -169,7 +166,14 @@ function useDefault() {
   line-height: 1.6;
 }
 
-.form input.short {
+.field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+}
+
+.short {
   max-width: 18rem;
 }
 
@@ -177,16 +181,5 @@ function useDefault() {
   color: var(--muted-foreground);
   font-size: var(--text-xs);
   font-weight: 400;
-}
-
-.warn {
-  margin: 0;
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid rgba(217, 119, 6, 0.28);
-  border-left: 3px solid #d97706;
-  border-radius: var(--radius);
-  background: rgba(217, 119, 6, 0.08);
-  color: #92400e;
-  font-size: var(--text-sm);
 }
 </style>
