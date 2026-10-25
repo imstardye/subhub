@@ -17,14 +17,19 @@
  *   hysteria            hysteria (auth_str/up/down, obfs)
  *   hysteria2           hysteria2 (password, obfs, up/down, port ranges)
  *   anytls              anytls (password, idle_session_*, tls)
- *   wireguard           wireguard (peers[0] from the node)
  *   socks / http        local dialer outbounds carry no credentials, so
  *                       authenticated proxies are skipped (see below)
  *
+ * WireGuard is NOT an outbound in sing-box >= 1.11: it is an *endpoint*
+ * (top-level `endpoints`, peer carries address/port/public_key/allowed_ips).
+ * The legacy outbound form is rejected by current sing-box ("unknown field
+ * server"), so wireguard nodes land in `buildSingboxEndpoints` and the
+ * document gains an `endpoints` array only when one is present.
+ *
  * Skipped: ssr/snell/direct and every other type (no sing-box outbound),
  * a non-empty HTTP/SOCKS username (sing-box rejects credentials there),
- * wireguard nodes without a key, and transports sing-box has no JSON field for
- * in the given outbound (e.g. `httpupgrade` on trojan).
+ * wireguard nodes without a key or a local address, and transports sing-box
+ * has no JSON field for in the given outbound (e.g. `httpupgrade` on trojan).
  */
 import type { ProxyNode } from '../types';
 import { parseAlpn } from '../utils';
@@ -54,8 +59,16 @@ export interface SingboxOutbound {
   [key: string]: unknown;
 }
 
+/** A sing-box endpoint (wireguard lives here in sing-box >= 1.11). */
+export interface SingboxEndpoint {
+  type: string;
+  tag: string;
+  [key: string]: unknown;
+}
+
 export interface SingboxConfig {
   outbounds: SingboxOutbound[];
+  endpoints?: SingboxEndpoint[];
 }
 
 type Opts = Record<string, unknown>;
@@ -257,6 +270,8 @@ function vmess(node: ProxyNode): SingboxOutbound | null {
   if (tls === null) return null;
   if (tls) outbound.tls = tls;
   if (transport) outbound.transport = transport;
+  const packetEncoding = text(node['packet-encoding']);
+  if (packetEncoding) outbound.packet_encoding = packetEncoding;
   const multiplex = multiplexFor(node);
   if (multiplex) outbound.multiplex = multiplex;
   return outbound;
@@ -274,6 +289,8 @@ function vless(node: ProxyNode): SingboxOutbound | null {
   outbound.uuid = uuid;
   const flow = text(node.flow);
   if (flow) outbound.flow = flow;
+  const packetEncoding = text(node['packet-encoding']);
+  if (packetEncoding) outbound.packet_encoding = packetEncoding;
   if (tls) outbound.tls = tls;
   if (transport) outbound.transport = transport;
   const multiplex = multiplexFor(node);
@@ -315,7 +332,8 @@ function tuic(node: ProxyNode): SingboxOutbound | null {
   if (node['udp-over-tcp'] === true) outbound.udp_over_stream = true;
   if (node['reduce-rtt'] === true) outbound.zero_rtt_handshake = true;
   const heartbeat = text(node['heartbeat-interval']);
-  if (heartbeat) outbound.heartbeat = `${heartbeat}s`;
+  // mihomo's heartbeat-interval is MILLISECONDS; sing-box takes a duration.
+  if (heartbeat) outbound.heartbeat = /^\d+$/.test(heartbeat) ? `${heartbeat}ms` : heartbeat;
   if (tls) outbound.tls = tls;
   return outbound;
 }
@@ -363,7 +381,9 @@ export function singboxServerPorts(ports: string | undefined): string[] | undefi
     const end = match[2] ? Number(match[2]) : undefined;
     if (start < 1 || start > 65535) return undefined;
     if (end !== undefined && (end < start || end > 65535)) return undefined;
-    rendered.push(end === undefined ? item : `${start}:${end}`);
+    // sing-box port ranges are always `start:end` — a bare "9002" is
+    // rejected at load ("bad port range"), so a single port renders a:a.
+    rendered.push(end === undefined ? `${start}:${start}` : `${start}:${end}`);
   }
   return rendered.length > 0 ? rendered : undefined;
 }
@@ -384,6 +404,10 @@ function hysteria2(node: ProxyNode): SingboxOutbound | null {
   const down = bandwidth(node.down) ?? bandwidth(node.downmbps);
   if (up !== undefined) outbound.up_mbps = up;
   if (down !== undefined) outbound.down_mbps = down;
+  const hopInterval = text(node['hop-interval']);
+  if (hopInterval) {
+    outbound.hop_interval = /^\d+$/.test(hopInterval) ? `${hopInterval}s` : hopInterval;
+  }
   if (tls) outbound.tls = tls;
   // sing-box's hysteria2 outbound replaces `server`/`server_port` with
   // `server_ports` (never both), and only understands the `a:b` range form.
@@ -406,42 +430,96 @@ function anytls(node: ProxyNode): SingboxOutbound | null {
   if (tls) outbound.tls = tls;
   const idleInterval = text(node['idle-session-check-interval']);
   if (idleInterval) outbound.idle_session_check_interval = `${idleInterval}s`;
+  // Same subhub defaults as the mihomo producer (do not keep idle sessions
+  // around): an absent idle timeout means 30s, an absent minimum means 0.
   const idleTimeout = text(node['idle-session-timeout']);
-  if (idleTimeout) outbound.idle_session_timeout = `${idleTimeout}s`;
+  outbound.idle_session_timeout = idleTimeout ? `${idleTimeout}s` : '30s';
   const minIdle = text(node['min-idle-session']);
-  if (minIdle) outbound.min_idle_session = positiveInt(minIdle);
+  outbound.min_idle_session = minIdle ? positiveInt(minIdle) : 0;
   return outbound;
 }
 
-/** sing-box 1.11+ `wireguard` outbound: one peer per endpoint. */
-function wireguard(node: ProxyNode): SingboxOutbound | null {
+function stringList(value: unknown): string[] {
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+  if (!Array.isArray(value)) return [];
+  return value.map((entry) => text(entry)).filter((entry): entry is string => !!entry);
+}
+
+/**
+ * sing-box >= 1.11 wireguard ENDPOINT (the legacy outbound was removed —
+ * current sing-box rejects it). One peer: the node's server/port is the
+ * peer's address/port, `allowed_ips` defaults to full-tunnel like the
+ * reference producers, and the local addresses come from the node's
+ * `local-address`/`address` or mihomo's `ip`/`ipv6` pair.
+ */
+function wireguardEndpoint(node: ProxyNode): SingboxEndpoint | null {
+  if (!node.server || !Number.isInteger(node.port) || node.port < 1 || node.port > 65535) {
+    return null;
+  }
+  if (typeof node.name !== 'string' || node.name === '') return null;
+
+  const firstPeer =
+    Array.isArray(node.peers) && node.peers.length > 0
+      ? (node.peers[0] as Opts)
+      : undefined;
   const privateKey = text(node['private-key']);
-  const publicKey = text(node['public-key']);
+  const publicKey = text(firstPeer?.['public-key']) ?? text(node['public-key']);
   if (!privateKey || !publicKey) return null;
 
-  const outbound = base(node, 'wireguard');
-  // In sing-box the endpoint (`server`/`server_port`) lives on the peer, not
-  // on the outbound itself; the key pair moved up to the outbound in 1.11.
+  let addresses = stringList(node['local-address'] ?? node.address);
+  if (addresses.length === 0) {
+    addresses = [text(node.ip), text(node.ipv6)].filter(
+      (entry): entry is string => !!entry,
+    );
+  }
+  if (addresses.length === 0) return null; // An endpoint without addresses routes nothing.
+
   const peer: Record<string, unknown> = {
-    server: node.server,
-    server_port: node.port,
+    address: text(firstPeer?.server) ?? node.server,
+    port: positiveInt(firstPeer?.port) ?? node.port,
     public_key: publicKey,
   };
-  const preSharedKey = text(node['pre-shared-key']);
+  const preSharedKey = text(firstPeer?.['pre-shared-key']) ?? text(node['pre-shared-key']);
   if (preSharedKey) peer.pre_shared_key = preSharedKey;
-  if (Array.isArray(node.reserved) && node.reserved.length === 3) {
-    peer.reserved = node.reserved.map((entry) => Number(entry));
+  let allowedIps = stringList(firstPeer?.['allowed-ips'] ?? node['allowed-ips']);
+  if (allowedIps.length === 0) {
+    allowedIps = ['0.0.0.0/0'];
+    if (addresses.some((entry) => entry.includes(':'))) allowedIps.push('::/0');
   }
-  outbound.private_key = privateKey;
-  outbound.peers = [peer];
-  const localAddress = node['local-address'] ?? node.address;
-  const addresses = (Array.isArray(localAddress) ? localAddress : [localAddress])
-    .map((entry) => text(entry))
-    .filter((entry): entry is string => !!entry);
-  if (addresses.length > 0) outbound.local_address = addresses;
+  peer.allowed_ips = allowedIps;
+  const reserved = firstPeer?.reserved ?? node.reserved;
+  if (Array.isArray(reserved) && reserved.length === 3) {
+    peer.reserved = reserved.map((entry) => Number(entry));
+  }
+
+  const endpoint: SingboxEndpoint = {
+    type: 'wireguard',
+    tag: node.name,
+    address: addresses,
+    private_key: privateKey,
+    peers: [peer],
+  };
   const mtu = positiveInt(node.mtu);
-  if (mtu !== undefined) outbound.mtu = mtu;
-  return outbound;
+  if (mtu !== undefined) endpoint.mtu = mtu;
+  return endpoint;
+}
+
+/** Endpoints for the wireguard nodes, in input order. */
+export function buildSingboxEndpoints(nodes: ProxyNode[]): SingboxEndpoint[] {
+  const endpoints: SingboxEndpoint[] = [];
+  for (const raw of nodes) {
+    if (raw.type !== 'wireguard') continue;
+    const node = prepareNode(raw);
+    normalizeCommonTransport(node);
+    const endpoint = wireguardEndpoint(node);
+    if (endpoint) endpoints.push(endpoint);
+  }
+  return endpoints;
 }
 
 /**
@@ -487,7 +565,8 @@ export function toSingboxOutbound(node: ProxyNode): SingboxOutbound | null {
     case 'anytls':
       return anytls(node);
     case 'wireguard':
-      return wireguard(node);
+      // Not an outbound in sing-box >= 1.11 — see buildSingboxEndpoints.
+      return null;
     case 'socks':
     case 'socks5':
     case 'http':
@@ -520,10 +599,13 @@ export function buildSingboxOutbounds(nodes: ProxyNode[]): SingboxOutbound[] {
 }
 
 /**
- * The `singbox` export body: `{ "outbounds": [...] }`, two-space indented,
- * trailing newline. No representable node yields `{ "outbounds": [] }`.
+ * The `singbox` export body: `{ "outbounds": [...] }` (plus `endpoints`
+ * when a wireguard node is present), two-space indented, trailing newline.
+ * No representable node yields `{ "outbounds": [] }`.
  */
 export function produceSingbox(nodes: ProxyNode[]): string {
   const config: SingboxConfig = { outbounds: buildSingboxOutbounds(nodes) };
+  const endpoints = buildSingboxEndpoints(nodes);
+  if (endpoints.length > 0) config.endpoints = endpoints;
   return `${JSON.stringify(config, null, 2)}\n`;
 }
