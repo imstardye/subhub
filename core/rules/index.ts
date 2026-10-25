@@ -32,6 +32,15 @@ export {
   isInfoNodeName,
 } from './info-nodes';
 export {
+  EMPTY_RAW_TRAFFIC_INFO,
+  hasRawTrafficInfo,
+  parseByteAmount,
+  parseExpireDate,
+  parseExpireText,
+  parseRawTrafficInfo,
+  type RawTrafficInfo,
+} from './raw-info';
+export {
   BUILTIN_GROUP_MEMBERS,
   minGroupMembers,
   pruneEmptyGroups,

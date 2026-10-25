@@ -25,6 +25,8 @@ import {
   TARGET_LABELS,
   URL_WRITE_ONLY_HINT,
   applyInclusion,
+  applySourceDelete,
+  deleteSourceConfirmText,
   editFormFromSource,
   groupAvailableSources,
   lastRefreshLabel,
@@ -242,6 +244,46 @@ async function submitEdit() {
   }
 }
 
+/* ------------------------------------------------------ delete source -- */
+/**
+ * Two-step delete: the card's 删除 button opens a confirm block that spells the
+ * source name out (防误删). Only the owner's dedicated sources can be deleted;
+ * the server answers 404 for anything else.
+ */
+const deletingSource = ref<UserCenterOwnSource | null>(null);
+const removing = ref(false);
+
+function askDelete(source: UserCenterOwnSource) {
+  clearMessages();
+  editing.value = null;
+  deletingSource.value = source;
+}
+
+async function confirmDelete() {
+  const target = deletingSource.value;
+  if (!target || removing.value || !center.value) return;
+  clearMessages();
+  removing.value = true;
+  try {
+    await $fetch(userCenterApiPath(token.value, `sources/${target.id}`), { method: 'DELETE' });
+    // Update both lists from the answer immediately (cards + 流量概览), then
+    // reconcile with the server (summary, node counts, links).
+    if (center.value) {
+      const next = applySourceDelete(center.value, target.id);
+      center.value.ownSources = next.ownSources;
+      center.value.traffic.sources = next.trafficSources;
+    }
+    deletingSource.value = null;
+    notice.value = `已删除订阅源「${target.name}」`;
+    await refresh();
+  } catch (err) {
+    error2.value = apiErrorMessage(err);
+    deletingSource.value = null;
+  } finally {
+    removing.value = false;
+  }
+}
+
 /* ------------------------------------------------------------ token refresh -- */
 const confirmingRotate = ref(false);
 const rotating = ref(false);
@@ -344,6 +386,9 @@ useHead({ title: '我的订阅 · subhub' });
               <div><dt>剩余</dt><dd>{{ card.remainingLabel }}</dd></div>
               <div><dt>到期</dt><dd>{{ card.expireLabel }}</dd></div>
             </dl>
+            <p v-if="card.rawFields.length" class="hint tiny">
+              剩余 / 到期取自订阅自身报告的信息节点
+            </p>
           </template>
           <p class="hint tiny">
             {{ card.lastRefresh }}
@@ -414,7 +459,10 @@ useHead({ title: '我的订阅 · subhub' });
               <span v-if="source.nodeCount !== null"> · {{ source.nodeCount }} 个节点</span>
               <span v-if="source.health.error"> · {{ source.health.error }}</span>
             </p>
-            <button class="ghost small" type="button" @click="openEdit(source)">编辑</button>
+            <div class="row">
+              <button class="ghost small" type="button" @click="openEdit(source)">编辑</button>
+              <button class="small danger" type="button" @click="askDelete(source)">删除</button>
+            </div>
           </li>
         </ul>
 
@@ -473,6 +521,21 @@ useHead({ title: '我的订阅 · subhub' });
         </div>
       </section>
     </template>
+
+    <!-- ----------------------------------------------------- delete confirm -- -->
+    <div v-if="deletingSource" class="scrim" @click.self="deletingSource = null">
+      <div class="card modal" role="alertdialog" aria-labelledby="delete-title">
+        <h3 id="delete-title">删除订阅源</h3>
+        <p class="confirm-text">{{ deleteSourceConfirmText(deletingSource.name) }}</p>
+        <p class="hint tiny">该订阅源会从你的订阅链接中移除，已合并的公共 / 共享订阅源不受影响。</p>
+        <div class="row">
+          <button class="danger" type="button" :disabled="removing" @click="confirmDelete">
+            {{ removing ? '删除中…' : '确认删除' }}
+          </button>
+          <button class="ghost" type="button" :disabled="removing" @click="deletingSource = null">取消</button>
+        </div>
+      </div>
+    </div>
 
     <!-- ------------------------------------------------------- edit modal -- -->
     <div v-if="editing" class="scrim" @click.self="editing = null">
@@ -770,6 +833,12 @@ button.small {
 button:disabled {
   cursor: default;
   opacity: 0.6;
+}
+.confirm-text {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 .banner {
   max-width: 34rem;

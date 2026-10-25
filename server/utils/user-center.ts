@@ -15,6 +15,13 @@
  * - **Traffic cards** are exactly the user's DEDICATED sources, each with its own
  *   `subscription-userinfo`; the summary aggregates only those. Public/shared
  *   sources appear only as *names* in the inclusion list.
+ * - **Raw subscription info wins.** A card reports what the subscription says
+ *   about *itself*: a field the `subscription-userinfo` header carries is used
+ *   as is, and only the fields the header is missing are filled from the
+ *   source's own info pseudo-nodes (`剩余流量：579.45 GB`, `套餐到期：长期有效`;
+ *   see `core/rules/raw-info.ts`). Fields the provider never reported stay
+ *   empty — nothing is invented. Exports are untouched: they keep dropping
+ *   those pseudo-nodes (built-in info filter).
  * - **Inclusion choice** (`user_source_choices`) applies to public/shared sources
  *   only, defaults to included, and an explicit `false` removes the source from
  *   that user's exports (see `loadUserSourceCaches` in `export-nodes.ts`).
@@ -36,7 +43,7 @@ import {
   type SourceAccessMode,
   type User,
 } from '../db/schema';
-import { createSource, updateSource } from './admin-sources';
+import { createSource, deleteSource, updateSource } from './admin-sources';
 import {
   UA_MAX_LENGTH,
   ValidationError,
@@ -45,10 +52,16 @@ import {
   parseOptionalText,
   parseSourceUrl,
 } from './admin-validation';
-import { filterInfoNodes, parseSubscription } from '../../core';
+import {
+  filterInfoNodes,
+  hasRawTrafficInfo,
+  parseRawTrafficInfo,
+  parseSubscription,
+  type RawTrafficInfo,
+} from '../../core';
 import { isSourceDisabled } from './export-nodes';
 import { refreshSource, type Fetcher } from '../tasks/refresh-sources';
-import type { SubscriptionUserInfo } from './userinfo';
+import { hasUserInfo, type SubscriptionUserInfo } from './userinfo';
 import { findUserByToken, rotateUserToken } from './user-token';
 import {
   USER_CENTER_EXPORT_TARGETS,
@@ -149,6 +162,20 @@ export interface UserCenterTrafficSource {
   userinfo: SubscriptionUserInfo | null;
   /** ISO timestamp of the refresh that captured `userinfo`. */
   userinfoRefreshedAt: string | null;
+  /**
+   * 套餐到期 exactly as the subscription writes it when it is not a date
+   * (`长期有效`). Displayed instead of a date; `userinfo.expire` then stays
+   * `null` so no fake epoch leaks into the summary.
+   */
+  expireText: string | null;
+  /**
+   * Remaining traffic in bytes, from the header when it can be derived
+   * (`total - upload - download`) or from the info nodes (`剩余流量`). `null`
+   * when neither reported it; `0` is a real (exhausted) value.
+   */
+  remaining: number | null;
+  /** Fields taken from the source's own info nodes (not from the header). */
+  rawFields: Array<'remaining' | 'expire'>;
 }
 
 /**
@@ -166,6 +193,11 @@ export interface UserCenterTrafficSummary {
   remaining: number | null;
   /** Unix epoch seconds, earliest expiry among the dedicated sources. */
   expire: number | null;
+  /**
+   * Earliest 套餐到期 wording when the expiry is open-ended (`长期有效`), used
+   * only when no source reported a real date.
+   */
+  expireText: string | null;
   /** How many dedicated sources contributed userinfo. */
   sourcesWithUserinfo: number;
   dedicatedCount: number;
@@ -243,13 +275,15 @@ function addAmount(current: number | null, value: number | null): number | null 
 
 /** Aggregate the dedicated cards into the summary header. */
 export function summarizeTraffic(
-  cards: ReadonlyArray<Pick<UserCenterTrafficSource, 'userinfo'>>,
+  cards: ReadonlyArray<Pick<UserCenterTrafficSource, 'userinfo'> & Partial<Pick<UserCenterTrafficSource, 'remaining' | 'expireText'>>>,
   dedicatedCount = cards.length,
 ): UserCenterTrafficSummary {
   let upload: number | null = null;
   let download: number | null = null;
   let total: number | null = null;
   let expire: number | null = null;
+  let remaining: number | null = null;
+  let expireText: string | null = null;
   let contributing = 0;
   for (const card of cards) {
     const info = card.userinfo;
@@ -258,13 +292,19 @@ export function summarizeTraffic(
     upload = addAmount(upload, info.upload);
     download = addAmount(download, info.download);
     total = addAmount(total, info.total);
+    remaining = addAmount(remaining, card.remaining ?? null);
     if (info.expire !== null && info.expire > 0) {
       expire = expire === null ? info.expire : Math.min(expire, info.expire);
+    } else if (!expireText && card.expireText) {
+      expireText = card.expireText;
     }
   }
   const used = upload === null && download === null ? null : (upload ?? 0) + (download ?? 0);
-  const remaining =
-    total !== null && used !== null ? Math.max(0, total - used) : total ?? null;
+  // Remaining is reported (header or info node) when available; otherwise it is
+  // total − used. Neither is invented when the total is unknown.
+  if (remaining === null) {
+    remaining = total !== null && used !== null ? Math.max(0, total - used) : null;
+  }
   return {
     upload,
     download,
@@ -272,6 +312,7 @@ export function summarizeTraffic(
     used,
     remaining,
     expire,
+    expireText: expire === null ? expireText : null,
     sourcesWithUserinfo: contributing,
     dedicatedCount,
   };
@@ -288,13 +329,80 @@ function storedUserinfo(row: Source): SubscriptionUserInfo | null {
   return any ? info : null;
 }
 
+/**
+ * Info nodes of a cached subscription, or `null` when the cache is empty or
+ * does not parse. Only the *read* path inspects them; nothing is filtered or
+ * written here.
+ */
+export function rawTrafficInfoFromCache(blob: string | null | undefined): RawTrafficInfo | null {
+  const text = blob?.trim();
+  if (!text) return null;
+  try {
+    const info = parseRawTrafficInfo(parseSubscription(text));
+    return hasRawTrafficInfo(info) ? info : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remaining traffic the header can tell us: `total - upload - download`.
+ *
+ * `null` when the header has no total, and also when it has *only* a total: a
+ * provider that reports the quota but no usage is exactly the xxcloud case,
+ * where `total - 0 - 0 = total` would hide the real figure its info node
+ * carries (`剩余流量：579.45 GB`). A total plus usage is real arithmetic.
+ */
+function remainingFromHeader(info: SubscriptionUserInfo | null): number | null {
+  if (!info || info.total === null) return null;
+  if (info.upload === null && info.download === null) return null;
+  return Math.max(0, info.total - (info.upload ?? 0) - (info.download ?? 0));
+}
+
+/**
+ * Merge the header userinfo with the source's own info nodes.
+ *
+ * The header wins per field; only the fields it is missing (`total`/
+ * `upload`/`download` are kept as reported, so 已用 can be derived when the
+ * total came from the header) are filled from `剩余流量` / `套餐到期`. A card with
+ * neither source still has no data (the page says 暂无流量数据).
+ */
+export function mergeUserInfo(
+  header: SubscriptionUserInfo | null,
+  raw: RawTrafficInfo | null,
+): Pick<UserCenterTrafficSource, 'userinfo' | 'remaining' | 'expireText' | 'rawFields'> {
+  const userinfo: SubscriptionUserInfo | null = header ? { ...header } : null;
+  const rawFields: Array<'remaining' | 'expire'> = [];
+
+  let remaining = remainingFromHeader(header);
+  if (remaining === null && raw?.remaining !== null && raw?.remaining !== undefined) {
+    remaining = raw.remaining;
+    rawFields.push('remaining');
+  }
+
+  let expireText: string | null = null;
+  const headerHasExpire = userinfo?.expire !== null && userinfo?.expire !== undefined;
+  if (!headerHasExpire && raw) {
+    if (raw.expire !== null) {
+      userinfo!.expire = raw.expire;
+      rawFields.push('expire');
+    } else if (raw.expireText) {
+      expireText = raw.expireText;
+      rawFields.push('expire');
+    }
+  }
+
+  return { userinfo: userinfo && hasUserInfo(userinfo) ? userinfo : null, remaining, expireText, rawFields };
+}
+
 function toTrafficSource(row: Source): UserCenterTrafficSource {
+  const merged = mergeUserInfo(storedUserinfo(row), rawTrafficInfoFromCache(row.cacheBlob));
   return {
     id: row.id,
     name: row.name,
     enabled: !isSourceDisabled(row),
     health: sourceHealth(row),
-    userinfo: storedUserinfo(row),
+    ...merged,
     userinfoRefreshedAt: row.userinfoRefreshedAt ? row.userinfoRefreshedAt.toISOString() : null,
   };
 }
@@ -528,6 +636,26 @@ export function updateOwnSource(
   }
   updateSource(db, existing.id, patch);
   return getUserCenterSource(db, userId, existing.id);
+}
+
+/**
+ * Delete one of the token owner's dedicated sources
+ * (`DELETE /api/user/:token/sources/:id`).
+ *
+ * Same ownership check as the PATCH: an id that is not a DEDICATED source of
+ * this user (public/shared, another user's, unknown) is a 404, so ids cannot be
+ * probed. The row goes through the admin cascade (`deleteSource`), which drops
+ * the allowlist and `user_source_choices` rows too — no orphan choices survive.
+ */
+export function deleteOwnSource(
+  db: SubhubDb,
+  userId: number,
+  rawId: unknown,
+): { ok: true; id: number; name: string } {
+  const existing = findOwnSource(db, userId, rawId);
+  if (!existing) throw new ValidationError('source not found', 404);
+  deleteSource(db, existing.id);
+  return { ok: true, id: existing.id, name: existing.name };
 }
 
 /**
