@@ -678,9 +678,10 @@ useHead({ title: '我的订阅 · subhub' });
         </div>
       </section>
 
-      <div class="dashboard-grid">
-        <!-- ------------------------------------------------------- links -- -->
-        <n-card class="panel panel-links" title="订阅链接">
+      <!-- --------------------------------------------------------- links -- -->
+      <n-card class="panel panel-links" title="订阅链接">
+        <div class="links-layout">
+          <div class="links-main">
           <div v-if="profileOptions.length > 1" class="field">
             <span class="field-label">规则档</span>
             <n-select v-model:value="selectedProfileValue" :options="profileSelectOptions" />
@@ -713,16 +714,21 @@ useHead({ title: '我的订阅 · subhub' });
               {{ copied === 'active' ? '已复制' : '复制' }}
             </n-button>
           </div>
-          <div v-if="qrSvg" class="qr" :aria-label="`${activeTargetLabel || '主'}链接二维码`">
-            <div class="qr-image" v-html="qrSvg" />
-            <p class="hint tiny">{{ selectedTarget ? `扫描导入 ${activeTargetLabel} 链接` : '扫描导入当前主链接' }}</p>
           </div>
+          <div v-if="qrSvg" class="links-qr">
+            <div class="qr" :aria-label="`${activeTargetLabel || '主'}链接二维码`">
+              <div class="qr-image" v-html="qrSvg" />
+              <p class="hint tiny">{{ selectedTarget ? `扫描导入 ${activeTargetLabel} 链接` : '扫描导入当前主链接' }}</p>
+            </div>
+          </div>
+        </div>
 
           <p class="hint tiny">
             切换规则档只改变上面的链接，不会修改账号默认规则档。Token：{{ maskUserToken(center.user.token) }}
           </p>
         </n-card>
 
+      <div class="lower-grid">
         <!-- --------------------------------------------------- own sources -- -->
         <n-card class="panel panel-sources">
           <template #header>我的订阅源</template>
@@ -798,6 +804,7 @@ useHead({ title: '我的订阅 · subhub' });
           <n-empty v-else description="还没有专属订阅源。" />
         </n-card>
 
+        <div class="stack">
         <!-- ----------------------------------------------- inclusion list -- -->
         <n-card class="panel panel-shared" title="公共 / 共享订阅源">
           <p v-if="!availableGroups.length" class="hint">暂无可选订阅源。</p>
@@ -838,6 +845,7 @@ useHead({ title: '我的订阅 · subhub' });
             </div>
           </div>
         </n-card>
+        </div>
       </div>
     </template>
 
@@ -1267,11 +1275,39 @@ useHead({ title: '我的订阅 · subhub' });
 }
 
 /* ------------------------------------------------------------ panels */
-.dashboard-grid {
+.panel-links {
+  margin-bottom: 18px;
+}
+.links-layout {
+  display: flex;
+  gap: 30px;
+  align-items: stretch;
+}
+.links-main {
+  flex: 1;
+  min-width: 0;
+}
+.links-qr {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding-left: 30px;
+  border-left: 1px solid #eef2f7;
+}
+.links-qr .qr {
+  padding: 0;
+}
+.lower-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1.12fr 1fr;
   gap: 18px;
   align-items: start;
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
 }
 .panel {
   border-radius: 20px;
@@ -1491,8 +1527,17 @@ useHead({ title: '我的订阅 · subhub' });
 
 /* -------------------------------------------------------- responsive */
 @media (max-width: 960px) {
-  .dashboard-grid {
+  .lower-grid {
     grid-template-columns: 1fr;
+  }
+  .links-layout {
+    flex-direction: column;
+    gap: 6px;
+  }
+  .links-qr {
+    justify-content: center;
+    padding-left: 0;
+    border-left: none;
   }
 }
 @media (max-width: 720px) {
