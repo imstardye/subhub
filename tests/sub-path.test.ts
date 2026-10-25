@@ -32,6 +32,8 @@ import { __setServerDbForTest } from '../server/utils/db';
 import { profiles, sources, settings, users } from '../server/db/schema';
 import { encrypt } from '../server/db/crypto';
 import {
+  SUB_PATH_CACHE_TTL_MS,
+  cachedSubPath,
   DEFAULT_SUB_PATH,
   getSubPath,
   invalidateSubPathCache,
@@ -220,6 +222,25 @@ describe('settings storage + API', () => {
   it('setSubPath throws (no write) for an invalid value', () => {
     expect(() => setSubPath(db, 'BAD PATH')).toThrow();
     expect(getSubPath(db)).toBe('s');
+  });
+
+  it('cachedSubPath heals within the TTL when an invalidation is missed', () => {
+    // Regression (live, 2026-10-25): the prefix was changed to `img` in the
+    // settings UI, but the admin gate kept serving the pre-change value from
+    // the never-expiring cache and blanked every /img/* export until the
+    // process restarted. The cache must re-read once its entry passes the
+    // TTL even when no invalidation reaches it (another worker, a direct DB
+    // write, a missed call site).
+    invalidateSubPathCache();
+    const t0 = 1_000_000;
+    expect(cachedSubPath(db, t0)).toBe('s');
+    // A write that bypasses the PUT handler's invalidation:
+    setSubPath(db, 'img');
+    // Within the TTL the cached value is still served (bounded staleness)…
+    expect(cachedSubPath(db, t0 + 1_000)).toBe('s');
+    // …but past the TTL the new value is picked up — never stuck forever.
+    expect(cachedSubPath(db, t0 + SUB_PATH_CACHE_TTL_MS + 1)).toBe('img');
+    invalidateSubPathCache();
   });
 
   it('exposes the effective prefix on the stats payload the UI builds links from', async () => {
