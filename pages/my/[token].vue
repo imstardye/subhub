@@ -57,6 +57,14 @@ import {
   userCenterView,
   type UserCenterPayload,
 } from '~/core/utils/user-center';
+import {
+  OPERATOR_PROTOCOL_TYPES,
+  OPERATOR_TYPE_LABELS,
+  OPERATOR_TYPE_ORDER,
+  defaultOperator,
+  operatorSummary,
+} from '~/core/utils/operators-ui';
+import type { NodeOperator, NodeOperatorType } from '~/core';
 import type { UserCenterOwnSource } from '~/server/utils/user-center';
 
 const route = useRoute();
@@ -437,6 +445,117 @@ async function saveCustomRules() {
     message.error(apiErrorMessage(err));
   } finally {
     rulesBusy.value = false;
+  }
+}
+
+/* ------------------------------------------------------------- operators -- */
+/**
+ * The node operator pipeline editor. The draft mirrors `center.operators`
+ * until the user edits it (dirty); 试算 asks the server to dry-run the
+ * draft against the real nodes, 保存 persists it. Both go through the same
+ * validation, so a bad regex is refused identically in either.
+ */
+interface OperatorsPreviewResult {
+  beforeNames: string[];
+  afterNames: string[];
+  droppedNames: string[];
+  renamed: Array<{ from: string; to: string }>;
+  groups: string[];
+}
+
+const opsDraft = ref<NodeOperator[]>([]);
+const opsDirty = ref(false);
+const opsBusy = ref(false);
+const opsPreviewing = ref(false);
+const opsPreview = ref<OperatorsPreviewResult | null>(null);
+const opsExpanded = ref<number | null>(null);
+const newOpType = ref<NodeOperatorType>('regex-filter');
+const newOpOptions = OPERATOR_TYPE_ORDER.map((type) => ({ label: OPERATOR_TYPE_LABELS[type], value: type }));
+const protocolOptions = OPERATOR_PROTOCOL_TYPES.map((type) => ({ label: type, value: type }));
+
+watch(
+  center,
+  (value) => {
+    if (!value || opsDirty.value) return;
+    opsDraft.value = JSON.parse(JSON.stringify(value.operators)) as NodeOperator[];
+  },
+  { immediate: true },
+);
+
+function opsTouch() {
+  opsDirty.value = true;
+  opsPreview.value = null;
+}
+
+function addOperator() {
+  opsDraft.value = [...opsDraft.value, defaultOperator(newOpType.value)];
+  opsExpanded.value = opsDraft.value.length - 1;
+  opsTouch();
+}
+
+function removeOperator(index: number) {
+  opsDraft.value = opsDraft.value.filter((_, i) => i !== index);
+  opsExpanded.value = null;
+  opsTouch();
+}
+
+function moveOperator(index: number, delta: number) {
+  const next = [...opsDraft.value];
+  const target = index + delta;
+  if (target < 0 || target >= next.length) return;
+  const [item] = next.splice(index, 1);
+  next.splice(target, 0, item!);
+  opsDraft.value = next;
+  opsExpanded.value = target;
+  opsTouch();
+}
+
+/** Tri-state property select value: 'keep' leaves the field unset. */
+function propSelectValue(value: boolean | undefined): string {
+  return value === undefined ? 'keep' : String(value);
+}
+
+function setProp(
+  op: Extract<NodeOperator, { type: 'set-property' }>,
+  field: 'udp' | 'tfo' | 'skipCertVerify',
+  raw: string,
+) {
+  if (raw === 'keep') delete op[field];
+  else op[field] = raw === 'true';
+  opsTouch();
+}
+
+async function previewOperators() {
+  if (opsPreviewing.value) return;
+  opsPreviewing.value = true;
+  try {
+    const result = await $fetch<{ preview: OperatorsPreviewResult }>(
+      userCenterApiPath(token.value, 'operators/preview'),
+      { method: 'POST', body: { operators: opsDraft.value } },
+    );
+    opsPreview.value = result.preview;
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+  } finally {
+    opsPreviewing.value = false;
+  }
+}
+
+async function saveOperators() {
+  if (opsBusy.value) return;
+  opsBusy.value = true;
+  try {
+    const result = await $fetch<{ count: number }>(userCenterApiPath(token.value, 'operators'), {
+      method: 'PUT',
+      body: { operators: opsDraft.value },
+    });
+    opsDirty.value = false;
+    await refresh();
+    message.success(result.count > 0 ? `已保存 ${result.count} 个算子` : '节点处理管线已清空');
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+  } finally {
+    opsBusy.value = false;
   }
 }
 
@@ -925,6 +1044,194 @@ useHead({ title: '我的订阅 · subhub' });
         </n-card>
         </div>
       </div>
+
+      <!-- ----------------------------------------------------- operators -- -->
+      <n-card class="panel panel-operators" title="节点处理">
+        <p class="hint tiny ops-intro">
+          按顺序对你的全部节点执行：过滤 → 去重 → 改名 → 排序 → 改属性。改名在规则档分组匹配之前生效，改太狠会让分组匹配不到节点——先点「试算」看结果再保存。
+        </p>
+
+        <p v-if="opsDraft.length === 0" class="hint">还没有算子，导出与原来完全一致。</p>
+
+        <div v-for="(op, index) in opsDraft" :key="index" class="op-card">
+          <div class="op-head">
+            <n-switch
+              :value="op.enabled !== false"
+              size="small"
+              :disabled="opsBusy"
+              :aria-label="`启用算子 ${index + 1}`"
+              @update:value="(value) => { op.enabled = value; opsTouch(); }"
+            />
+            <button type="button" class="op-title" @click="opsExpanded = opsExpanded === index ? null : index">
+              <span class="op-type">{{ OPERATOR_TYPE_LABELS[op.type] }}</span>
+              <span class="op-summary">{{ operatorSummary(op) }}</span>
+            </button>
+            <div class="op-actions">
+              <n-button size="tiny" secondary :disabled="index === 0 || opsBusy" @click="moveOperator(index, -1)">上移</n-button>
+              <n-button size="tiny" secondary :disabled="index === opsDraft.length - 1 || opsBusy" @click="moveOperator(index, 1)">下移</n-button>
+              <n-button size="tiny" secondary type="error" :disabled="opsBusy" @click="removeOperator(index)">删除</n-button>
+            </div>
+          </div>
+
+          <div v-if="opsExpanded === index" class="op-body">
+            <template v-if="op.type === 'regex-filter'">
+              <div class="op-row">
+                <n-select
+                  :value="op.mode"
+                  :options="[{ label: '剔除匹配的', value: 'drop' }, { label: '只保留匹配的', value: 'keep' }]"
+                  class="op-mode"
+                  @update:value="(value) => { op.mode = value; opsTouch(); }"
+                />
+                <n-input
+                  :value="op.pattern"
+                  class="mono"
+                  placeholder="名称正则，如 游戏|到期|Game"
+                  @update:value="(value) => { op.pattern = value; opsTouch(); }"
+                />
+                <label class="op-check">
+                  <n-switch
+                    :value="!!op.ignoreCase"
+                    size="small"
+                    @update:value="(value) => { op.ignoreCase = value || undefined; opsTouch(); }"
+                  />
+                  <span>忽略大小写</span>
+                </label>
+              </div>
+            </template>
+
+            <template v-else-if="op.type === 'type-filter'">
+              <div class="op-row">
+                <n-select
+                  :value="op.mode"
+                  :options="[{ label: '剔除这些类型', value: 'exclude' }, { label: '只保留这些类型', value: 'include' }]"
+                  class="op-mode"
+                  @update:value="(value) => { op.mode = value; opsTouch(); }"
+                />
+                <n-select
+                  :value="op.types"
+                  :options="protocolOptions"
+                  multiple
+                  class="op-grow"
+                  placeholder="选择协议类型"
+                  @update:value="(value) => { op.types = value; opsTouch(); }"
+                />
+              </div>
+            </template>
+
+            <template v-else-if="op.type === 'handle-duplicate'">
+              <div class="op-row">
+                <n-select
+                  :value="op.by"
+                  :options="[{ label: '按服务器判重', value: 'server' }, { label: '按名称判重', value: 'name' }]"
+                  class="op-mode"
+                  @update:value="(value) => { op.by = value; opsTouch(); }"
+                />
+                <n-select
+                  :value="op.mode"
+                  :options="[{ label: '丢弃重复', value: 'drop' }, { label: '改名保留（加 #序号）', value: 'rename' }]"
+                  class="op-mode"
+                  @update:value="(value) => { op.mode = value; opsTouch(); }"
+                />
+              </div>
+            </template>
+
+            <template v-else-if="op.type === 'regex-rename'">
+              <div v-for="(rule, ruleIndex) in op.rules" :key="ruleIndex" class="op-row">
+                <n-input
+                  :value="rule.pattern"
+                  class="mono"
+                  placeholder="匹配正则，如 ^.*?-"
+                  @update:value="(value) => { rule.pattern = value; opsTouch(); }"
+                />
+                <span class="op-arrow">→</span>
+                <n-input
+                  :value="rule.replacement"
+                  class="mono"
+                  placeholder="替换为，可用 $1（留空 = 删掉匹配部分）"
+                  @update:value="(value) => { rule.replacement = value; opsTouch(); }"
+                />
+                <n-button size="tiny" secondary type="error" :disabled="op.rules.length <= 1" @click="op.rules.splice(ruleIndex, 1); opsTouch()">删组</n-button>
+              </div>
+              <n-button size="small" secondary @click="op.rules.push({ pattern: '', replacement: '' }); opsTouch()">加一组改名</n-button>
+            </template>
+
+            <template v-else-if="op.type === 'sort'">
+              <div class="op-row">
+                <n-select
+                  :value="op.mode"
+                  :options="[{ label: '正则优先级', value: 'regex' }, { label: '名称升序', value: 'name-asc' }, { label: '名称降序', value: 'name-desc' }]"
+                  class="op-mode"
+                  @update:value="(value) => { op.mode = value; opsTouch(); }"
+                />
+              </div>
+              <n-input
+                v-if="op.mode === 'regex'"
+                :value="(op.patterns ?? []).join('\n')"
+                type="textarea"
+                class="mono"
+                :autosize="{ minRows: 3, maxRows: 6 }"
+                placeholder="一行一个正则，匹配靠前的排前面，如：&#10;香港|HK&#10;日本|JP"
+                @update:value="(value) => { op.patterns = value.split('\n').map((line) => line.trim()).filter(Boolean); opsTouch(); }"
+              />
+            </template>
+
+            <template v-else-if="op.type === 'set-property'">
+              <div class="op-row op-props">
+                <label class="op-prop">
+                  <span>UDP</span>
+                  <n-select
+                    :value="propSelectValue(op.udp)"
+                    :options="[{ label: '不修改', value: 'keep' }, { label: '开启', value: 'true' }, { label: '关闭', value: 'false' }]"
+                    @update:value="(value) => setProp(op, 'udp', value)"
+                  />
+                </label>
+                <label class="op-prop">
+                  <span>TFO</span>
+                  <n-select
+                    :value="propSelectValue(op.tfo)"
+                    :options="[{ label: '不修改', value: 'keep' }, { label: '开启', value: 'true' }, { label: '关闭', value: 'false' }]"
+                    @update:value="(value) => setProp(op, 'tfo', value)"
+                  />
+                </label>
+                <label class="op-prop">
+                  <span>跳过证书校验</span>
+                  <n-select
+                    :value="propSelectValue(op.skipCertVerify)"
+                    :options="[{ label: '不修改', value: 'keep' }, { label: '开启', value: 'true' }, { label: '关闭', value: 'false' }]"
+                    @update:value="(value) => setProp(op, 'skipCertVerify', value)"
+                  />
+                </label>
+              </div>
+              <p class="hint tiny">目标客户端不支持的属性会被自动跳过（如 sing-box 没有完整的 udp 开关）。</p>
+            </template>
+          </div>
+        </div>
+
+        <div class="row ops-toolbar">
+          <n-select v-model:value="newOpType" :options="newOpOptions" class="op-newtype" />
+          <n-button secondary :disabled="opsBusy || opsDraft.length >= 20" @click="addOperator">添加算子</n-button>
+          <n-button secondary :loading="opsPreviewing" :disabled="opsBusy" @click="previewOperators">试算</n-button>
+          <n-button type="primary" :loading="opsBusy" :disabled="!opsDirty" @click="saveOperators">保存管线</n-button>
+        </div>
+
+        <div v-if="opsPreview" class="ops-preview">
+          <p class="ops-preview-line">
+            节点 <strong>{{ opsPreview.beforeNames.length }}</strong> → <strong>{{ opsPreview.afterNames.length }}</strong> 个，
+            存活分组 {{ opsPreview.groups.length }} 个<span v-if="opsPreview.groups.length">：{{ opsPreview.groups.join('、') }}</span>
+          </p>
+          <p v-if="opsPreview.renamed.length" class="hint tiny">
+            改名 {{ opsPreview.renamed.length }} 个：{{ opsPreview.renamed.slice(0, 6).map((item) => `${item.from} → ${item.to}`).join('；') }}<span v-if="opsPreview.renamed.length > 6">…</span>
+          </p>
+          <p v-if="opsPreview.droppedNames.length" class="hint tiny">
+            被去掉 {{ opsPreview.droppedNames.length }} 个：{{ opsPreview.droppedNames.slice(0, 8).join('、') }}<span v-if="opsPreview.droppedNames.length > 8">…</span>
+          </p>
+          <p v-if="!opsPreview.renamed.length && !opsPreview.droppedNames.length" class="hint tiny">这条管线对当前节点没有影响。</p>
+        </div>
+
+        <p class="hint tiny">
+          注意：自定义规则里如果有以「节点名」为策略的规则，改名后需要同步修改，否则那条规则会被自动跳过。
+        </p>
+      </n-card>
     </template>
 
     <!-- ---------------------------------------------------- change password -- -->
@@ -1587,6 +1894,127 @@ useHead({ title: '我的订阅 · subhub' });
 }
 .panel-rules .hint {
   margin: 10px 0 0;
+}
+.panel-operators {
+  margin-top: 22px;
+}
+.ops-intro {
+  margin: 0 0 12px;
+}
+.op-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: #fff;
+}
+.op-card + .op-card {
+  margin-top: 10px;
+}
+.op-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.op-title {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+.op-type {
+  font-weight: 600;
+  color: #1e293b;
+  white-space: nowrap;
+}
+.op-summary {
+  color: #64748b;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.op-actions {
+  display: flex;
+  gap: 6px;
+}
+.op-body {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #eef2f7;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.op-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.op-row .mono,
+.mono :deep(input),
+.mono :deep(textarea) {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12.5px;
+}
+.op-mode {
+  width: 170px;
+  flex: none;
+}
+.op-grow {
+  flex: 1;
+}
+.op-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: #475569;
+  white-space: nowrap;
+}
+.op-arrow {
+  color: #94a3b8;
+}
+.op-props {
+  flex-wrap: wrap;
+}
+.op-prop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: #475569;
+}
+.op-prop .n-select {
+  width: 120px;
+}
+.ops-toolbar {
+  margin-top: 14px;
+  align-items: center;
+}
+.op-newtype {
+  width: 170px;
+}
+.ops-preview {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f0f7ff;
+  border: 1px solid #dbe7fd;
+}
+.ops-preview-line {
+  margin: 0;
+  font-size: 13.5px;
+  color: #1e293b;
+}
+.ops-preview .hint {
+  margin: 6px 0 0;
 }
 .account-row {
   display: flex;

@@ -37,6 +37,12 @@ export const users = sqliteTable('users', {
   customRules: text('custom_rules'),
   /** Where the custom rules merge: 'prepend' (default) or 'append'. */
   customRulesPosition: text('custom_rules_position'),
+  /**
+   * The user's node operator pipeline (JSON array, `core/operators.ts`),
+   * validated at save time. NULL/empty = no pipeline. Applied to the merged
+   * node list at export, before profile group expansion.
+   */
+  operators: text('operators'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().defaultNow(),
 });
 

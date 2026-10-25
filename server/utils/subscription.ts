@@ -20,6 +20,7 @@ import { and, eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { accessLogs, users } from '../db/schema';
 import {
+  applyStoredOperators,
   collectUserNodes,
   collectUserUserInfo,
   loadUserProfile,
@@ -340,7 +341,12 @@ export async function handleSubscriptionExport(
       deps.resolveProfileIni,
       overrideProfileId,
     );
-    body = renderTargetBody(target, loaded?.nodes ?? nodes, {}, loaded?.profile ?? null);
+    body = renderTargetBody(
+      target,
+      loaded?.nodes ?? applyStoredOperators(db, user.id, nodes),
+      {},
+      loaded?.profile ?? null,
+    );
     userinfo = collectUserUserInfo(db, user.id);
   } catch {
     logAccess(db, {

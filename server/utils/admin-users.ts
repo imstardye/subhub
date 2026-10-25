@@ -26,6 +26,7 @@ import {
 import { validatePassword } from '../../core/utils/user-password';
 import { hashPassword } from './user-password';
 import { readUserCustomRules, saveUserCustomRules } from './custom-rules';
+import { readUserOperators, saveUserOperators } from './operators';
 import type { CustomRulePosition } from '../../core';
 
 /** User as exposed by the API — the token is included on purpose (owner UI). */
@@ -41,6 +42,8 @@ export interface AdminUser {
   /** The user's own custom rules ('' = none) and where they merge. */
   customRules: string;
   customRulesPosition: CustomRulePosition;
+  /** How many node operators the user has configured (content stays in /my). */
+  operatorsCount: number;
   createdAt: string;
 }
 
@@ -56,6 +59,7 @@ export function toAdminUser(row: User): AdminUser {
     passwordSet: Boolean(row.passwordHash),
     customRules: custom.text,
     customRulesPosition: custom.position,
+    operatorsCount: readUserOperators(row).count,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -130,6 +134,15 @@ export async function updateUser(
 
   if ('customRules' in body) {
     await saveUserCustomRules(db, id, body.customRules, body.customRulesPosition);
+    const refreshed = db.select().from(users).where(eq(users.id, id)).get();
+    if (!refreshed) throw new ValidationError('user not found', 404);
+    row = refreshed;
+  }
+
+  // The operator pipeline shares its validated save path with /my; the
+  // admin UI only sends this to clear the pipeline (`operators: []`).
+  if ('operators' in body) {
+    saveUserOperators(db, id, body.operators);
     const refreshed = db.select().from(users).where(eq(users.id, id)).get();
     if (!refreshed) throw new ValidationError('user not found', 404);
     row = refreshed;
