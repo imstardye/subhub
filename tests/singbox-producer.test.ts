@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  buildSingboxEndpoints,
   buildSingboxOutbounds,
   parseSubscription,
   produceSingbox,
@@ -285,6 +286,7 @@ describe('singbox producer: golden outbounds', () => {
           'udp-relay-mode': 'native',
           'reduce-rtt': true,
           'udp-over-tcp': true,
+          'heartbeat-interval': 10000,
         }),
       ),
     ).toEqual({
@@ -298,6 +300,8 @@ describe('singbox producer: golden outbounds', () => {
       udp_relay_mode: 'native',
       udp_over_stream: true,
       zero_rtt_handshake: true,
+      // mihomo heartbeat-interval is milliseconds, not seconds.
+      heartbeat: '10000ms',
       tls: { enabled: true, server_name: 'tuic.example.com', alpn: ['h3'] },
     });
   });
@@ -345,6 +349,7 @@ describe('singbox producer: golden outbounds', () => {
           up: '50',
           down: '100',
           ports: '8443-8445',
+          'hop-interval': 30,
         }),
       ),
     ).toEqual({
@@ -355,6 +360,7 @@ describe('singbox producer: golden outbounds', () => {
       obfs: { type: 'salamander', password: 'fake-obfs' },
       up_mbps: 50,
       down_mbps: 100,
+      hop_interval: '30s',
       tls: { enabled: true, server_name: 'hy2.example.com' },
       // Port hopping replaces server_port in sing-box.
       server_ports: ['8443:8445'],
@@ -389,40 +395,126 @@ describe('singbox producer: golden outbounds', () => {
     });
   });
 
-  it('wireguard keeps the endpoint on the peer', () => {
+  it('anytls without tuning gets the subhub idle defaults (like mihomo)', () => {
     expect(
       outboundOf(
         node({
-          type: 'wireguard',
-          name: 'WG',
-          server: 'wg.example.com',
-          port: 51820,
-          'private-key': 'fake-private-key',
-          'public-key': 'fake-public-key',
-          'pre-shared-key': 'fake-psk',
-          'local-address': ['10.0.0.2/32', 'fd00::2/128'],
-          mtu: 1420,
-          reserved: [1, 2, 3],
+          type: 'anytls',
+          name: 'AnyTLS-bare',
+          server: 'anytls.example.com',
+          port: 443,
+          password: 'fake-password',
+          sni: 'anytls.example.com',
         }),
       ),
     ).toEqual({
-      type: 'wireguard',
-      tag: 'WG',
-      server: 'wg.example.com',
-      server_port: 51820,
-      private_key: 'fake-private-key',
-      peers: [
-        {
-          server: 'wg.example.com',
-          server_port: 51820,
-          public_key: 'fake-public-key',
-          pre_shared_key: 'fake-psk',
-          reserved: [1, 2, 3],
-        },
-      ],
-      local_address: ['10.0.0.2/32', 'fd00::2/128'],
-      mtu: 1420,
+      type: 'anytls',
+      tag: 'AnyTLS-bare',
+      server: 'anytls.example.com',
+      server_port: 443,
+      password: 'fake-password',
+      tls: { enabled: true, server_name: 'anytls.example.com' },
+      idle_session_timeout: '30s',
+      min_idle_session: 0,
     });
+  });
+
+  it('vless packet-encoding maps to packet_encoding', () => {
+    expect(
+      outboundOf(node({ type: 'vless', uuid: UUID, 'packet-encoding': 'xudp' }))
+        .packet_encoding,
+    ).toBe('xudp');
+  });
+
+  it('wireguard is an endpoint (sing-box >= 1.11), never an outbound', () => {
+    const wg = node({
+      type: 'wireguard',
+      name: 'WG',
+      server: 'wg.example.com',
+      port: 51820,
+      'private-key': 'fake-private-key',
+      'public-key': 'fake-public-key',
+      'pre-shared-key': 'fake-psk',
+      'local-address': ['10.0.0.2/32', 'fd00::2/128'],
+      mtu: 1420,
+      reserved: [1, 2, 3],
+    });
+    // The legacy outbound form is rejected by current sing-box
+    // ("unknown field server"), so outbounds stay empty...
+    expect(buildSingboxOutbounds([wg])).toEqual([]);
+    // ...and the node lands in `endpoints` with the peer carrying the
+    // server address/port and a full-tunnel allowed_ips default.
+    expect(buildSingboxEndpoints([wg])).toEqual([
+      {
+        type: 'wireguard',
+        tag: 'WG',
+        address: ['10.0.0.2/32', 'fd00::2/128'],
+        private_key: 'fake-private-key',
+        peers: [
+          {
+            address: 'wg.example.com',
+            port: 51820,
+            public_key: 'fake-public-key',
+            pre_shared_key: 'fake-psk',
+            allowed_ips: ['0.0.0.0/0', '::/0'],
+            reserved: [1, 2, 3],
+          },
+        ],
+        mtu: 1420,
+      },
+    ]);
+    const parsed = JSON.parse(produceSingbox([wg])) as {
+      outbounds: unknown[];
+      endpoints?: unknown[];
+    };
+    expect(parsed.outbounds).toEqual([]);
+    expect(parsed.endpoints).toHaveLength(1);
+    // No wireguard node -> no `endpoints` key at all.
+    expect(
+      JSON.parse(produceSingbox([node({ cipher: 'aes-256-gcm', password: 'x' })])),
+    ).not.toHaveProperty('endpoints');
+  });
+
+  it('wireguard accepts mihomo ip/ipv6 fields and explicit allowed-ips', () => {
+    expect(
+      buildSingboxEndpoints([
+        node({
+          type: 'wireguard',
+          name: 'WG2',
+          server: 'wg2.example.com',
+          port: 51820,
+          'private-key': 'fake-private-key',
+          'public-key': 'fake-public-key',
+          ip: '10.0.0.2/32',
+          'allowed-ips': ['10.0.0.0/8'],
+        }),
+      ]),
+    ).toEqual([
+      {
+        type: 'wireguard',
+        tag: 'WG2',
+        address: ['10.0.0.2/32'],
+        private_key: 'fake-private-key',
+        peers: [
+          {
+            address: 'wg2.example.com',
+            port: 51820,
+            public_key: 'fake-public-key',
+            allowed_ips: ['10.0.0.0/8'],
+          },
+        ],
+      },
+    ]);
+    // No local address at all: the endpoint would route nothing, skip it.
+    expect(
+      buildSingboxEndpoints([
+        node({
+          type: 'wireguard',
+          'private-key': 'fake-private-key',
+          'public-key': 'fake-public-key',
+        }),
+      ]),
+    ).toEqual([]);
   });
 
   it('unauthenticated socks and http dialers', () => {
@@ -526,8 +618,10 @@ proxies:
 describe('singbox producer: helpers', () => {
   it.each([
     ['9000-9010', ['9000:9010']],
-    ['9000,9002', ['9000', '9002']],
-    ['9000-9010,9012', ['9000:9010', '9012']],
+    // A bare single port is rejected by sing-box ("bad port range");
+    // singles must render as a:a ranges.
+    ['9000,9002', ['9000:9000', '9002:9002']],
+    ['9000-9010,9012', ['9000:9010', '9012:9012']],
   ])('converts port hops %s', (input, expected) => {
     expect(singboxServerPorts(input)).toEqual(expected);
   });

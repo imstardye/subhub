@@ -31,13 +31,14 @@ export {
   URI_SUPPORTED_TYPES,
 } from './uri';
 export {
+  buildSingboxEndpoints,
   buildSingboxOutbounds,
   produceSingbox,
   singboxServerPorts,
   SINGBOX_SUPPORTED_TYPES,
   toSingboxOutbound,
 } from './singbox';
-export type { SingboxConfig, SingboxOutbound } from './singbox';
+export type { SingboxConfig, SingboxEndpoint, SingboxOutbound } from './singbox';
 export {
   buildLoonGroups,
   buildLoonProxies,
