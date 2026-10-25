@@ -23,6 +23,8 @@ import {
   NOTE_MAX_LENGTH,
   ValidationError,
 } from './admin-validation';
+import { validatePassword } from '../../core/utils/user-password';
+import { hashPassword } from './user-password';
 
 /** User as exposed by the API — the token is included on purpose (owner UI). */
 export interface AdminUser {
@@ -32,6 +34,8 @@ export interface AdminUser {
   profileId: number | null;
   enabled: boolean;
   note: string | null;
+  /** Whether a /my password is set. The hash itself is never exposed. */
+  passwordSet: boolean;
   createdAt: string;
 }
 
@@ -43,6 +47,7 @@ export function toAdminUser(row: User): AdminUser {
     profileId: row.profileId ?? null,
     enabled: row.enabled,
     note: row.note ?? null,
+    passwordSet: Boolean(row.passwordHash),
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -165,6 +170,55 @@ export function setUserToken(db: SubhubDb, rawId: unknown, rawToken: unknown): A
     }
     throw error;
   }
+}
+
+/**
+ * Set a /my password on the admin's behalf (PUT /api/admin/users/:id/password).
+ *
+ * Same 6–64 policy and scrypt storage as the user-facing setup. The password
+ * version is bumped, so every existing /my session for that user dies at once;
+ * the administrator never sees the hash or the plaintext back.
+ */
+export function setUserPassword(db: SubhubDb, rawId: unknown, rawPassword: unknown): AdminUser {
+  const id = parseId(rawId);
+  const existing = db.select().from(users).where(eq(users.id, id)).get();
+  if (!existing) throw new ValidationError('user not found', 404);
+  const checked = validatePassword(rawPassword);
+  if (!checked.ok) throw new ValidationError(checked.error);
+  const row = db
+    .update(users)
+    .set({
+      passwordHash: hashPassword(checked.password),
+      passwordVersion: (existing.passwordVersion ?? 0) + 1,
+    })
+    .where(eq(users.id, id))
+    .returning()
+    .get();
+  if (!row) throw new ValidationError('user not found', 404);
+  return toAdminUser(row);
+}
+
+/**
+ * Reset a /my password (DELETE /api/admin/users/:id/password): clear the hash
+ * and bump the version. The next /my visit goes back to the 设置密码 flow.
+ * Resetting an already password-less user still bumps the version (harmless
+ * and keeps the "reset invalidates sessions" promise unconditional).
+ */
+export function resetUserPassword(db: SubhubDb, rawId: unknown): AdminUser {
+  const id = parseId(rawId);
+  const existing = db.select().from(users).where(eq(users.id, id)).get();
+  if (!existing) throw new ValidationError('user not found', 404);
+  const row = db
+    .update(users)
+    .set({
+      passwordHash: null,
+      passwordVersion: (existing.passwordVersion ?? 0) + 1,
+    })
+    .where(eq(users.id, id))
+    .returning()
+    .get();
+  if (!row) throw new ValidationError('user not found', 404);
+  return toAdminUser(row);
 }
 
 /**

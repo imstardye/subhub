@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS users (
   profile_id INTEGER,
   enabled INTEGER NOT NULL DEFAULT 1,
   note TEXT,
+  password_hash TEXT,
+  password_version INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL DEFAULT (cast((julianday('now') - 2440587.5)*86400000 as integer))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_token_unique ON users (token);
@@ -136,6 +138,16 @@ CREATE TABLE IF NOT EXISTS settings (
  * before deleting the user.
  */
 function ensureAddedColumns(sqlite: Database.Database): void {
+  // User-center password columns (password gate on /my). Both are additive and
+  // idempotent: existing users keep NULL/0, i.e. "no password yet".
+  const userColumns = sqlite.pragma('table_info(users)') as Array<{ name: string }>;
+  if (!userColumns.some((column) => column.name === 'password_hash')) {
+    sqlite.exec('ALTER TABLE users ADD COLUMN password_hash TEXT');
+  }
+  if (!userColumns.some((column) => column.name === 'password_version')) {
+    sqlite.exec('ALTER TABLE users ADD COLUMN password_version INTEGER NOT NULL DEFAULT 0');
+  }
+
   const columns = sqlite.pragma('table_info(sources)') as Array<{ name: string }>;
   const hasOwner = columns.some((column) => column.name === 'owner_user_id');
   if (!hasOwner) {

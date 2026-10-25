@@ -3,9 +3,12 @@
 /**
  * Self-service user center — `/my/<token>`.
  *
- * PUBLIC page: the token in the URL *is* the credential (no accounts, no
- * password). It is outside the admin gate (`/my` is in `USER_CENTER_PAGES`), so
- * it renders without any gate cookie and must keep working exactly like `/s/*`.
+ * PUBLIC page: the token in the URL identifies the account, and a password gate
+ * protects it. Opening the page asks the server for the data; the server answers
+ * 401 `needs-setup` (no password yet -> 设置密码) or `needs-password` (-> 输入密码)
+ * unless the signed `subhub_my` cookie matches the user and password version.
+ * The subscription export (`/<prefix>/<token>/...`) is not gated — clients must
+ * keep fetching it automatically.
  *
  * Mobile-first, light theme. Chinese labels. Everything it shows is decided in
  * `core/utils/user-center.ts` (pure, unit-tested): the payload never carries a
@@ -21,6 +24,12 @@ definePageMeta({ layout: false });
 import { NAlert, NButton, NCard, NEmpty, NForm, NFormItem, NIcon, NInput, NModal, NProgress, NSelect, NSpin, NSwitch, NTag, useDialog, useMessage } from 'naive-ui';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import { qrSvgPath } from '~/core/utils/qr';
+import {
+  confirmPasswordError,
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+  validatePassword,
+} from '~/core/utils/user-password';
 import {
   HEALTH_LABELS,
   TARGET_LABELS,
@@ -42,6 +51,7 @@ import {
   targetLinks,
   trafficCard,
   userCenterApiPath,
+  userCenterLockFromError,
   userCenterPath,
   userCenterView,
   type UserCenterPayload,
@@ -52,18 +62,25 @@ const route = useRoute();
 const token = computed(() => String(route.params.token ?? ''));
 const message = useMessage();
 const dialog = useDialog();
+/** Forwards the session cookie during SSR; plain `$fetch` on the client. */
+const requestFetch = useRequestFetch();
 
 const { data, pending, error, refresh } = await useAsyncData(
   () => `user-center-${token.value}`,
-  () => $fetch<UserCenterPayload>(userCenterApiPath(token.value, '')),
+  // `useRequestFetch` forwards the browser's session cookie during SSR, so a
+  // returning user gets the dashboard on the first paint instead of the
+  // password form. The bare `$fetch` is anonymous server-side.
+  () => requestFetch<UserCenterPayload>(userCenterApiPath(token.value, '')),
   { watch: [token] },
 );
 
+const lock = computed(() => userCenterLockFromError(error.value));
 const view = computed(() =>
   userCenterView({
     data: data.value,
     error: error.value ? apiErrorMessage(error.value) : null,
     pending: pending.value,
+    lock: lock.value,
   }),
 );
 const center = computed(() => (view.value.kind === 'ready' ? view.value.data : null));
@@ -303,6 +320,107 @@ async function rotateToken() {
   }
 }
 
+/* --------------------------------------------------------- password gate -- */
+/**
+ * Setup vs. unlock form. The server decides which one is needed and answers
+ * 401 with `{ status }`; `lock` above mirrors that. Setup also asks for the
+ * confirmation field (client-side only — the server never needs it).
+ */
+const authForm = reactive({ password: '', confirm: '' });
+const authBusy = ref(false);
+const authError = ref('');
+
+async function submitAuth() {
+  const mode = view.value.kind === 'locked' ? view.value.lock : null;
+  if (!mode || authBusy.value) return;
+  const checked = validatePassword(authForm.password);
+  if (!checked.ok) {
+    authError.value = checked.error;
+    return;
+  }
+  if (mode === 'needs-setup') {
+    const mismatch = confirmPasswordError(checked.password, authForm.confirm);
+    if (mismatch) {
+      authError.value = mismatch;
+      return;
+    }
+  }
+  authBusy.value = true;
+  authError.value = '';
+  try {
+    await $fetch(userCenterApiPath(token.value, mode === 'needs-setup' ? 'password' : 'unlock'), {
+      method: 'POST',
+      body: { password: checked.password },
+    });
+    authForm.password = '';
+    authForm.confirm = '';
+    await refresh();
+  } catch (err) {
+    // A password reset while this page was open switches the required form.
+    const nextLock = userCenterLockFromError(err);
+    if (nextLock && nextLock !== mode) {
+      await refresh();
+    } else {
+      authError.value = apiErrorMessage(err);
+    }
+  } finally {
+    authBusy.value = false;
+  }
+}
+
+/* ------------------------------------------------------- change password -- */
+const passwordOpen = ref(false);
+const passwordForm = reactive({ currentPassword: '', newPassword: '', confirm: '' });
+const passwordBusy = ref(false);
+
+function openPasswordChange() {
+  passwordForm.currentPassword = '';
+  passwordForm.newPassword = '';
+  passwordForm.confirm = '';
+  passwordOpen.value = true;
+}
+
+function closePasswordChange() {
+  passwordOpen.value = false;
+  passwordForm.currentPassword = '';
+  passwordForm.newPassword = '';
+  passwordForm.confirm = '';
+}
+
+async function submitPasswordChange() {
+  if (passwordBusy.value) return;
+  const checked = validatePassword(passwordForm.newPassword);
+  if (!checked.ok) {
+    message.error(checked.error);
+    return;
+  }
+  const mismatch = confirmPasswordError(checked.password, passwordForm.confirm);
+  if (mismatch) {
+    message.error(mismatch);
+    return;
+  }
+  if (!passwordForm.currentPassword) {
+    message.error('请填写当前密码');
+    return;
+  }
+  passwordBusy.value = true;
+  try {
+    await $fetch(userCenterApiPath(token.value, 'password'), {
+      method: 'PUT',
+      body: {
+        currentPassword: passwordForm.currentPassword,
+        newPassword: checked.password,
+      },
+    });
+    message.success('密码已修改，其他设备需要重新输入密码');
+    closePasswordChange();
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+  } finally {
+    passwordBusy.value = false;
+  }
+}
+
 /* ---------------------------------------------------------------- derived -- */
 const cards = computed(() => (center.value ? center.value.traffic.sources.map((card) => trafficCard(card)) : []));
 const summary = computed(() => (center.value ? summaryBar(center.value.traffic.summary) : summaryBar(null)));
@@ -354,6 +472,49 @@ useHead({ title: '我的订阅 · subhub' });
       <n-spin size="small" />
       <span>正在加载…</span>
     </div>
+
+    <n-card v-else-if="view.kind === 'locked'" class="state-card auth-card">
+      <template #header>
+        {{ view.lock === 'needs-setup' ? '设置访问密码' : '输入访问密码' }}
+      </template>
+      <p class="hint">
+        {{ view.lock === 'needs-setup'
+          ? `首次进入请设置密码（${PASSWORD_MIN_LENGTH}–${PASSWORD_MAX_LENGTH} 个字符），之后凭密码进入本页。`
+          : '该账号已设置密码，请输入后进入。' }}
+      </p>
+      <n-form class="form" @submit.prevent="submitAuth">
+        <n-form-item :label="view.lock === 'needs-setup' ? '设置密码' : '密码'" :show-feedback="false">
+          <n-input
+            v-model:value="authForm.password"
+            type="password"
+            show-password-on="click"
+            :autocomplete="view.lock === 'needs-setup' ? 'new-password' : 'current-password'"
+            :maxlength="PASSWORD_MAX_LENGTH"
+            placeholder="请输入密码"
+            :disabled="authBusy"
+            :input-props="{ 'aria-label': view.lock === 'needs-setup' ? '设置密码' : '密码' }"
+          />
+        </n-form-item>
+        <n-form-item v-if="view.lock === 'needs-setup'" label="确认密码" :show-feedback="false">
+          <n-input
+            v-model:value="authForm.confirm"
+            type="password"
+            show-password-on="click"
+            autocomplete="new-password"
+            :maxlength="PASSWORD_MAX_LENGTH"
+            placeholder="再次输入密码"
+            :disabled="authBusy"
+            :input-props="{ 'aria-label': '确认密码' }"
+          />
+        </n-form-item>
+        <n-alert v-if="authError" type="error" :bordered="false" role="alert">{{ authError }}</n-alert>
+        <div class="row">
+          <n-button type="primary" attr-type="submit" :loading="authBusy">
+            {{ authBusy ? '处理中…' : view.lock === 'needs-setup' ? '设置并进入' : '进入' }}
+          </n-button>
+        </div>
+      </n-form>
+    </n-card>
 
     <n-card v-else-if="view.kind === 'error'" class="state-card">
       <p class="state-title">{{ view.message }}</p>
@@ -537,6 +698,14 @@ useHead({ title: '我的订阅 · subhub' });
           <p class="hint tiny">取消勾选后，该订阅源不会出现在你的订阅链接中。</p>
         </n-card>
 
+        <!-- ------------------------------------------------------ password -- -->
+        <n-card class="panel panel-password" title="访问密码">
+          <p class="hint tiny">修改后其他设备上的登录会失效，需要重新输入新密码。</p>
+          <div class="row">
+            <n-button secondary @click="openPasswordChange">修改密码</n-button>
+          </div>
+        </n-card>
+
         <!-- ------------------------------------------------------- rotate -- -->
         <n-card class="panel panel-token" title="重置 Token">
           <p class="hint tiny">重置后旧链接立即失效，需要重新导入新链接。</p>
@@ -546,6 +715,57 @@ useHead({ title: '我的订阅 · subhub' });
         </n-card>
       </div>
     </template>
+
+    <!-- ---------------------------------------------------- change password -- -->
+    <n-modal
+      :show="passwordOpen"
+      preset="card"
+      class="modal-card"
+      title="修改密码"
+      @update:show="(value) => { if (!value) closePasswordChange(); }"
+    >
+      <n-form class="form" @submit.prevent="submitPasswordChange">
+        <n-form-item label="当前密码" :show-feedback="false">
+          <n-input
+            v-model:value="passwordForm.currentPassword"
+            type="password"
+            show-password-on="click"
+            autocomplete="current-password"
+            :disabled="passwordBusy"
+            :input-props="{ 'aria-label': '当前密码' }"
+          />
+        </n-form-item>
+        <n-form-item label="新密码" :show-feedback="false">
+          <n-input
+            v-model:value="passwordForm.newPassword"
+            type="password"
+            show-password-on="click"
+            autocomplete="new-password"
+            :maxlength="PASSWORD_MAX_LENGTH"
+            :placeholder="`${PASSWORD_MIN_LENGTH}–${PASSWORD_MAX_LENGTH} 个字符`"
+            :disabled="passwordBusy"
+            :input-props="{ 'aria-label': '新密码' }"
+          />
+        </n-form-item>
+        <n-form-item label="确认新密码" :show-feedback="false">
+          <n-input
+            v-model:value="passwordForm.confirm"
+            type="password"
+            show-password-on="click"
+            autocomplete="new-password"
+            :maxlength="PASSWORD_MAX_LENGTH"
+            :disabled="passwordBusy"
+            :input-props="{ 'aria-label': '确认新密码' }"
+          />
+        </n-form-item>
+        <div class="row">
+          <n-button type="primary" attr-type="submit" :loading="passwordBusy">
+            {{ passwordBusy ? '保存中…' : '保存' }}
+          </n-button>
+          <n-button :disabled="passwordBusy" @click="closePasswordChange">取消</n-button>
+        </div>
+      </n-form>
+    </n-modal>
 
     <!-- ----------------------------------------------------- add source -- -->
     <n-modal v-model:show="addOpen" preset="card" class="modal-card" title="添加订阅源">
@@ -802,6 +1022,10 @@ h3 {
   grid-column: span 7;
 }
 
+.panel-password {
+  grid-column: span 7;
+}
+
 .panel-token {
   grid-column: span 5;
 }
@@ -972,6 +1196,7 @@ h3 {
   .panel-links,
   .panel-sources,
   .panel-shared,
+  .panel-password,
   .panel-token {
     grid-column: span 12;
   }

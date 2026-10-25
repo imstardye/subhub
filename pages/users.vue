@@ -44,6 +44,11 @@ import {
   type UserSourceCounts,
 } from '~/core/utils/admin-ui';
 import { validateCustomToken } from '~/core/utils/token-form';
+import {
+  PASSWORD_MAX_LENGTH,
+  PASSWORD_MIN_LENGTH,
+  validatePassword,
+} from '~/core/utils/user-password';
 
 const route = useRoute();
 const users = ref<AdminUser[]>([]);
@@ -71,6 +76,10 @@ const subPath = useState<string>('admin-sub-path', () => 's');
 /** The 自定义令牌 dialog: which user, the draft, and its own error line. */
 const tokenEditing = ref<AdminUser | null>(null);
 const tokenDraft = ref('');
+
+/** The 设置密码 dialog (admins never see an existing password). */
+const passwordEditing = ref<AdminUser | null>(null);
+const passwordDraft = ref('');
 
 const profileSelectOptions = computed(() => [
   { label: '无', value: '' },
@@ -318,6 +327,72 @@ function closeTokenDialog() {
   tokenDraft.value = '';
 }
 
+function openPasswordDialog(user: AdminUser) {
+  passwordEditing.value = user;
+  passwordDraft.value = '';
+}
+
+function closePasswordDialog() {
+  passwordEditing.value = null;
+  passwordDraft.value = '';
+}
+
+/**
+ * 设置密码: PUT the admin-chosen password. The answer only carries
+ * `passwordSet`, so the UI never receives a hash or the plaintext.
+ */
+async function savePassword() {
+  const user = passwordEditing.value;
+  if (!user || busyId.value !== null) return;
+  const checked = validatePassword(passwordDraft.value);
+  if (!checked.ok) {
+    message.error(checked.error);
+    return;
+  }
+  busyId.value = user.id;
+  try {
+    const res = await $fetch<{ item: AdminUser }>(`/api/admin/users/${user.id}/password`, {
+      method: 'PUT',
+      body: { password: checked.password },
+    });
+    users.value = users.value.map((u) => (u.id === res.item.id ? res.item : u));
+    message.success(`已为「${user.name}」设置访问密码`);
+    closePasswordDialog();
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+  } finally {
+    busyId.value = null;
+  }
+}
+
+/** 重置密码: clear it; the user sets a new one on their next /my visit. */
+function askResetPassword(user: AdminUser) {
+  if (busyId.value !== null || !user.passwordSet) return;
+  dialog.warning({
+    title: '重置密码',
+    content: `重置「${user.name}」的访问密码？重置后现有登录立即失效，该用户下次打开 /my 时需要自己重新设置密码。`,
+    positiveText: '确认重置',
+    negativeText: '取消',
+    onPositiveClick: () => doResetPassword(user),
+  });
+}
+
+async function doResetPassword(user: AdminUser) {
+  if (busyId.value !== null) return;
+  busyId.value = user.id;
+  try {
+    const res = await $fetch<{ item: AdminUser }>(`/api/admin/users/${user.id}/password`, {
+      method: 'DELETE',
+    });
+    users.value = users.value.map((u) => (u.id === res.item.id ? res.item : u));
+    message.success(`「${user.name}」的访问密码已重置，下次进入需重新设置`);
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+  } finally {
+    busyId.value = null;
+  }
+}
+
 /** 自定义令牌: PUT the validated token, surface the API error (400/409). */
 async function saveCustomToken() {
   const user = tokenEditing.value;
@@ -432,6 +507,9 @@ onMounted(() => {
           <div class="entity-identity">
             <div class="entity-name">
               <span :title="user.name">{{ user.name }}</span>
+              <n-tag size="small" :type="user.passwordSet ? 'success' : 'default'" :bordered="false">
+                {{ user.passwordSet ? '已设密码' : '未设密码' }}
+              </n-tag>
               <n-switch
                 :value="user.enabled"
                 size="small"
@@ -502,6 +580,17 @@ onMounted(() => {
             <n-button size="small" tertiary :disabled="busyId !== null" @click="openTokenDialog(user)">
               自定义令牌
             </n-button>
+            <n-button size="small" secondary :disabled="busyId !== null" @click="openPasswordDialog(user)">
+              设置密码
+            </n-button>
+            <n-button
+              size="small"
+              tertiary
+              :disabled="busyId !== null || !user.passwordSet"
+              @click="askResetPassword(user)"
+            >
+              重置密码
+            </n-button>
             <n-button size="small" secondary type="error" :disabled="busyId !== null" @click="askDelete(user)">
               删除
             </n-button>
@@ -536,6 +625,37 @@ onMounted(() => {
             {{ busyId === tokenEditing.id ? '保存中…' : '保存令牌' }}
           </n-button>
           <n-button :disabled="busyId !== null" @click="closeTokenDialog">取消</n-button>
+        </div>
+      </n-form>
+    </n-modal>
+
+    <n-modal
+      :show="passwordEditing !== null"
+      preset="card"
+      class="dialog-card"
+      :title="passwordEditing ? `设置密码「${passwordEditing.name}」` : '设置密码'"
+      @update:show="(value) => { if (!value) closePasswordDialog(); }"
+    >
+      <n-form v-if="passwordEditing" class="form" @submit.prevent="savePassword">
+        <p class="sub">
+          为该用户直接指定 /my 访问密码（{{ PASSWORD_MIN_LENGTH }}–{{ PASSWORD_MAX_LENGTH }} 个字符）。
+          保存后该用户现有登录立即失效，可用新密码进入；管理员无法查看已设密码。
+        </p>
+        <n-input
+          v-model:value="passwordDraft"
+          type="password"
+          show-password-on="click"
+          autocomplete="new-password"
+          :maxlength="PASSWORD_MAX_LENGTH"
+          :placeholder="passwordEditing.passwordSet ? '输入新密码（将覆盖原密码）' : '输入访问密码'"
+          :disabled="busyId !== null"
+          :aria-label="`${passwordEditing.name} 的访问密码`"
+        />
+        <div class="actions">
+          <n-button type="primary" attr-type="submit" :loading="busyId === passwordEditing.id">
+            {{ busyId === passwordEditing.id ? '保存中…' : '保存密码' }}
+          </n-button>
+          <n-button :disabled="busyId !== null" @click="closePasswordDialog">取消</n-button>
         </div>
       </n-form>
     </n-modal>

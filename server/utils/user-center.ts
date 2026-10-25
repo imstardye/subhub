@@ -39,6 +39,7 @@ import {
   sourceAllowedUsers,
   sources,
   userSourceChoices,
+  users,
   type Source,
   type SourceAccessMode,
   type User,
@@ -60,6 +61,23 @@ import { isSourceDisabled } from './export-nodes';
 import { refreshSource, type Fetcher } from '../tasks/refresh-sources';
 import { mergeUserInfo, rawTrafficInfoFromCache, type SubscriptionUserInfo } from './userinfo';
 import { findUserByToken, rotateUserToken } from './user-token';
+import {
+  UserCenterAuthError,
+  issueUserSession,
+  userSessionCookieHeader,
+  userSessionFromEvent,
+  type UserSessionOptions,
+} from './user-session';
+import { hashPassword, verifyPassword } from './user-password';
+import { userSessionMatches } from '../../core/utils/user-session';
+import { validatePassword } from '../../core/utils/user-password';
+import {
+  awaitThrottle,
+  createKeyedQueue,
+  createLoginThrottle,
+  defaultSleep,
+  type LoginThrottle,
+} from './login-throttle';
 import {
   USER_CENTER_EXPORT_TARGETS,
   buildSubscriptionUrl,
@@ -261,6 +279,160 @@ export function requireEnabledUserByToken(db: SubhubDb, token: string | null | u
   const user = requireUserByToken(db, token);
   if (!user.enabled) throw new ValidationError('user disabled', 403);
   return user;
+}
+
+/**
+ * The token owner, provided the request carries a valid /my session.
+ *
+ * Two distinct failures, both 401, so the page can render the right form:
+ * - no password set yet -> `needs-setup` (opening the page starts 设置密码);
+ * - a password exists but this browser has no valid cookie for this user at
+ *   the current password version -> `needs-password`.
+ * Unknown tokens stay a bare 404 (handled by `requireUserByToken`).
+ */
+export function requireUnlockedUserByToken(
+  db: SubhubDb,
+  token: string | null | undefined,
+  event: { node: { req: { headers: Record<string, string | string[] | undefined> } } },
+  options: UserSessionOptions = {},
+): User {
+  const user = requireUserByToken(db, token);
+  if (!user.passwordHash) {
+    throw new UserCenterAuthError('请先设置密码', 'needs-setup');
+  }
+  const session = userSessionFromEvent(event, options);
+  if (!userSessionMatches(session, user)) {
+    throw new UserCenterAuthError('请输入密码', 'needs-password');
+  }
+  return user;
+}
+
+/** Process-wide throttle for password verification (user center only). */
+export const userCenterPasswordThrottle = createLoginThrottle();
+
+/** Serialized slowdown chain for password verification (separate from login). */
+export const userCenterPasswordQueue = createKeyedQueue();
+
+/** Password attempts are counted per user **and** client IP. */
+export function userCenterPasswordKey(userId: number, ip: string | null | undefined): string {
+  const key = (ip ?? '').trim() || 'unknown';
+  return `user:${userId}:${key}`;
+}
+
+export interface PasswordAttemptOptions {
+  /** Client IP for the throttle bucket (from `getClientIp`). */
+  ip?: string | null;
+  /** Throttle override (tests). */
+  throttle?: LoginThrottle;
+  /** Sleep override (tests); defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Slowdown queue override (tests). */
+  queue?: Pick<ReturnType<typeof createKeyedQueue>, 'enqueue'>;
+}
+
+/**
+ * Verify a password through the shared login throttle: failures consume the
+ * budget (per user+IP and globally), a correct password refunds it. The
+ * throttle never hard-locks; over-limit attempts only wait longer.
+ */
+async function verifyPasswordThrottled(
+  user: User,
+  password: unknown,
+  options: PasswordAttemptOptions = {},
+): Promise<void> {
+  const throttle = options.throttle ?? userCenterPasswordThrottle;
+  const key = userCenterPasswordKey(user.id, options.ip);
+  const decision = throttle.consume(key);
+  await awaitThrottle(
+    decision,
+    options.sleep ?? defaultSleep,
+    options.queue ?? userCenterPasswordQueue,
+  );
+  if (!verifyPassword(password, user.passwordHash)) {
+    throw new UserCenterAuthError('密码错误', 'wrong-password');
+  }
+  throttle.refund(key);
+}
+
+/**
+ * First-time setup (`POST /api/user/:token/password`). Only possible while the
+ * user has no password; a second setup is a 409 (the page shows 输入密码 then).
+ * Returns the updated row — the caller mints the session cookie.
+ */
+export function setupUserPassword(db: SubhubDb, token: string, rawPassword: unknown): User {
+  const user = requireUserByToken(db, token);
+  if (user.passwordHash) throw new ValidationError('密码已设置', 409);
+  const checked = validatePassword(rawPassword);
+  if (!checked.ok) throw new ValidationError(checked.error);
+  const row = db
+    .update(users)
+    .set({
+      passwordHash: hashPassword(checked.password),
+      passwordVersion: (user.passwordVersion ?? 0) + 1,
+    })
+    .where(eq(users.id, user.id))
+    .returning()
+    .get();
+  if (!row) throw new ValidationError('not found', 404);
+  return row;
+}
+
+/** Unlock with the current password (`POST /api/user/:token/unlock`). */
+export async function unlockUserPassword(
+  db: SubhubDb,
+  token: string,
+  rawPassword: unknown,
+  options: PasswordAttemptOptions = {},
+): Promise<User> {
+  const user = requireUserByToken(db, token);
+  if (!user.passwordHash) {
+    throw new UserCenterAuthError('请先设置密码', 'needs-setup');
+  }
+  await verifyPasswordThrottled(user, rawPassword, options);
+  return user;
+}
+
+/**
+ * Change the password from inside the dashboard (`PUT /api/user/:token/password`).
+ * Verifies the current password through the throttle, then bumps the version so
+ * every other session dies; the caller sends a fresh cookie for this device.
+ */
+export async function changeUserPassword(
+  db: SubhubDb,
+  user: User,
+  input: { currentPassword: unknown; newPassword: unknown },
+  options: PasswordAttemptOptions = {},
+): Promise<User> {
+  if (!user.passwordHash) {
+    throw new UserCenterAuthError('请先设置密码', 'needs-setup');
+  }
+  await verifyPasswordThrottled(user, input.currentPassword, options);
+  const checked = validatePassword(input.newPassword);
+  if (!checked.ok) throw new ValidationError(checked.error);
+  const row = db
+    .update(users)
+    .set({
+      passwordHash: hashPassword(checked.password),
+      passwordVersion: (user.passwordVersion ?? 0) + 1,
+    })
+    .where(eq(users.id, user.id))
+    .returning()
+    .get();
+  if (!row) throw new ValidationError('not found', 404);
+  return row;
+}
+
+/** Session token/cookie for a user (setup, unlock and password change). */
+export function userCenterSessionFor(
+  user: { id: number; passwordVersion?: number | null },
+  options: UserSessionOptions = {},
+): { token: string; cookie: string; expiresAtMs: number } {
+  const issued = issueUserSession(user, options);
+  return {
+    token: issued.token,
+    cookie: userSessionCookieHeader(issued.token, options),
+    expiresAtMs: issued.expiresAtMs,
+  };
 }
 
 /** Sum helper that keeps "unknown" as `null` (like `aggregateUserInfo`). */

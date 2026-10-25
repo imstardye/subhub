@@ -110,6 +110,61 @@ describe('guarded migration: sources.owner_user_id', () => {
   });
 });
 
+describe('guarded migration: users.password_hash + password_version', () => {
+  it('adds the columns to a pre-existing users table and is safe to re-run', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'subhub-migrate-user-password-'));
+    dirs.push(dir);
+    const dbPath = join(dir, 'legacy.sqlite');
+
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+        name TEXT NOT NULL,
+        token TEXT NOT NULL,
+        profile_id INTEGER,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        note TEXT,
+        created_at INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO users (name, token) VALUES ('legacy-user', '${TOKEN}');
+    `);
+    legacy.close();
+
+    const db = openDb({ path: dbPath });
+    const row = db.select().from(users).where(eq(users.token, TOKEN)).get()!;
+    // Existing users start unset: /my shows the 设置密码 flow.
+    expect(row.passwordHash).toBeNull();
+    expect(row.passwordVersion).toBe(0);
+
+    db.update(users).set({ passwordHash: 'scrypt$placeholder', passwordVersion: 1 }).where(eq(users.id, row.id)).run();
+    const reopened = openDb({ path: dbPath });
+    expect(reopened.select().from(users).where(eq(users.token, TOKEN)).get()).toMatchObject({
+      passwordHash: 'scrypt$placeholder',
+      passwordVersion: 1,
+    });
+
+    const handle = new Database(dbPath);
+    ensureSchema(handle);
+    ensureSchema(handle);
+    const columns = handle.pragma('table_info(users)') as Array<{ name: string }>;
+    for (const name of ['password_hash', 'password_version']) {
+      expect(columns.filter((column) => column.name === name)).toHaveLength(1);
+    }
+    handle.close();
+  });
+
+  it('creates both columns on a fresh database', () => {
+    const db = openDb({ path: ':memory:' });
+    const sqlite = (db as unknown as { $client: Database.Database }).$client;
+    const columns = (sqlite.pragma('table_info(users)') as Array<{ name: string }>).map(
+      (column) => column.name,
+    );
+    expect(columns).toContain('password_hash');
+    expect(columns).toContain('password_version');
+  });
+});
+
 describe('guarded migration: sources.access_mode + source_allowed_users', () => {
   function legacyDb(dbPath: string) {
     const legacy = new Database(dbPath);

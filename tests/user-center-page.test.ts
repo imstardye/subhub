@@ -35,6 +35,7 @@ import {
   trafficBar,
   trafficCard,
   userCenterApiPath,
+  userCenterLockFromError,
   userCenterPath,
   userCenterView,
 } from '../core/utils/user-center';
@@ -93,6 +94,29 @@ describe('page state', () => {
     expect(isDisabledPayload({ user: { enabled: false } })).toBe(true);
     expect(isDisabledPayload(payload())).toBe(false);
     expect(isDisabledPayload(null)).toBe(false);
+  });
+
+  it('renders the password form for the two gate states, even while pending', () => {
+    expect(userCenterView({ pending: true, lock: 'needs-setup' })).toEqual({
+      kind: 'locked',
+      lock: 'needs-setup',
+    });
+    expect(userCenterView({ pending: true, lock: 'needs-password' })).toEqual({
+      kind: 'locked',
+      lock: 'needs-password',
+    });
+    // A real error still wins over a stale cached payload.
+    expect(userCenterView({ data: payload(), lock: 'needs-password' }).kind).toBe('locked');
+    expect(userCenterView({ error: 'boom', lock: 'needs-setup' }).kind).toBe('locked');
+  });
+
+  it('recognises the gate status in a fetch error and nothing else', () => {
+    expect(userCenterLockFromError({ data: { status: 'needs-setup' } })).toBe('needs-setup');
+    expect(userCenterLockFromError({ data: { status: 'needs-password' } })).toBe('needs-password');
+    expect(userCenterLockFromError({ response: { _data: { status: 'needs-setup' } } })).toBe('needs-setup');
+    for (const error of [null, undefined, 'boom', {}, { data: { status: 'wrong-password' } }, { data: { status: 401 } }]) {
+      expect(userCenterLockFromError(error)).toBeNull();
+    }
   });
 });
 
