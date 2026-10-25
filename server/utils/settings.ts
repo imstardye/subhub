@@ -156,14 +156,17 @@ export function setSubPath(db: SubhubDb, raw: unknown): string {
 
 /**
  * Short cache for the middleware (one DB read per request would be wasteful on
- * a hot, unauthenticated path). **No TTL on purpose**: a wall-clock TTL would
- * make a saved change take up to five seconds to apply and — worse — is not
- * testable without sleeping. Instead the cache is invalidated explicitly:
- * - `PUT /api/admin/settings` after a save (same process, instant effect),
- * - `readSetting`/`getSubPath` called directly (so a direct DB write by tests
- *   or a script is seen immediately),
- * - a stored value that no longer validates.
- * The TTL constant is kept as documentation of the previous design's bound.
+ * a hot, unauthenticated path). Two mechanisms keep it fresh, either suffices:
+ * - explicit invalidation: `PUT /api/admin/settings` drops the cache after a
+ *   save (same process, instant effect);
+ * - a TTL bound: an entry older than `SUB_PATH_CACHE_TTL_MS` is re-read from
+ *   the DB. This is the safety net the first design lacked — if an
+ *   invalidation ever misses the copy a given middleware instance holds
+ *   (another worker, a direct DB write, a missed call site), the stale value
+ *   heals within the TTL instead of sticking forever. (Live incident
+ *   2026-10-25: prefix changed to `img` in the UI, the gate kept blanking
+ *   `/img/*` with the pre-change value until the process restarted.)
+ * The clock is injectable (`now`), so the TTL is testable without sleeping.
  */
 export const SUB_PATH_CACHE_TTL_MS = 5_000;
 
@@ -174,9 +177,9 @@ interface SubPathCacheEntry {
 
 let cache: SubPathCacheEntry | null = null;
 
-/** Cached effective prefix. */
+/** Cached effective prefix; re-read once the cached entry passes the TTL. */
 export function cachedSubPath(db: SubhubDb, now: number = Date.now()): string {
-  if (cache) return cache.value;
+  if (cache && now - cache.at < SUB_PATH_CACHE_TTL_MS) return cache.value;
   const value = getSubPath(db);
   cache = { value, at: now };
   return value;
