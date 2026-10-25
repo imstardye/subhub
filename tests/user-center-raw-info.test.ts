@@ -10,7 +10,8 @@
  * - the merge rule: the header wins per field, only missing fields are filled;
  * - the DTO (`loadUserCenterData`) end to end: cache + header-only → remaining
  *   and expiry come from the nodes and 已用 = 总量 − 剩余;
- * - the export is NOT affected: the info nodes stay filtered out.
+ * - the export still drops the info pseudo-nodes from the body (only the
+ *   `subscription-userinfo` header is completed from them).
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,8 +31,6 @@ import {
 } from '../core/rules/raw-info';
 import {
   loadUserCenterData,
-  mergeUserInfo,
-  rawTrafficInfoFromCache,
   summarizeTraffic,
   type UserCenterData,
   type UserCenterTrafficSummary,
@@ -39,7 +38,11 @@ import {
 import { handleSubscriptionExport, resetExportRateLimiter } from '../server/utils/subscription';
 import { requestFromEvent } from '../server/utils/export-handler';
 import { trafficBar, trafficCard } from '../core/utils/user-center';
-import type { SubscriptionUserInfo } from '../server/utils/userinfo';
+import {
+  mergeUserInfo,
+  rawTrafficInfoFromCache,
+  type SubscriptionUserInfo,
+} from '../server/utils/userinfo';
 
 const TOKEN = 'c'.repeat(32);
 const GB = 1024 ** 3;
@@ -132,9 +135,12 @@ describe('parseRawTrafficInfo — the subscription’s own report', () => {
 describe('mergeUserInfo — header wins, nodes only fill the gaps', () => {
   const raw = parseRawTrafficInfo([{ name: '剩余流量：579.45 GB' }, { name: '套餐到期：长期有效' }]);
 
-  it('fills a partial header (only total) from the nodes', () => {
+  it('fills a partial header (only total) from the nodes and derives used', () => {
     const merged = mergeUserInfo({ upload: null, download: null, total: TB, expire: null }, raw);
-    expect(merged.userinfo).toEqual({ upload: null, download: null, total: TB, expire: null });
+    const used = TB - Math.round(579.45 * GB);
+    // Clients display 已用 = upload + download; with both missing the node's
+    // remaining is turned into used, recorded as download.
+    expect(merged.userinfo).toEqual({ upload: 0, download: used, total: TB, expire: null });
     expect(merged.remaining).toBe(Math.round(579.45 * GB));
     expect(merged.expireText).toBe('长期有效');
     expect(merged.rawFields).toEqual(['remaining', 'expire']);
@@ -162,6 +168,13 @@ describe('mergeUserInfo — header wins, nodes only fill the gaps', () => {
     const merged = mergeUserInfo({ upload: null, download: null, total: 1000, expire: null }, raw);
     expect(merged.remaining).toBe(Math.round(579.45 * GB));
     expect(merged.rawFields).toContain('remaining');
+    // Used is now derived for the export/clients, clamped at 0.
+    expect(merged.userinfo).toEqual({
+      upload: 0,
+      download: Math.max(0, 1000 - Math.round(579.45 * GB)),
+      total: 1000,
+      expire: null,
+    });
   });
 
   it('works with no header at all, and stays empty with nothing', () => {
@@ -170,6 +183,17 @@ describe('mergeUserInfo — header wins, nodes only fill the gaps', () => {
     expect(merged.remaining).toBe(Math.round(579.45 * GB));
     expect(merged.expireText).toBe('长期有效');
     expect(mergeUserInfo(null, null)).toEqual({ userinfo: null, remaining: null, expireText: null, rawFields: [] });
+  });
+
+  it('does not crash on a headerless source whose expiry node is a date', () => {
+    // Regression: the date-fill branch wrote through a non-null assertion on
+    // a null userinfo. No header is synthesized; the date surfaces as text.
+    const dated = parseRawTrafficInfo([{ name: '剩余流量：10 GB' }, { name: '套餐到期：2030-01-01' }]);
+    const merged = mergeUserInfo(null, dated);
+    expect(merged.userinfo).toBeNull();
+    expect(merged.remaining).toBe(10 * GB);
+    expect(merged.expireText).toBe('2030-01-01');
+    expect(merged.rawFields).toEqual(['remaining', 'expire']);
   });
 });
 
@@ -271,7 +295,12 @@ describe('loadUserCenterData — end to end', () => {
     const { db } = seed({ userinfoTotal: TB, userinfoRefreshedAt: new Date(1_700_000_000_000) }, XXCLOUD_CACHE);
     const data = loadUserCenterData(db, TOKEN) as UserCenterData;
     const card = data.traffic.sources[0]!;
-    expect(card.userinfo).toEqual({ upload: null, download: null, total: TB, expire: null });
+    expect(card.userinfo).toEqual({
+      upload: 0,
+      download: TB - Math.round(579.45 * GB),
+      total: TB,
+      expire: null,
+    });
     expect(card.remaining).toBe(Math.round(579.45 * GB));
     expect(card.expireText).toBe('长期有效');
     expect(card.rawFields).toEqual(['remaining', 'expire']);
@@ -284,6 +313,7 @@ describe('loadUserCenterData — end to end', () => {
     expect(view.expireLabel).toBe('长期有效');
 
     const summary: UserCenterTrafficSummary = data.traffic.summary;
+    expect(summary.used).toBe(TB - Math.round(579.45 * GB));
     expect(summary.remaining).toBe(Math.round(579.45 * GB));
     expect(summary.expireText).toBe('长期有效');
   });
@@ -301,7 +331,7 @@ describe('loadUserCenterData — end to end', () => {
     expect(card.rawFields).toEqual([]);
   });
 
-  it('leaves the export untouched: the info nodes stay filtered out', async () => {
+  it('leaves the export body untouched: the info nodes stay filtered out', async () => {
     const { db, userId } = seed({ userinfoTotal: TB }, XXCLOUD_CACHE);
     // The built-in filter is applied by the profile path (a user with no
     // profile renders the raw node list — documented on the filter feature).
