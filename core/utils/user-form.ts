@@ -19,6 +19,9 @@ export interface UserForm {
   enabled: boolean;
   note: string;
   profileId: string;
+  /** The user's custom rules (edit only; creation ignores them). */
+  customRules: string;
+  customRulesPosition: 'prepend' | 'append';
 }
 
 /** Body sent to POST /api/admin/users and PATCH /api/admin/users/:id. */
@@ -27,10 +30,12 @@ export interface UserPayload {
   enabled: boolean;
   note: string | null;
   profileId: string | null;
+  customRules: string;
+  customRulesPosition: 'prepend' | 'append';
 }
 
 export function emptyUserForm(): UserForm {
-  return { name: '', enabled: true, note: '', profileId: '' };
+  return { name: '', enabled: true, note: '', profileId: '', customRules: '', customRulesPosition: 'prepend' };
 }
 
 /** Seed the edit form from a listed user; a missing profile id becomes ''. */
@@ -39,12 +44,16 @@ export function userFormFromUser(user: {
   enabled: boolean;
   note?: string | null;
   profileId?: number | null;
+  customRules?: string | null;
+  customRulesPosition?: string | null;
 }): UserForm {
   return {
     name: user.name,
     enabled: user.enabled,
     note: user.note ?? '',
     profileId: user.profileId === null || user.profileId === undefined ? '' : String(user.profileId),
+    customRules: user.customRules ?? '',
+    customRulesPosition: user.customRulesPosition === 'append' ? 'append' : 'prepend',
   };
 }
 
@@ -76,6 +85,9 @@ export function buildUserPayload(form: UserForm): UserPayloadResult {
       enabled: form.enabled,
       note: form.note.trim() || null,
       profileId: rawProfileId || null,
+      // Sent verbatim; the server validates and normalizes the rule lines.
+      customRules: form.customRules,
+      customRulesPosition: form.customRulesPosition === 'append' ? 'append' : 'prepend',
     },
   };
 }

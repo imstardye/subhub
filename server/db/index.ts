@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS users (
   note TEXT,
   password_hash TEXT,
   password_version INTEGER NOT NULL DEFAULT 0,
+  custom_rules TEXT,
+  custom_rules_position TEXT,
   created_at INTEGER NOT NULL DEFAULT (cast((julianday('now') - 2440587.5)*86400000 as integer))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_token_unique ON users (token);
@@ -146,6 +148,13 @@ function ensureAddedColumns(sqlite: Database.Database): void {
   }
   if (!userColumns.some((column) => column.name === 'password_version')) {
     sqlite.exec('ALTER TABLE users ADD COLUMN password_version INTEGER NOT NULL DEFAULT 0');
+  }
+  // Per-user custom rules (user center): both nullable, NULL = none / prepend.
+  if (!userColumns.some((column) => column.name === 'custom_rules')) {
+    sqlite.exec('ALTER TABLE users ADD COLUMN custom_rules TEXT');
+  }
+  if (!userColumns.some((column) => column.name === 'custom_rules_position')) {
+    sqlite.exec('ALTER TABLE users ADD COLUMN custom_rules_position TEXT');
   }
 
   const columns = sqlite.pragma('table_info(sources)') as Array<{ name: string }>;

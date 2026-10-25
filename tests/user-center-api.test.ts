@@ -45,6 +45,7 @@ import userChoiceHandler from '../server/api/user/[token]/choices.post';
 import userRefreshHandler from '../server/api/user/[token]/refresh.post';
 import userSourcesRefreshHandler from '../server/api/user/[token]/refresh-sources.post';
 import userCustomTokenHandler from '../server/api/user/[token]/token.put';
+import userCustomRulesHandler from '../server/api/user/[token]/rules.put';
 import { handleSubscriptionExport, resetExportRateLimiter } from '../server/utils/subscription';
 import { requestFromEvent } from '../server/utils/export-handler';
 import { hashPassword } from '../server/utils/user-password';
@@ -843,5 +844,78 @@ describe('POST /api/user/:token/refresh-sources — manual refresh of own dedica
     const alice = db.select().from(sources).where(eq(sources.id, aliceSourceId)).get()!;
     expect(alice.cacheBlob).toBe(before);
     expect(alice.lastError).toBe('HTTP 502');
+  });
+});
+
+describe('custom rules (PUT /api/user/:token/rules)', () => {
+  const GROUP = '🚀 节点选择';
+  const putRules = (token: string, body: unknown, behavior: { session?: boolean } = {}) =>
+    call(userCustomRulesHandler, { path: `/api/user/${token}/rules`, method: 'PUT', body }, behavior);
+
+  /** Give alice the profile her rules are validated against. */
+  function assignProfile() {
+    const profile = db
+      .insert(profiles)
+      .values({
+        name: 'rules-profile',
+        iniText: [
+          '[custom]',
+          `custom_proxy_group=${GROUP}\`select\`.*`,
+          `ruleset=${GROUP},[]MATCH`,
+        ].join('\n'),
+      })
+      .returning({ id: profiles.id })
+      .get()!;
+    db.update(users).set({ profileId: profile.id }).where(eq(users.id, aliceId)).run();
+  }
+
+  it('is behind the password gate like every other write', async () => {
+    assignProfile();
+    const locked = await putRules(ALICE_TOKEN, { rules: 'DOMAIN-SUFFIX,a.com,DIRECT' }, { session: false });
+    expect(locked.status).toBe(401);
+  });
+
+  it('saves validated rules and the read payload carries them', async () => {
+    assignProfile();
+    const saved = await putRules(ALICE_TOKEN, {
+      rules: `DOMAIN-SUFFIX,example.com,${GROUP}\nDOMAIN-KEYWORD,ads,REJECT`,
+      position: 'append',
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body).toMatchObject({
+      customRules: {
+        text: `DOMAIN-SUFFIX,example.com,${GROUP}\nDOMAIN-KEYWORD,ads,REJECT`,
+        position: 'append',
+        count: 2,
+      },
+    });
+    const data = ready(await read());
+    expect(data.customRules.text).toBe(`DOMAIN-SUFFIX,example.com,${GROUP}\nDOMAIN-KEYWORD,ads,REJECT`);
+    expect(data.customRules.position).toBe('append');
+  });
+
+  it('rejects bad lines and unknown policies with a 400 and writes nothing', async () => {
+    assignProfile();
+    const badType = await putRules(ALICE_TOKEN, { rules: 'WTAF,x,DIRECT' });
+    expect(badType.status).toBe(400);
+    expect(String((badType.body as { error?: string }).error)).toContain('第 1 行');
+    const badPolicy = await putRules(ALICE_TOKEN, { rules: 'DOMAIN-SUFFIX,a.com,没有这组' });
+    expect(badPolicy.status).toBe(400);
+    const row = db.select().from(users).where(eq(users.id, aliceId)).get()!;
+    expect(row.customRules).toBeNull();
+  });
+
+  it('a user without a profile cannot save rules yet (but the export still works)', async () => {
+    const result = await putRules(BOB_TOKEN, { rules: 'DOMAIN-SUFFIX,a.com,DIRECT' });
+    expect(result.status).toBe(400);
+    expect(String((result.body as { error?: string }).error)).toContain('尚未分配规则档');
+  });
+
+  it('clearing is always allowed', async () => {
+    assignProfile();
+    await putRules(ALICE_TOKEN, { rules: 'DOMAIN-SUFFIX,example.com,DIRECT' });
+    const cleared = await putRules(ALICE_TOKEN, { rules: '' });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body).toMatchObject({ customRules: { text: '', count: 0 } });
   });
 });

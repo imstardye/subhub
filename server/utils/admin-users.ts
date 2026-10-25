@@ -25,6 +25,8 @@ import {
 } from './admin-validation';
 import { validatePassword } from '../../core/utils/user-password';
 import { hashPassword } from './user-password';
+import { readUserCustomRules, saveUserCustomRules } from './custom-rules';
+import type { CustomRulePosition } from '../../core';
 
 /** User as exposed by the API — the token is included on purpose (owner UI). */
 export interface AdminUser {
@@ -36,10 +38,14 @@ export interface AdminUser {
   note: string | null;
   /** Whether a /my password is set. The hash itself is never exposed. */
   passwordSet: boolean;
+  /** The user's own custom rules ('' = none) and where they merge. */
+  customRules: string;
+  customRulesPosition: CustomRulePosition;
   createdAt: string;
 }
 
 export function toAdminUser(row: User): AdminUser {
+  const custom = readUserCustomRules(row);
   return {
     id: row.id,
     name: row.name,
@@ -48,6 +54,8 @@ export function toAdminUser(row: User): AdminUser {
     enabled: row.enabled,
     note: row.note ?? null,
     passwordSet: Boolean(row.passwordHash),
+    customRules: custom.text,
+    customRulesPosition: custom.position,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -90,8 +98,19 @@ export function createUser(db: SubhubDb, body: Record<string, unknown>): AdminUs
   throw new Error('could not create user');
 }
 
-/** Patch subset: only provided fields change; `token` is never settable. */
-export function updateUser(db: SubhubDb, rawId: unknown, body: Record<string, unknown>): AdminUser {
+/**
+ * Patch subset: only provided fields change; `token` is never settable.
+ * `customRules` (with optional `customRulesPosition`) goes through the same
+ * validated save path as the user center (`saveUserCustomRules`), so an
+ * admin代改 can never store a rule the owner could not have saved — and its
+ * profile check runs against the profile assigned by this same patch when
+ * both change together. Async because that check may fetch a remote INI.
+ */
+export async function updateUser(
+  db: SubhubDb,
+  rawId: unknown,
+  body: Record<string, unknown>,
+): Promise<AdminUser> {
   const id = parseId(rawId);
   const existing = db.select().from(users).where(eq(users.id, id)).get();
   if (!existing) throw new ValidationError('user not found', 404);
@@ -102,10 +121,20 @@ export function updateUser(db: SubhubDb, rawId: unknown, body: Record<string, un
   if ('note' in body) patch.note = parseOptionalText(body.note, 'note', NOTE_MAX_LENGTH);
   if ('profileId' in body) patch.profileId = parseProfileId(body.profileId);
 
-  if (Object.keys(patch).length === 0) return toAdminUser(existing);
+  let row = existing;
+  if (Object.keys(patch).length > 0) {
+    const updated = db.update(users).set(patch).where(eq(users.id, id)).returning().get();
+    if (!updated) throw new ValidationError('user not found', 404);
+    row = updated;
+  }
 
-  const row = db.update(users).set(patch).where(eq(users.id, id)).returning().get();
-  if (!row) throw new ValidationError('user not found', 404);
+  if ('customRules' in body) {
+    await saveUserCustomRules(db, id, body.customRules, body.customRulesPosition);
+    const refreshed = db.select().from(users).where(eq(users.id, id)).get();
+    if (!refreshed) throw new ValidationError('user not found', 404);
+    row = refreshed;
+  }
+
   return toAdminUser(row);
 }
 

@@ -58,6 +58,7 @@ import {
   parseSubscription,
 } from '../../core';
 import { isSourceDisabled } from './export-nodes';
+import { readUserCustomRules, type UserCustomRules } from './custom-rules';
 import { refreshSource, type Fetcher, type RefreshOptions } from './refresh-sources';
 import { mergeUserInfo, rawTrafficInfoFromCache, type SubscriptionUserInfo } from './userinfo';
 import { findUserByToken, rotateUserToken } from './user-token';
@@ -243,6 +244,8 @@ export interface UserCenterData {
     token: string;
   };
   profile: UserCenterProfileInfo;
+  /** The user's own extra Clash rules (mihomo/clash exports only). */
+  customRules: UserCustomRules;
   traffic: {
     summary: UserCenterTrafficSummary;
     sources: UserCenterTrafficSource[];
@@ -612,6 +615,7 @@ export function loadUserCenterData(
   return {
     user: { name: user.name, note: user.note ?? null, enabled: true, token: user.token },
     profile: loadProfileInfo(db, user),
+    customRules: readUserCustomRules(user),
     traffic: { summary: summarizeTraffic(cards, dedicated.length), sources: cards },
     ownSources: dedicated.map(toOwnSource),
     availableSources: listAvailableSources(db, user.id),

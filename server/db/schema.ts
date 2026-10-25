@@ -28,6 +28,15 @@ export const users = sqliteTable('users', {
    * token rotation and subscription exports untouched.
    */
   passwordVersion: integer('password_version').notNull().default(0),
+  /**
+   * The user's own extra Clash rules (user center), newline-joined, already
+   * validated at save time (`core/rules/custom-rules.ts`). NULL/empty = none.
+   * They belong to the user, not the profile: every mihomo/clash export of
+   * this user merges them in, whichever profile renders it.
+   */
+  customRules: text('custom_rules'),
+  /** Where the custom rules merge: 'prepend' (default) or 'append'. */
+  customRulesPosition: text('custom_rules_position'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().defaultNow(),
 });
 

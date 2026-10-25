@@ -399,6 +399,47 @@ async function submitCustomToken() {
   }
 }
 
+/* --------------------------------------------------------- custom rules -- */
+/**
+ * The user's own Clash rules. The form mirrors `center.customRules` until
+ * the user edits it (dirty); a successful save re-syncs from the server's
+ * normalized copy via refresh().
+ */
+const rulesText = ref('');
+const rulesPosition = ref<'prepend' | 'append'>('prepend');
+const rulesBusy = ref(false);
+const rulesDirty = ref(false);
+
+watch(
+  center,
+  (value) => {
+    if (!value || rulesDirty.value) return;
+    rulesText.value = value.customRules.text;
+    rulesPosition.value = value.customRules.position;
+  },
+  { immediate: true },
+);
+
+async function saveCustomRules() {
+  if (rulesBusy.value) return;
+  rulesBusy.value = true;
+  try {
+    const result = await $fetch<{ customRules: { count: number } }>(
+      userCenterApiPath(token.value, 'rules'),
+      { method: 'PUT', body: { rules: rulesText.value, position: rulesPosition.value } },
+    );
+    rulesDirty.value = false;
+    await refresh();
+    message.success(
+      result.customRules.count > 0 ? `已保存 ${result.customRules.count} 条自定义规则` : '自定义规则已清空',
+    );
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+  } finally {
+    rulesBusy.value = false;
+  }
+}
+
 /* --------------------------------------------------------- password gate -- */
 /**
  * Setup vs. unlock form. The server decides which one is needed and answers
@@ -820,6 +861,44 @@ useHead({ title: '我的订阅 · subhub' });
             </div>
           </div>
           <p class="hint tiny">取消勾选后，该订阅源不会出现在你的订阅链接中。</p>
+        </n-card>
+
+        <!-- -------------------------------------------------- custom rules -- -->
+        <n-card class="panel panel-rules" title="自定义规则">
+          <n-input
+            v-model:value="rulesText"
+            type="textarea"
+            class="rules-editor"
+            :autosize="{ minRows: 5, maxRows: 10 }"
+            :disabled="rulesBusy"
+            placeholder="一行一条，例如：&#10;DOMAIN-SUFFIX,example.com,DIRECT&#10;DOMAIN-KEYWORD,ads,REJECT"
+            :input-props="{ 'aria-label': '自定义规则' }"
+            @update:value="rulesDirty = true"
+          />
+          <div class="row rules-actions">
+            <n-button
+              size="small"
+              :type="rulesPosition === 'prepend' ? 'primary' : 'default'"
+              :disabled="rulesBusy"
+              @click="rulesPosition = 'prepend'; rulesDirty = true"
+            >
+              前置（优先）
+            </n-button>
+            <n-button
+              size="small"
+              :type="rulesPosition === 'append' ? 'primary' : 'default'"
+              :disabled="rulesBusy"
+              @click="rulesPosition = 'append'; rulesDirty = true"
+            >
+              后置（MATCH 前）
+            </n-button>
+            <n-button type="primary" size="small" :loading="rulesBusy" @click="saveCustomRules">
+              保存规则
+            </n-button>
+          </div>
+          <p class="hint tiny">
+            策略填规则档分组名、节点名或 DIRECT / REJECT；前置规则优先于规则档，后置规则排在规则档之后、MATCH 之前。仅 Mihomo / Clash 导出生效。
+          </p>
         </n-card>
 
         <!-- ------------------------------------------------------- account -- -->
@@ -1497,6 +1576,18 @@ useHead({ title: '我的订阅 · subhub' });
 }
 
 /* ----------------------------------------------------------- account */
+.rules-editor :deep(textarea) {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.rules-actions {
+  margin-top: 12px;
+  align-items: center;
+}
+.panel-rules .hint {
+  margin: 10px 0 0;
+}
 .account-row {
   display: flex;
   align-items: center;

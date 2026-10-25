@@ -16,7 +16,9 @@ export default function adminUserUpdateHandler(
   return handleAdminRequest(
     event,
     async (db) =>
-      sendJson(event, 200, { item: updateUser(db, idFromPath(event, 'users'), await parseBody(event)) }),
+      sendJson(event, 200, {
+        item: await updateUser(db, idFromPath(event, 'users'), await parseBody(event)),
+      }),
     options,
   );
 }

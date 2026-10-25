@@ -31,13 +31,17 @@
  */
 import { and, eq, exists, isNull, or } from 'drizzle-orm';
 import {
+  BUILTIN_GROUP_MEMBERS,
   buildLoonProxies,
   buildMihomoProxies,
   buildRules,
   buildShadowrocketSubscription,
   buildSurgeProxies,
   compileExcludeRemarks,
+  filterCustomRulesForExport,
   filterInfoAndRemarkNodes,
+  mergeCustomRules,
+  parseCustomRules,
   parseIni,
   parseSubscription,
   prepareNode,
@@ -398,15 +402,21 @@ export async function loadUserProfile(
 ): Promise<LoadedUserProfile | null> {
   try {
     let effectiveProfileId = profileId ?? null;
+    // Read the user row once: the assigned profile (when no override is in
+    // play) and the user's own custom rules both live there. The custom rules
+    // belong to the user, so they are read even when the profile is
+    // overridden per request.
+    const userRow = db
+      .select({
+        profileId: users.profileId,
+        customRules: users.customRules,
+        customRulesPosition: users.customRulesPosition,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .get();
     if (!effectiveProfileId) {
-      // users.profileId -> profiles.id; a disabled export path only reaches an
-      // enabled user, but the lookup works for any existing user id.
-      const link = db
-        .select({ profileId: users.profileId })
-        .from(users)
-        .where(eq(users.id, userId))
-        .get();
-      effectiveProfileId = link?.profileId ?? null;
+      effectiveProfileId = userRow?.profileId ?? null;
     }
     if (!effectiveProfileId) return null;
 
@@ -456,10 +466,41 @@ export async function loadUserProfile(
     if (capability === 'none' && pruned.proxyGroups.length === 0) return null;
     if (capability === 'groups' && pruned.proxyGroups.length === 0) return null;
 
+    // The user's own custom rules merge here, for the rule-carrying targets
+    // only (mihomo/clash). They were validated when saved, but the merge
+    // re-checks liveness against THIS render: the policy must resolve to a
+    // surviving group, an emitted node or a built-in, and a RULE-SET must
+    // name a provider this profile defines — anything else is dropped, so a
+    // stale custom rule can never make mihomo reject the whole config. A
+    // prepend lands at the head of the profile list (the producer still
+    // renders the built-in QUIC rule ahead of everything); an append is
+    // inserted before the final MATCH (see core/rules/custom-rules.ts).
+    let finalRules = pruned.rules;
+    if (capability === 'rules' && userRow?.customRules) {
+      const parsed = parseCustomRules(userRow.customRules);
+      if (parsed.errors.length === 0 && parsed.entries.length > 0) {
+        const alivePolicies = new Set<string>([
+          ...pruned.proxyGroups.map((group) => group.name),
+          ...nodeNames,
+          ...BUILTIN_GROUP_MEMBERS,
+        ]);
+        const kept = filterCustomRulesForExport(
+          parsed.entries.map((entry) => entry.rule),
+          alivePolicies,
+          new Set(Object.keys(built.ruleProviders)),
+        );
+        finalRules = mergeCustomRules(
+          pruned.rules,
+          kept,
+          userRow.customRulesPosition === 'append' ? 'append' : 'prepend',
+        );
+      }
+    }
+
     return {
       profile: {
         ruleProviders: built.ruleProviders,
-        rules: pruned.rules,
+        rules: finalRules,
         proxyGroups: pruned.proxyGroups,
         // Only the groups that survived the prune: a caller resolving a name in
         // `groupNames` must never reach a group the output does not define.
