@@ -39,7 +39,22 @@ const BODY =
 
 const NOW = Date.UTC(2026, 0, 1, 12, 0, 0);
 const GI = 1024 ** 3;
+const GB = 1024 ** 3;
+const TB = 1024 ** 4;
 const TOKEN = 'e'.repeat(32);
+
+/** Cache YAML with one real node plus the given info pseudo-nodes. */
+function cacheWithInfo(names: string[]): string {
+  return [
+    'proxies:',
+    '  - {name: "fixture-ss", type: ss, server: example.com, port: 8388, cipher: aes-128-gcm, password: "fake"}',
+    ...names.map(
+      (name) =>
+        `  - {name: ${JSON.stringify(name)}, type: ss, server: info.example.com, port: 1, cipher: aes-128-gcm, password: "fake"}`,
+    ),
+    '',
+  ].join('\n');
+}
 
 const dirs: string[] = [];
 let db: SubhubDb;
@@ -449,6 +464,93 @@ describe('export aggregates subscription-userinfo', () => {
     sourceWithUserInfo(null, { total: 1024 });
 
     expect((await exportAs(TOKEN)).headers['subscription-userinfo']).toBe('total=1024');
+  });
+
+  it('derives used from a total-only header and the remaining info node', async () => {
+    const ownerId = user(TOKEN);
+    sourceWithUserInfo(
+      ownerId,
+      { total: TB },
+      { cacheBlob: cacheWithInfo(['剩余流量：579.45 GB']) },
+    );
+
+    const used = TB - Math.round(579.45 * GB);
+    expect((await exportAs(TOKEN)).headers['subscription-userinfo']).toBe(
+      `upload=0; download=${used}; total=${TB}`,
+    );
+  });
+
+  it('never overwrites real upload/download, even when they are 0', async () => {
+    const ownerId = user(TOKEN);
+    sourceWithUserInfo(
+      ownerId,
+      { upload: 10, download: 20, total: 1000 },
+      { cacheBlob: cacheWithInfo(['剩余流量：579.45 GB']) },
+    );
+    sourceWithUserInfo(
+      ownerId,
+      { upload: 0, download: 0, total: 2000 },
+      { cacheBlob: cacheWithInfo(['剩余流量：1 GB']) },
+    );
+
+    expect((await exportAs(TOKEN)).headers['subscription-userinfo']).toBe(
+      'upload=10; download=20; total=3000',
+    );
+  });
+
+  it('does not invent usage without a remaining info node', async () => {
+    const ownerId = user(TOKEN);
+    sourceWithUserInfo(ownerId, { total: 1024 });
+
+    expect((await exportAs(TOKEN)).headers['subscription-userinfo']).toBe('total=1024');
+  });
+
+  it('clamps derived used at 0 when remaining exceeds the total', async () => {
+    const ownerId = user(TOKEN);
+    sourceWithUserInfo(
+      ownerId,
+      { total: 1000 },
+      { cacheBlob: cacheWithInfo(['剩余流量：2 GB']) },
+    );
+
+    expect((await exportAs(TOKEN)).headers['subscription-userinfo']).toBe(
+      'upload=0; download=0; total=1000',
+    );
+  });
+
+  it('fills a missing expire from a date node but not from open-ended text', async () => {
+    const ownerId = user(TOKEN);
+    const expire = Date.UTC(2026, 9, 1) / 1000;
+    sourceWithUserInfo(
+      ownerId,
+      { total: TB },
+      { cacheBlob: cacheWithInfo(['剩余流量：579.45 GB', '套餐到期：2026-10-01']) },
+    );
+    sourceWithUserInfo(
+      ownerId,
+      { total: 1024 },
+      { cacheBlob: cacheWithInfo(['套餐到期：长期有效']) },
+    );
+
+    const used = TB - Math.round(579.45 * GB);
+    expect((await exportAs(TOKEN)).headers['subscription-userinfo']).toBe(
+      `upload=0; download=${used}; total=${TB + 1024}; expire=${expire}`,
+    );
+  });
+
+  it('sums a derived source and a real-header source consistently', async () => {
+    const ownerId = user(TOKEN);
+    sourceWithUserInfo(
+      ownerId,
+      { total: TB },
+      { cacheBlob: cacheWithInfo(['剩余流量：579.45 GB']) },
+    );
+    sourceWithUserInfo(ownerId, { upload: 100, download: 200, total: 2000, expire: 1_800_000_000 });
+
+    const used = TB - Math.round(579.45 * GB);
+    expect((await exportAs(TOKEN)).headers['subscription-userinfo']).toBe(
+      `upload=100; download=${used + 200}; total=${TB + 2000}; expire=1800000000`,
+    );
   });
 
   it('clamps sums beyond the safe-integer range', async () => {

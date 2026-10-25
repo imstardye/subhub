@@ -14,7 +14,18 @@
  *
  * Plain functions without DB/Nuxt imports, so the refresh task, the export
  * handler and the admin DTO all share the exact same rules.
+ *
+ * `mergeUserInfo` is the one place where a source's incomplete header is
+ * completed from its own info pseudo-nodes (`剩余流量：579.45 GB`, see
+ * `core/rules/raw-info.ts`). The user center and the export both call it, so
+ * the numbers they show can never drift apart.
  */
+import { parseSubscription } from '../../core/parsers/clash';
+import {
+  hasRawTrafficInfo,
+  parseRawTrafficInfo,
+  type RawTrafficInfo,
+} from '../../core/rules/raw-info';
 
 /** Parsed header values. A missing (or invalid) part is `null`. */
 export interface SubscriptionUserInfo {
@@ -99,6 +110,108 @@ export function formatUserInfo(info: SubscriptionUserInfo): string {
   if (info.total !== null) parts.push(`total=${info.total}`);
   if (info.expire !== null) parts.push(`expire=${info.expire}`);
   return parts.join('; ');
+}
+
+/**
+ * Info nodes of a cached subscription, or `null` when the cache is empty or
+ * does not parse. Only the *read* path inspects them; nothing is filtered or
+ * written here.
+ */
+export function rawTrafficInfoFromCache(
+  blob: string | null | undefined,
+): RawTrafficInfo | null {
+  const text = blob?.trim();
+  if (!text) return null;
+  try {
+    const info = parseRawTrafficInfo(parseSubscription(text));
+    return hasRawTrafficInfo(info) ? info : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Remaining traffic the header can tell us: `total - upload - download`.
+ *
+ * `null` when the header has no total, and also when it has *only* a total: a
+ * provider that reports the quota but no usage is exactly the xxcloud case,
+ * where `total - 0 - 0 = total` would hide the real figure its info node
+ * carries (`剩余流量：579.45 GB`). A total plus usage is real arithmetic.
+ */
+function remainingFromHeader(info: SubscriptionUserInfo | null): number | null {
+  if (!info || info.total === null) return null;
+  if (info.upload === null && info.download === null) return null;
+  return Math.max(0, info.total - (info.upload ?? 0) - (info.download ?? 0));
+}
+
+/** Result of completing a header with its subscription's own info nodes. */
+export interface MergedUserInfo {
+  userinfo: SubscriptionUserInfo | null;
+  remaining: number | null;
+  expireText: string | null;
+  rawFields: Array<'remaining' | 'expire'>;
+}
+
+/**
+ * Merge the header userinfo with the source's own info nodes.
+ *
+ * The header wins per field; only the fields it is missing are filled from
+ * `剩余流量` / `套餐到期`. When the header has a total but **both** usage fields
+ * are missing, the info node's remaining is turned into used (total −
+ * remaining, clamped at 0) and recorded as `download` with `upload = 0` — the
+ * convention clients use to compute 已用 as upload + download. A header that
+ * carries real upload/download stays untouched, even when they are 0. `total`
+ * is header-only; the info nodes have no quota to invent it from.
+ */
+export function mergeUserInfo(
+  header: SubscriptionUserInfo | null,
+  raw: RawTrafficInfo | null,
+): MergedUserInfo {
+  const userinfo: SubscriptionUserInfo | null = header ? { ...header } : null;
+  const rawFields: Array<'remaining' | 'expire'> = [];
+
+  let remaining = remainingFromHeader(header);
+  if (remaining === null && raw?.remaining !== null && raw?.remaining !== undefined) {
+    remaining = raw.remaining;
+    rawFields.push('remaining');
+  }
+
+  let expireText: string | null = null;
+  const headerHasExpire = userinfo?.expire !== null && userinfo?.expire !== undefined;
+  if (!headerHasExpire && raw) {
+    if (raw.expire !== null) {
+      if (userinfo) {
+        userinfo.expire = raw.expire;
+      } else {
+        // No header at all: never synthesize one from raw nodes alone (the
+        // export must not invent a header), but the date still surfaces as
+        // display text for the user center. (Guarded: this branch used to
+        // write through a non-null assertion and crash on headerless
+        // sources whose expiry node is a date.)
+        expireText = new Date(raw.expire * 1000).toISOString().slice(0, 10);
+      }
+      rawFields.push('expire');
+    } else if (raw.expireText) {
+      expireText = raw.expireText;
+      rawFields.push('expire');
+    }
+  }
+
+  // Usage derivation only for a total whose usage is completely absent. One
+  // real usage field (even 0) means the provider is reporting usage itself.
+  if (
+    userinfo &&
+    userinfo.upload === null &&
+    userinfo.download === null &&
+    userinfo.total !== null &&
+    remaining !== null
+  ) {
+    const used = Math.max(0, userinfo.total - remaining);
+    userinfo.upload = 0;
+    userinfo.download = used;
+  }
+
+  return { userinfo: userinfo && hasUserInfo(userinfo) ? userinfo : null, remaining, expireText, rawFields };
 }
 
 /**

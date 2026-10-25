@@ -58,7 +58,13 @@ import { stringify as stringifyYaml } from 'yaml';
 import type { SubhubDb } from '../db';
 import { profiles, sourceAllowedUsers, sources, userSourceChoices, users } from '../db/schema';
 import { isFallbackTarget, type ExportTarget } from './targets';
-import { aggregateUserInfo, type SubscriptionUserInfo } from './userinfo';
+import {
+  aggregateUserInfo,
+  hasUserInfo,
+  mergeUserInfo,
+  rawTrafficInfoFromCache,
+  type SubscriptionUserInfo,
+} from './userinfo';
 
 interface CachedSource {
   id: number;
@@ -188,12 +194,30 @@ export function collectUserNodes(db: SubhubDb, userId: number): ProxyNode[] {
  * Aggregate `subscription-userinfo` over exactly the sources an export merges
  * (same `loadUserSourceCaches` query), or `null` when none of them has any
  * stored value — then the export emits no header at all.
+ *
+ * Before aggregating, each source gets its *effective* header via
+ * `mergeUserInfo`: a total-only header (upload/download missing) is completed
+ * from the remaining-traffic info node in that source's already-loaded cache
+ * (used is recorded as `download`, `upload` as 0), and a missing expire is
+ * filled when the node carries a real date. A header that reports usage wins
+ * unchanged, even when it reports 0. `total` is never derived. This is the same
+ * merge the user center shows, so the two can never disagree.
  */
 export function collectUserUserInfo(
   db: SubhubDb,
   userId: number,
 ): SubscriptionUserInfo | null {
-  return aggregateUserInfo(loadUserSourceCaches(db, userId).map((entry) => entry.userinfo));
+  const effective = loadUserSourceCaches(db, userId).map((entry) => {
+    const header = entry.userinfo && hasUserInfo(entry.userinfo) ? entry.userinfo : null;
+    if (!header) return null;
+    // Parsing the cache is only needed for the fields the header is missing.
+    const needsRaw =
+      header.expire === null ||
+      (header.upload === null && header.download === null && header.total !== null);
+    const raw = needsRaw ? rawTrafficInfoFromCache(entry.cacheBlob) : null;
+    return mergeUserInfo(header, raw).userinfo;
+  });
+  return aggregateUserInfo(effective);
 }
 
 /** Resolve a profile's INI source. `null` when there is nothing usable. */

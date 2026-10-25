@@ -54,14 +54,11 @@ import {
 } from './admin-validation';
 import {
   filterInfoNodes,
-  hasRawTrafficInfo,
-  parseRawTrafficInfo,
   parseSubscription,
-  type RawTrafficInfo,
 } from '../../core';
 import { isSourceDisabled } from './export-nodes';
 import { refreshSource, type Fetcher } from '../tasks/refresh-sources';
-import { hasUserInfo, type SubscriptionUserInfo } from './userinfo';
+import { mergeUserInfo, rawTrafficInfoFromCache, type SubscriptionUserInfo } from './userinfo';
 import { findUserByToken, rotateUserToken } from './user-token';
 import {
   USER_CENTER_EXPORT_TARGETS,
@@ -327,72 +324,6 @@ function storedUserinfo(row: Source): SubscriptionUserInfo | null {
   };
   const any = info.upload !== null || info.download !== null || info.total !== null || info.expire !== null;
   return any ? info : null;
-}
-
-/**
- * Info nodes of a cached subscription, or `null` when the cache is empty or
- * does not parse. Only the *read* path inspects them; nothing is filtered or
- * written here.
- */
-export function rawTrafficInfoFromCache(blob: string | null | undefined): RawTrafficInfo | null {
-  const text = blob?.trim();
-  if (!text) return null;
-  try {
-    const info = parseRawTrafficInfo(parseSubscription(text));
-    return hasRawTrafficInfo(info) ? info : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Remaining traffic the header can tell us: `total - upload - download`.
- *
- * `null` when the header has no total, and also when it has *only* a total: a
- * provider that reports the quota but no usage is exactly the xxcloud case,
- * where `total - 0 - 0 = total` would hide the real figure its info node
- * carries (`剩余流量：579.45 GB`). A total plus usage is real arithmetic.
- */
-function remainingFromHeader(info: SubscriptionUserInfo | null): number | null {
-  if (!info || info.total === null) return null;
-  if (info.upload === null && info.download === null) return null;
-  return Math.max(0, info.total - (info.upload ?? 0) - (info.download ?? 0));
-}
-
-/**
- * Merge the header userinfo with the source's own info nodes.
- *
- * The header wins per field; only the fields it is missing (`total`/
- * `upload`/`download` are kept as reported, so 已用 can be derived when the
- * total came from the header) are filled from `剩余流量` / `套餐到期`. A card with
- * neither source still has no data (the page says 暂无流量数据).
- */
-export function mergeUserInfo(
-  header: SubscriptionUserInfo | null,
-  raw: RawTrafficInfo | null,
-): Pick<UserCenterTrafficSource, 'userinfo' | 'remaining' | 'expireText' | 'rawFields'> {
-  const userinfo: SubscriptionUserInfo | null = header ? { ...header } : null;
-  const rawFields: Array<'remaining' | 'expire'> = [];
-
-  let remaining = remainingFromHeader(header);
-  if (remaining === null && raw?.remaining !== null && raw?.remaining !== undefined) {
-    remaining = raw.remaining;
-    rawFields.push('remaining');
-  }
-
-  let expireText: string | null = null;
-  const headerHasExpire = userinfo?.expire !== null && userinfo?.expire !== undefined;
-  if (!headerHasExpire && raw) {
-    if (raw.expire !== null) {
-      userinfo!.expire = raw.expire;
-      rawFields.push('expire');
-    } else if (raw.expireText) {
-      expireText = raw.expireText;
-      rawFields.push('expire');
-    }
-  }
-
-  return { userinfo: userinfo && hasUserInfo(userinfo) ? userinfo : null, remaining, expireText, rawFields };
 }
 
 function toTrafficSource(row: Source): UserCenterTrafficSource {
