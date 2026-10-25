@@ -43,6 +43,7 @@ import userSourceUpdateHandler from '../server/api/user/[token]/sources/[id].pat
 import userSourceDeleteHandler from '../server/api/user/[token]/sources/[id].delete';
 import userChoiceHandler from '../server/api/user/[token]/choices.post';
 import userRefreshHandler from '../server/api/user/[token]/refresh.post';
+import userCustomTokenHandler from '../server/api/user/[token]/token.put';
 import { handleSubscriptionExport, resetExportRateLimiter } from '../server/utils/subscription';
 import { requestFromEvent } from '../server/utils/export-handler';
 import { hashPassword } from '../server/utils/user-password';
@@ -600,6 +601,49 @@ describe('token rotation', () => {
     const before = db.select({ token: users.token }).from(users).where(eq(users.id, aliceId)).get()!.token;
     await read();
     expect(db.select({ token: users.token }).from(users).where(eq(users.id, aliceId)).get()!.token).toBe(before);
+  });
+});
+
+describe('custom token (PUT /api/user/:token/token)', () => {
+  const setCustom = (token: string, body: unknown, behavior?: { session?: boolean }) =>
+    call(userCustomTokenHandler, { path: `/api/user/${token}/token`, method: 'PUT', body }, behavior);
+
+  it('requires the unlocked session (password gate)', async () => {
+    const result = await setCustom(ALICE_TOKEN, { token: 'alice-custom-1' }, { session: false });
+    expect(result.status).toBe(401);
+    expect(db.select({ token: users.token }).from(users).where(eq(users.id, aliceId)).get()!.token).toBe(ALICE_TOKEN);
+  });
+
+  it('rejects malformed tokens with 400', async () => {
+    for (const bad of ['short', 'has space init', '-leading-dash', 'a'.repeat(65), 42, null]) {
+      expect((await setCustom(ALICE_TOKEN, { token: bad })).status).toBe(400);
+    }
+  });
+
+  it('rejects another user\'s token with 409 (case-sensitive)', async () => {
+    expect((await setCustom(ALICE_TOKEN, { token: BOB_TOKEN })).status).toBe(409);
+  });
+
+  it('sets it: old token dies everywhere, new one works, session survives', async () => {
+    const result = await setCustom(ALICE_TOKEN, { token: 'alice-custom-1' });
+    expect(result.status).toBe(200);
+    expect((result.body as { token: string }).token).toBe('alice-custom-1');
+
+    expect((await read(ALICE_TOKEN)).status).toBe(404);
+    // `call` attaches the session for the user behind the NEW path token —
+    // the same user row and password version, so a 200 here also proves the
+    // pre-change session cookie would still verify after navigation.
+    const data = ready(await read('alice-custom-1'));
+    expect(data.user.token).toBe('alice-custom-1');
+    expect(data.ownSources.map((item) => item.id)).toEqual([aliceSourceId]);
+    expect(await exportProxyNames('alice-custom-1')).toContain(NODE_ALICE);
+  });
+
+  it('setting the current token again is a no-op success', async () => {
+    await setCustom(ALICE_TOKEN, { token: 'alice-custom-2' });
+    const again = await setCustom('alice-custom-2', { token: 'alice-custom-2' });
+    expect(again.status).toBe(200);
+    expect((again.body as { token: string }).token).toBe('alice-custom-2');
   });
 });
 

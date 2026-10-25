@@ -30,6 +30,7 @@ import {
   sourceCreatePayload,
   sourcePatchPayload,
   summaryBar,
+  progressRing,
   targetLink,
   targetLinks,
   trafficBar,
@@ -189,6 +190,16 @@ describe('traffic presentation', () => {
     expect(formatExpire(null)).toBe('—');
     expect(formatExpire(0)).toBe('—');
     expect(formatExpire(1_700_000_000)).toBe('2023-11-14');
+  });
+
+  it('progressRing maps percent to a dash offset (null = empty ring)', () => {
+    const r = 60;
+    const c = 2 * Math.PI * r;
+    expect(progressRing(null, r)).toEqual({ circumference: c, offset: c });
+    expect(progressRing(0, r).offset).toBeCloseTo(c);
+    expect(progressRing(25, r).offset).toBeCloseTo(c * 0.75);
+    expect(progressRing(100, r).offset).toBeCloseTo(0);
+    expect(progressRing(140, r).offset).toBeCloseTo(0);
   });
 
   it('renders 暂无流量数据 (empty) for a source without userinfo', () => {

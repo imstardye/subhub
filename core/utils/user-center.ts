@@ -263,6 +263,21 @@ export function trafficBar(info: {
   };
 }
 
+/**
+ * Geometry for the dashboard's SVG progress ring: the dash offset that shows
+ * `percent` of the ring filled. Pure presentation math (no traffic figures
+ * are derived here — `percent` comes from `trafficBar`); `null` percent (no
+ * data) renders an empty ring.
+ */
+export function progressRing(
+  percent: number | null,
+  radius: number,
+): { circumference: number; offset: number } {
+  const circumference = 2 * Math.PI * radius;
+  const clamped = percent === null ? 0 : Math.min(100, Math.max(0, percent));
+  return { circumference, offset: circumference * (1 - clamped / 100) };
+}
+
 /** Summary header of the traffic section (dedicated sources only). */
 export function summaryBar(summary: UserCenterTrafficSummary | null | undefined): TrafficBar {
   if (!summary || summary.sourcesWithUserinfo === 0) return trafficBar(null);

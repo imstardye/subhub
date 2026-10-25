@@ -45,6 +45,7 @@ import {
   originFromLocation,
   ownSourceStats,
   profileChoices,
+  progressRing,
   sourceCreatePayload,
   sourcePatchPayload,
   summaryBar,
@@ -320,6 +321,39 @@ async function rotateToken() {
   }
 }
 
+/* -------------------------------------------------------- custom token -- */
+const customTokenOpen = ref(false);
+const customTokenValue = ref('');
+const customTokenBusy = ref(false);
+
+function openCustomToken() {
+  customTokenValue.value = '';
+  customTokenOpen.value = true;
+}
+
+async function submitCustomToken() {
+  const value = customTokenValue.value.trim();
+  if (!value) {
+    message.error('请输入新令牌');
+    return;
+  }
+  if (customTokenBusy.value) return;
+  customTokenBusy.value = true;
+  try {
+    const result = await $fetch<{ token: string }>(userCenterApiPath(token.value, 'token'), {
+      method: 'PUT',
+      body: { token: value },
+    });
+    customTokenOpen.value = false;
+    // The session cookie is bound to the user id + password version, not the
+    // token, so the dashboard at the new address is still unlocked.
+    await navigateTo(userCenterPath(result.token), { replace: true });
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+    customTokenBusy.value = false;
+  }
+}
+
 /* --------------------------------------------------------- password gate -- */
 /**
  * Setup vs. unlock form. The server decides which one is needed and answers
@@ -424,6 +458,10 @@ async function submitPasswordChange() {
 /* ---------------------------------------------------------------- derived -- */
 const cards = computed(() => (center.value ? center.value.traffic.sources.map((card) => trafficCard(card)) : []));
 const summary = computed(() => (center.value ? summaryBar(center.value.traffic.summary) : summaryBar(null)));
+/** Hero progress ring geometry (percent itself comes from `summaryBar`). */
+const ring = computed(() => progressRing(summary.value.percent, 64));
+/** Avatar initial in the greeting header. */
+const userInitial = computed(() => (center.value?.user.name.trim().charAt(0) || 'S').toUpperCase());
 const availableGroups = computed(() =>
   center.value ? groupAvailableSources(center.value.availableSources) : [],
 );
@@ -452,130 +490,147 @@ function healthType(state: 'ok' | 'failed' | 'never'): 'success' | 'error' | 'wa
 
 useHead({ title: '我的订阅 · subhub' });
 </script>
-
 <template>
   <main class="my">
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">S</span>
-        <div>
-          <h1>我的订阅</h1>
-          <p v-if="center" class="sub">{{ center.user.name }}</p>
-        </div>
-      </div>
-      <n-button v-if="center" secondary size="small" :loading="pending" @click="refresh()">
-        刷新
-      </n-button>
-    </header>
-
+    <!-- ---------------------------------------------------------- states -- -->
     <div v-if="view.kind === 'loading'" class="state">
-      <n-spin size="small" />
+      <n-spin size="medium" />
       <span>正在加载…</span>
     </div>
 
-    <n-card v-else-if="view.kind === 'locked'" class="state-card auth-card">
-      <template #header>
-        {{ view.lock === 'needs-setup' ? '设置访问密码' : '输入访问密码' }}
-      </template>
-      <p class="hint">
-        {{ view.lock === 'needs-setup'
-          ? `首次进入请设置密码（${PASSWORD_MIN_LENGTH}–${PASSWORD_MAX_LENGTH} 个字符），之后凭密码进入本页。`
-          : '该账号已设置密码，请输入后进入。' }}
-      </p>
-      <n-form class="form" @submit.prevent="submitAuth">
-        <n-form-item :label="view.lock === 'needs-setup' ? '设置密码' : '密码'" :show-feedback="false">
-          <n-input
-            v-model:value="authForm.password"
-            type="password"
-            show-password-on="click"
-            :autocomplete="view.lock === 'needs-setup' ? 'new-password' : 'current-password'"
-            :maxlength="PASSWORD_MAX_LENGTH"
-            placeholder="请输入密码"
-            :disabled="authBusy"
-            :input-props="{ 'aria-label': view.lock === 'needs-setup' ? '设置密码' : '密码' }"
-          />
-        </n-form-item>
-        <n-form-item v-if="view.lock === 'needs-setup'" label="确认密码" :show-feedback="false">
-          <n-input
-            v-model:value="authForm.confirm"
-            type="password"
-            show-password-on="click"
-            autocomplete="new-password"
-            :maxlength="PASSWORD_MAX_LENGTH"
-            placeholder="再次输入密码"
-            :disabled="authBusy"
-            :input-props="{ 'aria-label': '确认密码' }"
-          />
-        </n-form-item>
-        <n-alert v-if="authError" type="error" :bordered="false" role="alert">{{ authError }}</n-alert>
-        <div class="row">
-          <n-button type="primary" attr-type="submit" :loading="authBusy">
+    <section v-else-if="view.kind === 'locked'" class="auth-wrap">
+      <div class="auth-card">
+        <div class="auth-mark" aria-hidden="true">S</div>
+        <h1 class="auth-title">{{ view.lock === 'needs-setup' ? '设置访问密码' : '欢迎回来' }}</h1>
+        <p class="auth-sub">
+          {{ view.lock === 'needs-setup'
+            ? `首次进入请设置密码（${PASSWORD_MIN_LENGTH}–${PASSWORD_MAX_LENGTH} 个字符），之后凭密码进入本页。`
+            : '该账号已设置密码，请输入后进入。' }}
+        </p>
+        <n-form class="form" @submit.prevent="submitAuth">
+          <n-form-item :label="view.lock === 'needs-setup' ? '设置密码' : '密码'" :show-feedback="false">
+            <n-input
+              v-model:value="authForm.password"
+              type="password"
+              show-password-on="click"
+              size="large"
+              :autocomplete="view.lock === 'needs-setup' ? 'new-password' : 'current-password'"
+              :maxlength="PASSWORD_MAX_LENGTH"
+              placeholder="请输入密码"
+              :disabled="authBusy"
+              :input-props="{ 'aria-label': view.lock === 'needs-setup' ? '设置密码' : '密码' }"
+            />
+          </n-form-item>
+          <n-form-item v-if="view.lock === 'needs-setup'" label="确认密码" :show-feedback="false">
+            <n-input
+              v-model:value="authForm.confirm"
+              type="password"
+              show-password-on="click"
+              size="large"
+              autocomplete="new-password"
+              :maxlength="PASSWORD_MAX_LENGTH"
+              placeholder="再次输入密码"
+              :disabled="authBusy"
+              :input-props="{ 'aria-label': '确认密码' }"
+            />
+          </n-form-item>
+          <n-alert v-if="authError" type="error" :bordered="false" role="alert">{{ authError }}</n-alert>
+          <n-button class="auth-submit" type="primary" size="large" block attr-type="submit" :loading="authBusy">
             {{ authBusy ? '处理中…' : view.lock === 'needs-setup' ? '设置并进入' : '进入' }}
           </n-button>
-        </div>
-      </n-form>
-    </n-card>
+        </n-form>
+      </div>
+    </section>
 
-    <n-card v-else-if="view.kind === 'error'" class="state-card">
-      <p class="state-title">{{ view.message }}</p>
-      <p class="hint">请确认链接完整，或联系管理员重新获取。</p>
-    </n-card>
+    <section v-else-if="view.kind === 'error'" class="auth-wrap">
+      <div class="auth-card">
+        <div class="auth-mark muted" aria-hidden="true">!</div>
+        <h1 class="auth-title">{{ view.message }}</h1>
+        <p class="auth-sub">请确认链接完整，或联系管理员重新获取。</p>
+      </div>
+    </section>
 
-    <n-card v-else-if="view.kind === 'disabled'" class="state-card">
-      <p class="state-title">{{ view.title }}</p>
-      <p class="hint">{{ view.message }}</p>
-    </n-card>
+    <section v-else-if="view.kind === 'disabled'" class="auth-wrap">
+      <div class="auth-card">
+        <div class="auth-mark muted" aria-hidden="true">!</div>
+        <h1 class="auth-title">{{ view.title }}</h1>
+        <p class="auth-sub">{{ view.message }}</p>
+      </div>
+    </section>
 
+    <!-- ------------------------------------------------------- dashboard -- -->
     <template v-else-if="center">
-      <section class="overview-grid">
-        <n-card class="stat stat-traffic">
-          <div class="stat-head">
-            <span class="stat-label">流量概览</span>
-            <n-tag v-if="summary.empty" size="small">暂无数据</n-tag>
+      <header class="topbar">
+        <div class="brand">
+          <span class="avatar" aria-hidden="true">{{ userInitial }}</span>
+          <div>
+            <h1>你好，{{ center.user.name }}</h1>
+            <p class="sub">规则档 {{ center.profile.assignedProfile || '未分配' }} · 我的订阅</p>
           </div>
-          <p v-if="summary.empty" class="hint">暂无流量数据</p>
+        </div>
+        <n-button secondary round :loading="pending" @click="refresh()">刷新</n-button>
+      </header>
+
+      <section class="hero">
+        <div class="hero-main">
+          <span class="hero-label">剩余流量</span>
+          <p v-if="summary.empty" class="hero-empty">暂无流量数据</p>
           <template v-else>
-            <div class="traffic-numbers">
-              <span class="big">{{ summary.usedLabel }}</span>
-              <span class="muted">/ {{ summary.totalLabel }}</span>
+            <div class="hero-number">{{ summary.remainingLabel }}</div>
+            <div class="hero-facts">
+              <span>已用 <b>{{ summary.usedLabel }}</b></span>
+              <span class="sep" aria-hidden="true" />
+              <span>总量 <b>{{ summary.totalLabel }}</b></span>
             </div>
-            <n-progress
-              v-if="summary.percent !== null"
-              type="line"
-              :percentage="summary.percent"
-              :show-indicator="false"
-              :height="8"
-            />
-            <div class="stat-facts">
-              <span>剩余 <b>{{ summary.remainingLabel }}</b></span>
-              <span>到期 <b>{{ summary.expireLabel }}</b></span>
+            <div class="hero-bar" aria-hidden="true">
+              <div class="hero-bar-fill" :style="{ width: `${summary.percent ?? 0}%` }" />
             </div>
           </template>
-          <p class="hint tiny">
+          <p class="hero-note">
             仅统计专属订阅源（{{ center.traffic.summary.sourcesWithUserinfo }}/{{ center.traffic.summary.dedicatedCount }} 个有数据）
           </p>
-        </n-card>
-
-        <n-card class="stat">
-          <span class="stat-label">节点总数</span>
-          <div class="stat-value">{{ ownStats.nodes }}</div>
-          <p class="hint tiny">专属订阅源合计 · 已扣除信息节点</p>
-        </n-card>
-
-        <n-card class="stat">
-          <span class="stat-label">订阅源状态</span>
-          <div class="status-row">
-            <n-tag type="success" size="small" round>正常 {{ ownStats.healthy }}</n-tag>
-            <n-tag :type="ownStats.failing ? 'error' : 'default'" size="small" round>异常 {{ ownStats.failing }}</n-tag>
+        </div>
+        <div class="hero-side">
+          <div class="ring-wrap">
+            <svg class="ring" viewBox="0 0 160 160" role="img" :aria-label="`已用 ${summary.percent === null ? '—' : Math.round(summary.percent) + '%'}`">
+              <circle class="ring-track" cx="80" cy="80" r="64" />
+              <circle
+                class="ring-value"
+                cx="80"
+                cy="80"
+                r="64"
+                :stroke-dasharray="ring.circumference"
+                :stroke-dashoffset="ring.offset"
+              />
+            </svg>
+            <div class="ring-center">
+              <span class="ring-pct">{{ summary.percent === null ? '—' : `${Math.round(summary.percent)}%` }}</span>
+              <span class="ring-cap">已用</span>
+            </div>
           </div>
-          <p class="hint tiny">共 {{ ownStats.total }} 个专属订阅源</p>
-        </n-card>
+          <p class="hero-expire">到期 <b>{{ summary.expireLabel }}</b></p>
+        </div>
+      </section>
 
-        <n-card class="stat">
-          <span class="stat-label">到期信息</span>
-          <div class="stat-value small">{{ summary.expireLabel }}</div>
-          <p class="hint tiny">取自专属订阅源的套餐信息</p>
-        </n-card>
+      <section class="tiles">
+        <div class="tile">
+          <span class="tile-label">节点总数</span>
+          <span class="tile-value">{{ ownStats.nodes }}</span>
+          <span class="tile-hint">专属订阅源合计 · 已扣除信息节点</span>
+        </div>
+        <div class="tile">
+          <span class="tile-label">订阅源状态</span>
+          <span class="tile-value tile-status">
+            <span class="dot ok" aria-hidden="true" />{{ ownStats.healthy }} 正常
+            <span class="dot bad" aria-hidden="true" />{{ ownStats.failing }} 异常
+          </span>
+          <span class="tile-hint">共 {{ ownStats.total }} 个专属订阅源</span>
+        </div>
+        <div class="tile">
+          <span class="tile-label">当前规则档</span>
+          <span class="tile-value">{{ center.profile.assignedProfile || '未分配' }}</span>
+          <span class="tile-hint">切换规则档只影响链接，不改账号默认</span>
+        </div>
       </section>
 
       <div class="dashboard-grid">
@@ -588,7 +643,7 @@ useHead({ title: '我的订阅 · subhub' });
 
           <div class="main-link">
             <code>{{ currentMainLink }}</code>
-            <n-button size="small" secondary @click="copy(currentMainLink, 'main')">
+            <n-button type="primary" size="small" @click="copy(currentMainLink, 'main')">
               {{ copied === 'main' ? '已复制' : '复制' }}
             </n-button>
           </div>
@@ -599,7 +654,7 @@ useHead({ title: '我的订阅 · subhub' });
 
           <ul class="links">
             <li v-for="link in links" :key="link.target">
-              <div class="link-name">{{ link.label }}</div>
+              <span class="link-chip">{{ link.label }}</span>
               <code>{{ link.url }}</code>
               <n-button size="tiny" secondary @click="copy(link.url, link.target)">
                 {{ copied === link.target ? '已复制' : '复制' }}
@@ -615,18 +670,13 @@ useHead({ title: '我的订阅 · subhub' });
         <n-card class="panel panel-sources">
           <template #header>我的订阅源</template>
           <template #header-extra>
-            <n-button type="primary" size="small" @click="openAdd">添加订阅源</n-button>
+            <n-button type="primary" size="small" round @click="openAdd">添加订阅源</n-button>
           </template>
 
-          <p v-if="center.ownSources.length" class="hint tiny">
-            共 {{ ownStats.total }} 个 · 正常 {{ ownStats.healthy }} · 异常 {{ ownStats.failing }} · 节点 {{ ownStats.nodes }}
-          </p>
-
-          <div v-if="cards.length" class="source-grid">
-            <n-card
+          <div v-if="cards.length" class="source-list">
+            <article
               v-for="(card, index) in cards"
               :key="center.traffic.sources[index]!.id"
-              size="small"
               class="source-card"
             >
               <div class="source-head">
@@ -638,13 +688,12 @@ useHead({ title: '我的订阅 · subhub' });
 
               <p v-if="card.empty" class="hint tiny">暂无流量数据</p>
               <template v-else>
-                <n-progress
-                  v-if="card.percent !== null"
-                  type="line"
-                  :percentage="card.percent"
-                  :show-indicator="false"
-                  :height="6"
-                />
+                <div class="source-bar" aria-hidden="true">
+                  <div
+                    class="source-bar-fill"
+                    :style="{ width: `${card.percent ?? 0}%` }"
+                  />
+                </div>
                 <div class="source-facts">
                   <span>已用 <b>{{ card.usedLabel }}</b></span>
                   <span>总量 <b>{{ card.totalLabel }}</b></span>
@@ -656,26 +705,27 @@ useHead({ title: '我的订阅 · subhub' });
                 </p>
               </template>
 
-              <p class="hint tiny">
-                {{ card.lastRefresh }}
-                <span v-if="center.traffic.sources[index]!.enabled === false"> · 已暂停</span>
-                <span v-if="card.healthError"> · {{ card.healthError }}</span>
-              </p>
-
-              <div class="row">
-                <n-button size="tiny" secondary @click="editSourceById(center.traffic.sources[index]!.id)">
-                  编辑
-                </n-button>
-                <n-button
-                  size="tiny"
-                  secondary
-                  type="error"
-                  @click="askDeleteById(center.traffic.sources[index]!.id)"
-                >
-                  删除
-                </n-button>
+              <div class="source-foot">
+                <span class="hint tiny">
+                  {{ card.lastRefresh }}
+                  <span v-if="center.traffic.sources[index]!.enabled === false"> · 已暂停</span>
+                  <span v-if="card.healthError"> · {{ card.healthError }}</span>
+                </span>
+                <span class="row">
+                  <n-button size="tiny" secondary @click="editSourceById(center.traffic.sources[index]!.id)">
+                    编辑
+                  </n-button>
+                  <n-button
+                    size="tiny"
+                    secondary
+                    type="error"
+                    @click="askDeleteById(center.traffic.sources[index]!.id)"
+                  >
+                    删除
+                  </n-button>
+                </span>
               </div>
-            </n-card>
+            </article>
           </div>
           <n-empty v-else description="还没有专属订阅源。" />
         </n-card>
@@ -698,19 +748,26 @@ useHead({ title: '我的订阅 · subhub' });
           <p class="hint tiny">取消勾选后，该订阅源不会出现在你的订阅链接中。</p>
         </n-card>
 
-        <!-- ------------------------------------------------------ password -- -->
-        <n-card class="panel panel-password" title="访问密码">
-          <p class="hint tiny">修改后其他设备上的登录会失效，需要重新输入新密码。</p>
-          <div class="row">
-            <n-button secondary @click="openPasswordChange">修改密码</n-button>
+        <!-- ------------------------------------------------------- account -- -->
+        <n-card class="panel panel-account" title="账户与安全">
+          <div class="account-row">
+            <div class="account-text">
+              <span class="account-label">订阅令牌</span>
+              <span class="hint tiny">当前 {{ maskUserToken(center.user.token) }} · 自定义后链接更好记；刷新会随机生成新令牌。两者都会让旧链接立即失效。</span>
+            </div>
+            <div class="row">
+              <n-button secondary @click="openCustomToken">自定义令牌</n-button>
+              <n-button secondary :loading="rotating" @click="askRotate">刷新令牌</n-button>
+            </div>
           </div>
-        </n-card>
-
-        <!-- ------------------------------------------------------- rotate -- -->
-        <n-card class="panel panel-token" title="重置 Token">
-          <p class="hint tiny">重置后旧链接立即失效，需要重新导入新链接。</p>
-          <div class="row">
-            <n-button secondary :loading="rotating" @click="askRotate">重置 Token</n-button>
+          <div class="account-row">
+            <div class="account-text">
+              <span class="account-label">访问密码</span>
+              <span class="hint tiny">修改后其他设备上的登录会失效，需要重新输入新密码。</span>
+            </div>
+            <div class="row">
+              <n-button secondary @click="openPasswordChange">修改密码</n-button>
+            </div>
           </div>
         </n-card>
       </div>
@@ -763,6 +820,31 @@ useHead({ title: '我的订阅 · subhub' });
             {{ passwordBusy ? '保存中…' : '保存' }}
           </n-button>
           <n-button :disabled="passwordBusy" @click="closePasswordChange">取消</n-button>
+        </div>
+      </n-form>
+    </n-modal>
+
+    <!-- ----------------------------------------------------- custom token -- -->
+    <n-modal v-model:show="customTokenOpen" preset="card" class="modal-card" title="自定义令牌">
+      <n-form class="form" @submit.prevent="submitCustomToken">
+        <n-form-item label="新令牌" :show-feedback="false">
+          <div class="field-stack">
+            <n-input
+              v-model:value="customTokenValue"
+              type="text"
+              maxlength="64"
+              placeholder="8–64 个字符，如 my-sub-2026"
+              :disabled="customTokenBusy"
+              :input-props="{ 'aria-label': '新令牌' }"
+            />
+            <small class="hint">仅小写/大写字母、数字、- 和 _，且不能与其他人重复。保存后订阅链接和本页地址立即变更，旧链接立刻失效，客户端需要重新导入。</small>
+          </div>
+        </n-form-item>
+        <div class="row">
+          <n-button type="primary" attr-type="submit" :loading="customTokenBusy">
+            {{ customTokenBusy ? '保存中…' : '保存' }}
+          </n-button>
+          <n-button :disabled="customTokenBusy" @click="customTokenOpen = false">取消</n-button>
         </div>
       </n-form>
     </n-modal>
@@ -828,414 +910,559 @@ useHead({ title: '我的订阅 · subhub' });
 <style scoped>
 .my {
   min-height: 100vh;
-  max-width: 76rem;
+  max-width: 72rem;
   margin: 0 auto;
-  padding: var(--space-4) var(--space-4) var(--space-10);
-  background: #f8fafc;
+  padding: 28px 20px 64px;
+  background:
+    radial-gradient(60rem 22rem at 85% -6rem, rgba(37, 99, 235, 0.13), transparent 60%),
+    linear-gradient(180deg, #e9f1fe 0, #f8fafc 19rem);
   color: var(--foreground);
   font-family: var(--font-sans);
 }
 
+/* ------------------------------------------------------------ header */
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
+  gap: 16px;
+  margin-bottom: 22px;
 }
-
 .brand {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 14px;
+  min-width: 0;
 }
-
-.brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2rem;
-  height: 2rem;
-  border-radius: var(--radius);
-  background: var(--accent-soft);
-  color: var(--primary);
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  flex: none;
+  border-radius: 15px;
+  background: linear-gradient(135deg, #2563eb, #38bdf8);
+  color: #fff;
+  font-size: 20px;
   font-weight: 700;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.32);
 }
-
-h1 {
+.topbar h1 {
   margin: 0;
-  font-size: var(--text-lg);
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-
-h3 {
-  margin: 0;
-  font-size: var(--text-base);
-}
-
 .sub {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--text-sm);
+  margin: 2px 0 0;
+  color: var(--muted-foreground, #64748b);
+  font-size: 13px;
 }
 
-.hint {
-  margin: 0;
-  color: var(--muted-foreground);
-  font-size: var(--text-sm);
-}
-
-.tiny {
-  font-size: var(--text-xs);
-}
-
+/* ------------------------------------------------------------ states */
 .state {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-10) 0;
-  color: var(--muted-foreground);
+  gap: 10px;
+  padding: 96px 0;
+  color: var(--muted-foreground, #64748b);
 }
-
-.state-card {
-  max-width: 34rem;
-  margin: var(--space-6) auto;
-  text-align: center;
+.auth-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 9vh 0 48px;
 }
-
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 34px 30px 30px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 24px;
+  box-shadow: 0 24px 50px rgba(15, 40, 90, 0.12);
+}
+.auth-mark {
+  display: grid;
+  place-items: center;
+  width: 54px;
+  height: 54px;
+  margin-bottom: 18px;
+  border-radius: 17px;
+  background: linear-gradient(135deg, #2563eb, #38bdf8);
+  color: #fff;
+  font-size: 24px;
+  font-weight: 700;
+  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.32);
+}
+.auth-mark.muted {
+  background: #f1f5f9;
+  color: #64748b;
+  box-shadow: none;
+}
+.auth-title {
+  margin: 0 0 8px;
+  font-size: 21px;
+  font-weight: 700;
+}
+.auth-sub {
+  margin: 0 0 22px;
+  color: var(--muted-foreground, #64748b);
+  font-size: 13.5px;
+  line-height: 1.65;
+}
+.auth-submit {
+  margin-top: 6px;
+}
 .state-title {
-  margin: 0 0 var(--space-1);
-  color: var(--foreground);
+  margin: 0 0 8px;
+  font-size: 17px;
   font-weight: 600;
 }
 
-.overview-grid {
+/* -------------------------------------------------------------- hero */
+.hero {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-3);
-  margin-bottom: var(--space-4);
+  grid-template-columns: 1fr auto;
+  gap: 24px;
+  align-items: center;
+  padding: 28px 30px;
+  margin-bottom: 18px;
+  background: linear-gradient(120deg, #ffffff 55%, #eef5ff);
+  border: 1px solid #dbe7fd;
+  border-radius: 24px;
+  box-shadow: 0 16px 36px rgba(15, 40, 90, 0.08);
 }
-
-.stat {
-  min-width: 0;
+.hero-label {
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
 }
-
-.stat :deep(.n-card__content) {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+.hero-number {
+  margin: 8px 0 10px;
+  font-size: 46px;
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
 }
-
-.stat-traffic {
-  grid-column: span 2;
+.hero-empty {
+  margin: 14px 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--muted-foreground, #64748b);
 }
-
-.stat-head {
+.hero-facts {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
+  gap: 12px;
+  color: var(--muted-foreground, #64748b);
+  font-size: 14px;
 }
-
-.stat-label {
-  color: var(--muted-foreground);
-  font-size: var(--text-sm);
-  font-weight: 500;
-}
-
-.traffic-numbers {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
-.big {
-  font-size: var(--text-2xl);
-  font-weight: 700;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-
-.muted {
-  color: var(--muted-foreground);
-  font-family: var(--font-mono);
-}
-
-.stat-value {
-  font-family: var(--font-mono);
-  font-size: var(--text-2xl);
-  font-weight: 600;
-  line-height: 1.2;
-  font-variant-numeric: tabular-nums;
-}
-
-.stat-value.small {
-  font-size: var(--text-lg);
-}
-
-.stat-facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-4);
-  color: var(--muted-foreground);
-  font-size: var(--text-xs);
-}
-
-.stat-facts b {
+.hero-facts b {
   color: var(--foreground);
-  font-family: var(--font-mono);
-  font-weight: 500;
+  font-weight: 600;
 }
-
-.status-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
+.hero-facts .sep {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #cbd5e1;
 }
-
-.dashboard-grid {
-  display: grid;
-  grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: var(--space-4);
-  align-items: start;
+.hero-bar {
+  height: 10px;
+  margin-top: 18px;
+  border-radius: 999px;
+  background: #e3ecfd;
+  overflow: hidden;
 }
-
-.panel {
-  min-width: 0;
+.hero-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2563eb, #38bdf8);
+  transition: width 0.5s ease;
 }
-
-.panel > :deep(.n-card__content) {
+.hero-note {
+  margin: 12px 0 0;
+  color: var(--muted-foreground, #64748b);
+  font-size: 12.5px;
+}
+.hero-side {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  align-items: center;
+  gap: 10px;
+}
+.ring-wrap {
+  position: relative;
+  width: 148px;
+  height: 148px;
+}
+.ring {
+  width: 148px;
+  height: 148px;
+  transform: rotate(-90deg);
+}
+.ring circle {
+  fill: none;
+  stroke-width: 13;
+}
+.ring-track {
+  stroke: #e3ecfd;
+}
+.ring-value {
+  stroke: #2563eb;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.5s ease;
+}
+.ring-center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.ring-pct {
+  font-size: 27px;
+  font-weight: 800;
+  line-height: 1;
+}
+.ring-cap {
+  margin-top: 4px;
+  color: var(--muted-foreground, #64748b);
+  font-size: 12px;
+}
+.hero-expire {
+  margin: 0;
+  color: var(--muted-foreground, #64748b);
+  font-size: 13px;
+}
+.hero-expire b {
+  color: var(--foreground);
+  font-weight: 600;
 }
 
-.panel-links {
-  grid-column: span 5;
+/* ------------------------------------------------------------- tiles */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 17px 20px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  box-shadow: 0 6px 16px rgba(15, 40, 90, 0.045);
+}
+.tile-label {
+  color: var(--muted-foreground, #64748b);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+.tile-value {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.tile-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 17px;
+}
+.tile-hint {
+  color: var(--muted-foreground, #64748b);
+  font-size: 12px;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.dot.ok {
+  background: #16a34a;
+}
+.dot.bad {
+  background: #dc2626;
+  margin-left: 10px;
 }
 
-.panel-sources {
-  grid-column: span 7;
+/* ------------------------------------------------------------ panels */
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
 }
-
-.panel-shared {
-  grid-column: span 7;
+.panel {
+  border-radius: 20px;
+  box-shadow: 0 10px 24px rgba(15, 40, 90, 0.055);
 }
-
-.panel-password {
-  grid-column: span 7;
+.panel :deep(.n-card-header) {
+  font-weight: 700;
 }
-
-.panel-token {
-  grid-column: span 5;
+.hint {
+  color: var(--muted-foreground, #64748b);
+  font-size: 13px;
+  line-height: 1.6;
 }
-
+.tiny {
+  font-size: 12px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .field {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 6px;
+  margin-bottom: 14px;
 }
-
 .field-label {
-  color: var(--muted-foreground);
-  font-size: var(--text-sm);
-  font-weight: 500;
+  font-size: 13px;
+  font-weight: 600;
 }
-
 .field-stack {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 6px;
   width: 100%;
 }
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 
+/* ------------------------------------------------------------- links */
 .main-link {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  background: var(--muted);
-  border-radius: var(--radius);
+  gap: 10px;
+  padding: 12px 14px;
+  background: #eef4fe;
+  border: 1px solid #d7e5fd;
+  border-radius: 14px;
 }
-
 .main-link code {
   flex: 1;
-  overflow: hidden;
-  color: var(--foreground);
+  min-width: 0;
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 12.5px;
+  word-break: break-all;
 }
-
 .qr {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-1);
+  gap: 8px;
+  padding: 18px 0 6px;
 }
-
 .qr-image {
-  width: 11rem;
-  height: 11rem;
-  padding: var(--space-2);
+  width: 148px;
+  height: 148px;
+  padding: 10px;
   background: #fff;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
 }
-
 .qr-image :deep(svg) {
   width: 100%;
   height: 100%;
+  display: block;
 }
-
 .links {
   list-style: none;
-  margin: 0;
+  margin: 14px 0 10px;
   padding: 0;
 }
-
 .links li {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--space-1) var(--space-2);
-  padding: var(--space-2) 0;
-  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 12px;
 }
-
-.link-name {
-  font-size: var(--text-sm);
+.links li:hover {
+  background: #f6f9ff;
+}
+.link-chip {
+  flex: none;
+  min-width: 86px;
+  font-size: 13px;
   font-weight: 600;
 }
-
 .links code {
-  grid-column: 1 / -1;
-  overflow: hidden;
-  color: var(--muted-foreground);
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--muted-foreground, #64748b);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.source-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-  gap: var(--space-3);
-}
-
-.source-card :deep(.n-card__content) {
+/* ----------------------------------------------------------- sources */
+.source-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 12px;
 }
-
+.source-card {
+  padding: 16px 18px;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  background: #fbfdff;
+}
 .source-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-2);
-  min-width: 0;
+  gap: 10px;
+  margin-bottom: 10px;
 }
-
 .source-head strong {
+  font-size: 14.5px;
+}
+.source-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: #e3ecfd;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  margin-bottom: 10px;
 }
-
+.source-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2563eb, #38bdf8);
+}
 .source-facts {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-1) var(--space-3);
-  color: var(--muted-foreground);
-  font-size: var(--text-xs);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  color: var(--muted-foreground, #64748b);
+  font-size: 13px;
 }
-
 .source-facts b {
   color: var(--foreground);
-  font-family: var(--font-mono);
-  font-weight: 500;
+  font-weight: 600;
 }
-
-.row {
+.source-foot {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  margin-top: var(--space-1);
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
 }
-
-.group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
 .group h3 {
-  color: var(--muted-foreground);
-  font-size: var(--text-xs);
+  margin: 14px 0 6px;
+  font-size: 13.5px;
   font-weight: 600;
-  text-transform: uppercase;
 }
-
+.group:first-child h3 {
+  margin-top: 0;
+}
 .toggle-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-1) 0;
-  border-top: 1px solid var(--border);
-  font-size: var(--text-sm);
+  gap: 12px;
+  padding: 9px 2px;
+  border-bottom: 1px solid #eef2f7;
+  font-size: 14px;
+}
+.toggle-row:last-child {
+  border-bottom: none;
 }
 
+/* ----------------------------------------------------------- account */
+.account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 0;
+}
+.account-row + .account-row {
+  border-top: 1px solid #eef2f7;
+}
+.account-row:first-child {
+  padding-top: 2px;
+}
+.account-row:last-child {
+  padding-bottom: 2px;
+}
+.account-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.account-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------ modals */
 .modal-card {
-  width: min(30rem, calc(100vw - 2rem));
+  max-width: 30rem;
+  border-radius: 20px;
 }
 
-@media (max-width: 1100px) {
-  .panel-links,
-  .panel-sources,
-  .panel-shared,
-  .panel-password,
-  .panel-token {
-    grid-column: span 12;
+/* -------------------------------------------------------- responsive */
+@media (max-width: 960px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
   }
 }
-
-@media (max-width: 900px) {
-  .overview-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+@media (max-width: 720px) {
+  .hero {
+    grid-template-columns: 1fr;
+    justify-items: start;
   }
-
-  .stat-traffic {
-    grid-column: span 2;
+  .hero-side {
+    flex-direction: row;
+    align-items: center;
+    gap: 18px;
   }
-}
-
-@media (max-width: 640px) {
-  .my {
-    padding: var(--space-3) var(--space-3) var(--space-8);
+  .ring-wrap,
+  .ring {
+    width: 108px;
+    height: 108px;
   }
-
-  .overview-grid {
-    grid-template-columns: minmax(0, 1fr);
+  .ring circle {
+    stroke-width: 15;
   }
-
-  .stat-traffic {
-    grid-column: span 1;
+  .ring-pct {
+    font-size: 21px;
   }
-
-  .topbar {
-    flex-wrap: wrap;
+  .hero-number {
+    font-size: 36px;
+  }
+  .tiles {
+    grid-template-columns: 1fr;
+  }
+  .topbar h1 {
+    font-size: 18px;
+  }
+  .account-row {
+    flex-direction: column;
     align-items: flex-start;
-  }
-
-  .source-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .modal-card {
-    width: calc(100vw - 1.5rem);
   }
 }
 </style>
