@@ -19,7 +19,7 @@ import {
   refreshSource,
   type Fetcher,
   type FetchResponse,
-} from '../server/tasks/refresh-sources';
+} from '../server/utils/refresh-sources';
 import { handleSubscriptionExport, resetExportRateLimiter } from '../server/utils/subscription';
 import { getSource } from '../server/utils/admin-sources';
 import {

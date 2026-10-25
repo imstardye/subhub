@@ -15,7 +15,7 @@ import {
   refreshSource,
   type Fetcher,
   type FetchResponse,
-} from '../server/tasks/refresh-sources';
+} from '../server/utils/refresh-sources';
 import { handleSubscriptionExport, resetExportRateLimiter } from '../server/utils/subscription';
 import refreshSourcesHandler, {
   BodyTooLargeError,
@@ -25,7 +25,7 @@ import refreshSourcesHandler, {
   type TaskRequest,
 } from '../server/api/tasks/refresh-sources.post';
 import { __setServerDbForTest } from '../server/utils/db';
-import { MAX_CACHE_BLOB_BYTES } from '../server/tasks/refresh-sources';
+import { MAX_CACHE_BLOB_BYTES } from '../server/utils/refresh-sources';
 
 /**
  * All URLs and payloads below are fake: `example.com` hosts and placeholder

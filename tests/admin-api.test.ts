@@ -54,15 +54,15 @@ import { resetCryptoCache } from '../server/db/crypto';
 import { sources, users } from '../server/db/schema';
 import type { AdminApiEvent } from '../server/utils/admin-api';
 import { authenticatedEvent, makeApiEvent } from './helpers/admin-api';
-import { refreshSource } from '../server/tasks/refresh-sources';
+import { refreshSource } from '../server/utils/refresh-sources';
 
 const PASSWORD = 'correct-horse-battery';
 const ENV_KEYS = ['SUBHUB_ADMIN_PASSWORD', 'SUBHUB_SECRET', 'NODE_ENV'] as const;
 
 // The manual refresh route calls the real task; this spy lets the test decide
 // its outcome without any network access.
-vi.mock('../server/tasks/refresh-sources', async (importOriginal) => {
-  const original = await importOriginal<typeof import('../server/tasks/refresh-sources')>();
+vi.mock('../server/utils/refresh-sources', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../server/utils/refresh-sources')>();
   return { ...original, refreshSource: vi.fn(original.refreshSource) };
 });
 

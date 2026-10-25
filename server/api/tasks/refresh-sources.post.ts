@@ -22,7 +22,7 @@ import {
   verifyAdminPassword,
   type AdminAuthOptions,
 } from '../../utils/admin-auth';
-import { refreshAllDueSources } from '../../tasks/refresh-sources';
+import { refreshAllDueSources } from '../../utils/refresh-sources';
 import { getServerDb } from '../../utils/db';
 
 /** Max accepted request body (the trigger takes no body). */

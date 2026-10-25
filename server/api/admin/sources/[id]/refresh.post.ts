@@ -3,7 +3,7 @@
  * POST /api/admin/sources/:id/refresh — refresh one source's cache right now.
  *
  * Uses the exact same fetch/parse/cache path as the scheduled task
- * (`refreshSource` in server/tasks/refresh-sources.ts); no fetching logic is
+ * (`refreshSource` in server/utils/refresh-sources.ts); no fetching logic is
  * duplicated here.
  *
  * Responses:
@@ -20,7 +20,7 @@ import {
   type AdminRequestOptions,
 } from '../../../../utils/admin-routes';
 import { sendJson, type AdminApiEvent } from '../../../../utils/admin-api';
-import { refreshSource } from '../../../../tasks/refresh-sources';
+import { refreshSource } from '../../../../utils/refresh-sources';
 
 export default function adminSourceRefreshHandler(
   event: AdminApiEvent,

@@ -32,7 +32,7 @@
  * token's user, the mode to dedicated, and the type to `remote` (the refresh
  * task is what gives a self-service source its cache).
  */
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import {
   profiles,
@@ -58,7 +58,7 @@ import {
   parseSubscription,
 } from '../../core';
 import { isSourceDisabled } from './export-nodes';
-import { refreshSource, type Fetcher } from '../tasks/refresh-sources';
+import { refreshSource, type Fetcher, type RefreshOptions } from './refresh-sources';
 import { mergeUserInfo, rawTrafficInfoFromCache, type SubscriptionUserInfo } from './userinfo';
 import { findUserByToken, rotateUserToken } from './user-token';
 import {
@@ -697,6 +697,74 @@ export async function addOwnSource(
     outcome = 'failed';
   }
   return { source: getUserCenterSource(db, userId, created.id), refresh: outcome };
+}
+
+/** One source in a manual refresh report. */
+export interface OwnSourceRefreshItem {
+  id: number;
+  name: string;
+  /** `true` only when the upstream fetch succeeded and the cache was replaced. */
+  ok: boolean;
+  /** The source was paused/disabled (or otherwise not refreshable) and skipped. */
+  skipped: boolean;
+  error?: string;
+}
+
+export interface OwnSourceRefreshResult {
+  refreshed: number;
+  failed: number;
+  skipped: number;
+  results: OwnSourceRefreshItem[];
+}
+
+/**
+ * Refresh every DEDICATED source of one user (`POST /api/user/:token/refresh-sources`).
+ *
+ * Manual refresh only touches what the token holder owns: public/shared sources
+ * are shared infrastructure and other users' dedicated sources are invisible
+ * here. A source its owner paused (`sources.enabled` 0/false) is skipped and
+ * reported as such — its cache is kept untouched. Every eligible source goes
+ * through `refreshSource`, so fetching, userinfo parsing and failure handling
+ * are exactly the periodic task's behaviour (no second fetch path).
+ */
+export async function refreshOwnSources(
+  db: SubhubDb,
+  userId: number,
+  options: RefreshOptions = {},
+): Promise<OwnSourceRefreshResult> {
+  const rows = db
+    .select()
+    .from(sources)
+    .where(eq(sources.ownerUserId, userId))
+    .orderBy(asc(sources.id))
+    .all();
+
+  const summary: OwnSourceRefreshResult = { refreshed: 0, failed: 0, skipped: 0, results: [] };
+  for (const row of rows) {
+    if (isSourceDisabled(row)) {
+      summary.skipped += 1;
+      summary.results.push({ id: row.id, name: row.name, ok: false, skipped: true });
+      continue;
+    }
+    const result = await refreshSource(db, row.id, options);
+    if (result.outcome === 'refreshed') {
+      summary.refreshed += 1;
+      summary.results.push({ id: row.id, name: row.name, ok: true, skipped: false });
+    } else if (result.outcome === 'failed') {
+      summary.failed += 1;
+      summary.results.push({
+        id: row.id,
+        name: row.name,
+        ok: false,
+        skipped: false,
+        ...(result.error ? { error: result.error } : {}),
+      });
+    } else {
+      summary.skipped += 1;
+      summary.results.push({ id: row.id, name: row.name, ok: false, skipped: true });
+    }
+  }
+  return summary;
 }
 
 /**
