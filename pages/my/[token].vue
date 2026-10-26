@@ -64,7 +64,7 @@ import {
   defaultOperator,
   operatorSummary,
 } from '~/core/utils/operators-ui';
-import type { NodeOperator, NodeOperatorType } from '~/core';
+import { CUSTOM_RULES_EXAMPLE_TEXT, type NodeOperator, type NodeOperatorType } from '~/core';
 import type { UserCenterOwnSource } from '~/server/utils/user-center';
 
 const route = useRoute();
@@ -422,7 +422,10 @@ watch(
   center,
   (value) => {
     if (!value || rulesDirty.value) return;
-    rulesText.value = value.customRules.text;
+    // No saved rules yet: pre-fill the commented examples so the user can
+    // copy/adapt them. They are all `#` comments — saving them unchanged
+    // stores nothing, exactly like an empty box.
+    rulesText.value = value.customRules.text === '' ? CUSTOM_RULES_EXAMPLE_TEXT : value.customRules.text;
     rulesPosition.value = value.customRules.position;
   },
   { immediate: true },
@@ -888,6 +891,7 @@ useHead({ title: '我的订阅 · subhub' });
         </n-card>
 
       <div class="lower-grid">
+        <div class="stack">
         <!-- --------------------------------------------------- own sources -- -->
         <n-card class="panel panel-sources">
           <template #header>我的订阅源</template>
@@ -963,7 +967,6 @@ useHead({ title: '我的订阅 · subhub' });
           <n-empty v-else description="还没有专属订阅源。" />
         </n-card>
 
-        <div class="stack">
         <!-- ----------------------------------------------- inclusion list -- -->
         <n-card class="panel panel-shared" title="公共 / 共享订阅源">
           <p v-if="!availableGroups.length" class="hint">暂无可选订阅源。</p>
@@ -981,7 +984,9 @@ useHead({ title: '我的订阅 · subhub' });
           </div>
           <p class="hint tiny">取消勾选后，该订阅源不会出现在你的订阅链接中。</p>
         </n-card>
+        </div>
 
+        <div class="stack">
         <!-- -------------------------------------------------- custom rules -- -->
         <n-card class="panel panel-rules" title="自定义规则">
           <n-input
@@ -990,7 +995,7 @@ useHead({ title: '我的订阅 · subhub' });
             class="rules-editor"
             :autosize="{ minRows: 5, maxRows: 10 }"
             :disabled="rulesBusy"
-            placeholder="一行一条，例如：&#10;DOMAIN-SUFFIX,example.com,DIRECT&#10;DOMAIN-KEYWORD,ads,REJECT"
+            placeholder="一行一条，# 开头是注释"
             :input-props="{ 'aria-label': '自定义规则' }"
             @update:value="rulesDirty = true"
           />
@@ -1048,7 +1053,7 @@ useHead({ title: '我的订阅 · subhub' });
       <!-- ----------------------------------------------------- operators -- -->
       <n-card class="panel panel-operators" title="节点处理">
         <p class="hint tiny ops-intro">
-          按顺序对你的全部节点执行：过滤 → 去重 → 改名 → 排序 → 改属性。改名在规则档分组匹配之前生效，改太狠会让分组匹配不到节点——先点「试算」看结果再保存。
+          按顺序对全部节点执行（过滤 → 去重 → 改名 → 排序 → 改属性）。改名在分组匹配前生效，先「试算」看结果再保存。
         </p>
 
         <p v-if="opsDraft.length === 0" class="hint">还没有算子，导出与原来完全一致。</p>

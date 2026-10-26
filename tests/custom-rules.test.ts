@@ -20,6 +20,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import {
+  CUSTOM_RULES_EXAMPLE_TEXT,
   filterCustomRulesForExport,
   mergeCustomRules,
   parseCustomRulePosition,
@@ -58,6 +59,19 @@ const SOURCE = [
 ].join('\n');
 
 describe('custom rules: parsing', () => {
+  it('the editor examples are all comments, and each works once uncommented', () => {
+    const asShipped = parseCustomRules(CUSTOM_RULES_EXAMPLE_TEXT);
+    expect(asShipped.errors).toEqual([]);
+    expect(asShipped.entries).toEqual([]);
+    const uncommented = CUSTOM_RULES_EXAMPLE_TEXT.split('\n')
+      .filter((line) => line.startsWith('# ') && line.includes(','))
+      .map((line) => line.slice(2))
+      .join('\n');
+    const parsed = parseCustomRules(uncommented);
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.entries.length).toBeGreaterThanOrEqual(5);
+  });
+
   it('skips blanks/comments and normalizes the type (incl. FINAL -> MATCH)', () => {
     const parsed = parseCustomRules(
       ['# 注释', '', 'domain-suffix,Example.com,DIRECT', 'FINAL,REJECT', '  DOMAIN-KEYWORD,ads,REJECT  '].join('\n'),

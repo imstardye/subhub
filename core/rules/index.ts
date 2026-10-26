@@ -52,6 +52,7 @@ export {
   CUSTOM_RULE_MAX_COUNT,
   CUSTOM_RULE_MAX_LENGTH,
   CUSTOM_RULE_TYPES,
+  CUSTOM_RULES_EXAMPLE_TEXT,
   builtinRulePolicies,
   customRuleType,
   filterCustomRulesForExport,
