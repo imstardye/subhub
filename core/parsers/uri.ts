@@ -276,7 +276,10 @@ function applyTransport(
 
   const opts: Record<string, unknown> = {};
   const host = params.host ?? params.obfsParam;
-  if (host) {
+  if (network === 'xhttp') {
+    // mihomo keeps the XHTTP host as a plain string, not a headers mapping.
+    if (host) opts.host = host;
+  } else if (host) {
     if (params.obfsParam) {
       try {
         const parsed = JSON.parse(host) as Record<string, string>;
@@ -317,6 +320,7 @@ function applyTransport(
   if (path) opts.path = path;
   if (network === 'ws' && !opts.path) opts.path = '/';
   if (network === 'grpc' && params.mode) opts['_grpc-type'] = params.mode;
+  if (network === 'xhttp' && params.mode) opts.mode = params.mode;
   if (network === 'ws' && earlyData && /^\d+$/.test(earlyData)) {
     opts['max-early-data'] = Number.parseInt(earlyData, 10);
     opts['early-data-header-name'] =
@@ -329,6 +333,91 @@ function applyTransport(
 
   node.network = network;
   node[`${network}-opts`] = opts;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+function portValue(value: unknown): number | undefined {
+  const parsed =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\d+$/.test(value)
+        ? Number(value)
+        : NaN;
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535
+    ? parsed
+    : undefined;
+}
+
+/**
+ * Map an Xray `downloadSettings` stream config onto mihomo's XHTTP
+ * `download-settings` shape. Only the fields in the verified mapping table are
+ * read; Reality's serverName is the sibling `servername`, never nested.
+ */
+function parseXhttpDownloadSettings(value: unknown): Record<string, unknown> | undefined {
+  const download = objectValue(value);
+  if (!download) return undefined;
+  if (download.network !== undefined && download.network !== 'xhttp') return undefined;
+
+  const settings: Record<string, unknown> = {};
+  const server = stringValue(download.address);
+  if (server) settings.server = server;
+  const port = portValue(download.port);
+  if (port !== undefined) settings.port = port;
+
+  const security = stringValue(download.security);
+  if (security === 'reality') {
+    settings.tls = true;
+    const reality = objectValue(download.realitySettings);
+    if (reality) {
+      const serverName = stringValue(reality.serverName);
+      if (serverName) settings.servername = serverName;
+      const fingerprint = stringValue(reality.fingerprint);
+      if (fingerprint) settings['client-fingerprint'] = fingerprint;
+      const realityOpts: Record<string, unknown> = {};
+      const publicKey = stringValue(reality.publicKey);
+      if (publicKey) realityOpts['public-key'] = publicKey;
+      const shortId = stringValue(reality.shortId);
+      if (shortId) realityOpts['short-id'] = shortId;
+      if (Object.keys(realityOpts).length > 0) settings['reality-opts'] = realityOpts;
+    }
+  } else if (security === 'tls') {
+    settings.tls = true;
+    const tls = objectValue(download.tlsSettings);
+    if (tls) {
+      const serverName = stringValue(tls.serverName);
+      if (serverName) settings.servername = serverName;
+      const alpn = Array.isArray(tls.alpn)
+        ? tls.alpn.filter((entry): entry is string => typeof entry === 'string' && entry !== '')
+        : parseAlpn(stringValue(tls.alpn));
+      if (alpn && alpn.length > 0) settings.alpn = alpn;
+      const fingerprint = stringValue(tls.fingerprint);
+      if (fingerprint) settings['client-fingerprint'] = fingerprint;
+      if (typeof tls.allowInsecure === 'boolean') {
+        settings['skip-cert-verify'] = tls.allowInsecure;
+      }
+    }
+  }
+
+  const xhttp = objectValue(download.xhttpSettings);
+  if (xhttp) {
+    const path = stringValue(xhttp.path);
+    if (path) settings.path = path;
+    const host = stringValue(xhttp.host);
+    if (host) settings.host = host;
+    const headers = objectValue(xhttp.headers);
+    if (headers && Object.keys(headers).length > 0) settings.headers = headers;
+  }
+
+  return settings;
 }
 
 function applyReality(node: ProxyNode, params: Record<string, string>): void {
@@ -481,6 +570,20 @@ export function parseVless(line: string, protocol: 'vless' | 'vmess' = 'vless'):
   if (params.pcs) node['tls-fingerprint'] = params.pcs;
 
   applyTransport(node, params, { defaultPath: undefined });
+
+  if (protocol === 'vless' && node.network === 'xhttp' && params.extra) {
+    try {
+      const extra = JSON.parse(params.extra) as Record<string, unknown>;
+      const download = parseXhttpDownloadSettings(extra?.downloadSettings);
+      if (download) {
+        const opts = objectValue(node['xhttp-opts']) ?? {};
+        opts['download-settings'] = download;
+        node['xhttp-opts'] = opts;
+      }
+    } catch {
+      // A malformed `extra` must never fail the node; it is optional metadata.
+    }
+  }
 
   return node;
 }

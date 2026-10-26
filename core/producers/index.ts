@@ -27,6 +27,7 @@ export type { ProxyNode, ProduceOptions } from '../types';
 export {
   buildMieruLink,
   buildShareLinks,
+  buildXhttpExtra,
   produceUri,
   toShareLink,
   URI_SUPPORTED_TYPES,

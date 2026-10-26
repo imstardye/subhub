@@ -16,7 +16,7 @@
  * missing padding / URL-safe alphabet).
  */
 import type { ProxyNode } from '../types';
-import { encodeBase64, parseAlpn } from '../utils';
+import { encodeBase64, isTruthyFlag, parseAlpn } from '../utils';
 import { isShareLink, parseUri } from '../parsers/uri';
 import { normalizeAlpn, normalizeCommonTransport, prepareNode } from './common';
 
@@ -112,9 +112,95 @@ function transportParams(node: ProxyNode): Array<[string, string]> {
     if (host) params.push(['host', host]);
     const path = toStringOrUndefined(opts.path);
     if (path) params.push(['path', path]);
+  } else if (network === 'xhttp') {
+    const host = toStringOrUndefined(opts.host);
+    if (host) params.push(['host', host]);
+    const path = toStringOrUndefined(opts.path);
+    if (path) params.push(['path', path]);
+    const mode = toStringOrUndefined(opts.mode);
+    if (mode) params.push(['mode', mode]);
   }
 
   return params;
+}
+
+/** ALPN as the Xray stream-config array (accepts the internal string form too). */
+function alpnList(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const list = value
+      .map((entry) => toStringOrUndefined(entry))
+      .filter((entry): entry is string => entry !== undefined && entry !== '');
+    return list.length > 0 ? list : undefined;
+  }
+  return parseAlpn(toStringOrUndefined(value));
+}
+
+/**
+ * Build the Xray `extra` JSON for a VLESS XHTTP node's download settings.
+ * This is the exact inverse of the parser's `downloadSettings` mapping:
+ * Reality settings become a sibling `servername`/`reality-opts`, TLS settings
+ * use `tlsSettings`, and the XHTTP path/host fall back to the uplink when the
+ * download side leaves them unset. The param value is the Xray wrapper object
+ * (`{ downloadSettings: <stream config> }`), not the bare stream config.
+ */
+export function buildXhttpExtra(node: ProxyNode): string | undefined {
+  const xhttp = node['xhttp-opts'] as Opts | undefined;
+  const download = xhttp?.['download-settings'] as Opts | undefined;
+  if (!download || typeof download !== 'object' || Array.isArray(download)) return undefined;
+
+  const payload: Opts = {};
+  const server = toStringOrUndefined(download.server);
+  if (server) payload.address = server;
+  if (download.port !== undefined && download.port !== null) {
+    const port = Number(download.port);
+    if (Number.isInteger(port)) payload.port = port;
+  }
+  payload.network = 'xhttp';
+
+  const reality = download['reality-opts'] as Opts | undefined;
+  if (reality && typeof reality === 'object' && !Array.isArray(reality)) {
+    payload.security = 'reality';
+    const settings: Opts = {};
+    const serverName = toStringOrUndefined(download.servername);
+    if (serverName) settings.serverName = serverName;
+    const fingerprint = toStringOrUndefined(download['client-fingerprint']);
+    if (fingerprint) settings.fingerprint = fingerprint;
+    const publicKey = toStringOrUndefined(reality['public-key']);
+    if (publicKey !== undefined) settings.publicKey = publicKey;
+    const shortId = toStringOrUndefined(reality['short-id']);
+    if (shortId !== undefined) settings.shortId = shortId;
+    payload.realitySettings = settings;
+  } else if (download.tls === true) {
+    payload.security = 'tls';
+    const settings: Opts = {};
+    const serverName = toStringOrUndefined(download.servername);
+    if (serverName) settings.serverName = serverName;
+    const alpn = alpnList(download.alpn);
+    if (alpn) settings.alpn = alpn;
+    const fingerprint = toStringOrUndefined(download['client-fingerprint']);
+    if (fingerprint) settings.fingerprint = fingerprint;
+    if (download['skip-cert-verify'] !== undefined) {
+      settings.allowInsecure = isTruthyFlag(download['skip-cert-verify']);
+    }
+    payload.tlsSettings = settings;
+  }
+
+  const xhttpSettings: Opts = {};
+  const path = toStringOrUndefined(download.path) ?? toStringOrUndefined(xhttp?.path);
+  if (path) xhttpSettings.path = path;
+  const host = toStringOrUndefined(download.host) ?? toStringOrUndefined(xhttp?.host);
+  if (host) xhttpSettings.host = host;
+  const headers = download.headers;
+  if (headers && typeof headers === 'object' && !Array.isArray(headers)) {
+    if (Object.keys(headers as Record<string, unknown>).length > 0) {
+      xhttpSettings.headers = headers;
+    }
+  }
+  const mode = toStringOrUndefined(xhttp?.mode);
+  if (mode) xhttpSettings.mode = mode;
+  if (Object.keys(xhttpSettings).length > 0) payload.xhttpSettings = xhttpSettings;
+
+  return JSON.stringify({ downloadSettings: payload });
 }
 
 /** TLS parameters; `TLS_IMPLICIT` types carry TLS anyway and only look at identity/verification. */
@@ -289,6 +375,10 @@ function vlessLink(node: ProxyNode): string {
     ...(flow ? [['flow', flow] as [string, string]] : []),
     ...transportParams(node),
   ];
+  if (node.network === 'xhttp') {
+    const extra = buildXhttpExtra(node);
+    if (extra) params.push(['extra', extra]);
+  }
   const base = `vless://${component(String(node.uuid ?? ''))}@${authority(node)}`;
   return withFragment(withQuery(base, params), node.name);
 }

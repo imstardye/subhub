@@ -28,7 +28,7 @@ import {
   stripIpv6Brackets,
 } from '../utils';
 import { prepareNode } from './common';
-import { buildMieruLink } from './uri';
+import { buildMieruLink, buildXhttpExtra } from './uri';
 
 export interface PrefixNodeResult {
   /** One share link per representable node, in input order. */
@@ -56,6 +56,7 @@ function transportQuery(node: ProxyNode): string[] {
   const ws = node['ws-opts'] as Record<string, unknown> | undefined;
   const grpc = node['grpc-opts'] as Record<string, unknown> | undefined;
   const h2 = node['h2-opts'] as Record<string, unknown> | undefined;
+  const xhttp = node['xhttp-opts'] as Record<string, unknown> | undefined;
   const headers = ws?.headers as Record<string, unknown> | undefined;
   const wsHost = headers
     ? Object.entries(headers).find(([key]) => key.toLowerCase() === 'host')?.[1]
@@ -85,6 +86,18 @@ function transportQuery(node: ProxyNode): string[] {
       params.push('type=tcp', 'headerType=http');
       if (wsHost) params.push(`host=${encode(wsHost)}`);
       if (typeof ws?.path === 'string' && ws.path) params.push(`path=${encode(ws.path)}`);
+      break;
+    case 'xhttp':
+      params.push('type=xhttp');
+      if (typeof xhttp?.host === 'string' && xhttp.host) {
+        params.push(`host=${encode(xhttp.host)}`);
+      }
+      if (typeof xhttp?.path === 'string' && xhttp.path) {
+        params.push(`path=${encode(xhttp.path)}`);
+      }
+      if (typeof xhttp?.mode === 'string' && xhttp.mode) {
+        params.push(`mode=${encode(xhttp.mode)}`);
+      }
       break;
     default:
       break;
@@ -255,6 +268,10 @@ function vlessLink(node: ProxyNode): string | null {
     ...transportQuery(node),
   ];
   if (node.flow) params.push(`flow=${encode(node.flow)}`);
+  if (node.network === 'xhttp') {
+    const extra = buildXhttpExtra(node);
+    if (extra) params.push(`extra=${encode(extra)}`);
+  }
   return `vless://${encode(node.uuid)}@${host(String(node.server))}:${node.port}${query(
     params,
   )}${fragment(String(node.name))}`;
