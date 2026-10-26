@@ -221,6 +221,30 @@ describe('pruneEmptyGroups', () => {
     expect(prune([group('A', 'select', ['hk-01']), group('Dead', 'select', [])], undefined, ['MATCH,Dead']).rules).toEqual([]);
   });
 
+  it('keeps an all-reference group when only one of its references is dead', () => {
+    // The service-group shape of real INIs (e.g. 💬 Ai平台): every member is
+    // another group. One dead reference (here a regex group that matched no
+    // nodes) must drop out of the member list — it must not condemn the
+    // whole group and the rules that point at it.
+    const pruned = prune(
+      [
+        group('🌐 备用线路', 'select', []),
+        group('🇺🇸 美国', 'select', ['hk-01']),
+        group('🚀 节点选择', 'select', ['DIRECT']),
+        group('💬 Ai平台', 'select', ['🇺🇸 美国', '🌐 备用线路', '🚀 节点选择']),
+      ],
+      ['hk-01'],
+      ['RULE-SET,rs_1,💬 Ai平台', 'MATCH,🚀 节点选择'],
+    );
+
+    expect(pruned.proxyGroups).toEqual([
+      group('🇺🇸 美国', 'select', ['hk-01']),
+      group('🚀 节点选择', 'select', ['DIRECT']),
+      group('💬 Ai平台', 'select', ['🇺🇸 美国', '🚀 节点选择']),
+    ]);
+    expect(pruned.rules).toEqual(['RULE-SET,rs_1,💬 Ai平台', 'MATCH,🚀 节点选择']);
+  });
+
   it('keeps a group of only builtins', () => {
     const pruned = prune([
       group('🛑 广告拦截', 'select', ['REJECT', 'DIRECT']),

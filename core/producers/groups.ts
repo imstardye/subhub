@@ -138,26 +138,27 @@ function reachableGroups(
   nodes: Set<string>,
   builtins: Set<string>,
 ): Set<string> {
-  const byName = new Map(candidates.map((group) => [group.name, group]));
   const reached = new Set<string>();
 
-  // Seed with the groups that own a real outbound, then flood along group
-  // references; repeat because a member may be visited before its group.
-  let changed = true;
-  const roots = new Set<string>();
+  // Seed with the groups that own a real outbound, then admit any group that
+  // references an already-reached group, to a fixpoint. The flood runs from
+  // the outbound UP through the referrers: a leaf service group that only
+  // rules point at (e.g. an AI group chaining into the regional groups) is
+  // useful because IT reaches an outbound, not because some other group
+  // references it. A pure cycle never enters — none of its members is ever
+  // reached.
   for (const group of candidates) {
     if ((pruned.get(group.name) ?? []).some((member) => nodes.has(member) || builtins.has(member))) {
-      roots.add(group.name);
+      reached.add(group.name);
     }
   }
-  while (changed) {
+  for (let changed = true; changed; ) {
     changed = false;
-    for (const name of roots) {
-      if (reached.has(name)) continue;
-      reached.add(name);
-      changed = true;
-      for (const member of pruned.get(name) ?? []) {
-        if (byName.has(member) && !reached.has(member)) roots.add(member);
+    for (const group of candidates) {
+      if (reached.has(group.name)) continue;
+      if ((pruned.get(group.name) ?? []).some((member) => reached.has(member))) {
+        reached.add(group.name);
+        changed = true;
       }
     }
   }

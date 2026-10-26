@@ -151,11 +151,12 @@ function resolveMember(
  *   root(g)    = true when a member of g is a real outbound (node/built-in).
  *
  * A group is live when it is *reachable* — an outbound is reachable, and a
- * group is reachable when all of its references are — and then still has
- * enough members once the references to dead groups are dropped. Reachability
- * is a least fixpoint over a finite set: every round admits at least one new
- * group or stops, so it terminates, and a pure cycle (which never reaches an
- * outbound) is never admitted.
+ * group is reachable when at least one of its members is (a real outbound,
+ * which makes it a root, or a reference to a reachable group) — and then
+ * still has enough members once the references to dead groups are dropped.
+ * Reachability is a least fixpoint over a finite set: every round admits at
+ * least one new group or stops, so it terminates, and a pure cycle (which
+ * never reaches an outbound) is never admitted.
  */
 function liveGroups(
   groups: ClashProxyGroup[],
@@ -191,8 +192,11 @@ function liveGroups(
     if (outbound) roots.add(group.name);
   }
 
-  // Reachability: start at the outbounds, then admit a group whose references
-  // are all reachable. A cycle with no outbound is never admitted.
+  // Reachability: start at the outbounds, then admit a group that can reach
+  // one through ANY of its references — a single dead reference must not
+  // condemn a group whose other members are live (the dead reference is
+  // dropped in the settle phase below). A cycle with no outbound is never
+  // admitted: no member of it ever becomes reachable.
   const reachable = new Set<string>(roots);
   for (let changed = true; changed; ) {
     changed = false;
@@ -200,7 +204,7 @@ function liveGroups(
       if (reachable.has(name)) continue;
       if (kept.length < minGroupMembers(types.get(name))) continue;
       const referenced = references.get(name) ?? [];
-      if (!referenced.every((hop) => reachable.has(hop))) continue;
+      if (!referenced.some((hop) => reachable.has(hop))) continue;
       reachable.add(name);
       changed = true;
     }
