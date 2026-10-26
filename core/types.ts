@@ -15,6 +15,7 @@ export type ProxyType =
   | 'hysteria2'
   | 'tuic'
   | 'anytls'
+  | 'mieru'
   | 'http'
   | 'socks5'
   | 'socks';
