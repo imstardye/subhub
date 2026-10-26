@@ -77,6 +77,25 @@ describe('buildLineGroups: pruning to a fixpoint', () => {
     assertNoDanglingReferences(groups, []);
   });
 
+  it('keeps a leaf service group that only rules point at', () => {
+    // The 💬 Ai平台 shape: a select group whose members are all other
+    // groups, referenced by nothing but rules. It is useful because it
+    // reaches a node through its members — usefulness floods UP from the
+    // outbound, not down from whichever group happens to reference it.
+    const groups = buildLineGroups(
+      [
+        group({ name: 'ai', proxies: ['us', 'main'] }),
+        group({ name: 'us', proxies: ['node-1'] }),
+        group({ name: 'main', proxies: ['DIRECT'] }),
+      ],
+      ['node-1'],
+      OPTIONS,
+    );
+
+    expect(groups.map((entry) => entry.name)).toEqual(['ai', 'us', 'main']);
+    assertNoDanglingReferences(groups, ['node-1']);
+  });
+
   it('does not mistake a missing node for a group of the same name', () => {
     // `node-x` is a *node name* the producer dropped; referencing it must be
     // pruned, and the group keeps only its built-in.
