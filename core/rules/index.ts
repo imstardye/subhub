@@ -26,6 +26,11 @@ export {
   type RemarkExcluder,
 } from './exclude-remarks';
 export {
+  expandRuleProviders,
+  MIHOMO_EXPANSION_RULE_TYPES,
+  type ExpandedRuleProviders,
+} from './expand-rule-providers';
+export {
   filterInfoAndRemarkNodes,
   filterInfoNodes,
   INFO_NODE_KEYWORDS,

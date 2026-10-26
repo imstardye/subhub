@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openDb, type SubhubDb } from '../server/db';
 import { profiles, sources, users } from '../server/db/schema';
 import { encrypt } from '../server/db/crypto';
@@ -49,6 +49,9 @@ let userId: number;
 
 beforeEach(() => {
   resetExportRateLimiter();
+  // The profile references a remote list; keep the test offline so the
+  // provider falls back to its remote URL line deterministically.
+  vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('offline test'));
   const dir = mkdtempSync(join(tmpdir(), 'subhub-srconf-'));
   dirs.push(dir);
   db = openDb({ path: join(dir, 'subhub.sqlite') });
@@ -88,6 +91,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   resetExportRateLimiter();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
