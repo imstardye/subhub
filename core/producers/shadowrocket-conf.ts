@@ -136,6 +136,10 @@ function transportOptions(node: ProxyNode): string[] | null {
       if (host) parts.push(`ws-host=${host}`);
       return parts;
     }
+    // XHTTP has no grounded Shadowrocket conf grammar; sharing a node link is
+    // the `shadowrocket` target's job. Never degrade it to a plain line.
+    case 'xhttp':
+      return null;
     default:
       return null;
   }
