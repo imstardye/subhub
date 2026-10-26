@@ -28,6 +28,23 @@ export type CustomRulePosition = 'prepend' | 'append';
 export const CUSTOM_RULE_MAX_COUNT = 200;
 export const CUSTOM_RULE_MAX_LENGTH = 512;
 
+/**
+ * Commented examples the /my editor pre-fills when a user has no saved
+ * rules: every line is a `#` comment (so the block parses to zero rules),
+ * and deleting a line's leading `# ` turns it into a working rule the user
+ * can adapt. Policies stick to DIRECT / REJECT plus the 🚀 节点选择 group
+ * every shipped profile defines.
+ */
+export const CUSTOM_RULES_EXAMPLE_TEXT = [
+  '# 示例：# 开头是注释，不会生效；删掉行首的 # 即可启用，改成你需要的域名/策略',
+  '# DOMAIN-SUFFIX,netflix.com,🚀 节点选择',
+  '# DOMAIN-KEYWORD,ads,REJECT',
+  '# DOMAIN-SUFFIX,corp.example.com,DIRECT',
+  '# IP-CIDR,192.168.0.0/16,DIRECT,no-resolve',
+  '# GEOSITE,openai,🚀 节点选择',
+  '# GEOIP,CN,DIRECT',
+].join('\n');
+
 /** Rule types a user may write (mihomo's classical set, minus SUB-RULE). */
 export const CUSTOM_RULE_TYPES = new Set([
   'DOMAIN',
