@@ -40,6 +40,22 @@ function parseUserInfo(raw: string): string {
   return base64Decoded ?? decoded;
 }
 
+/** First occurrence of a query key: mieru may repeat port/protocol bindings. */
+function firstQueryValue(rawQuery: string | undefined, key: string): string | undefined {
+  if (!rawQuery) return undefined;
+  const cleaned = rawQuery.replace(/^\?/, '');
+  if (!cleaned) return undefined;
+  for (const pair of cleaned.split('&')) {
+    if (!pair) continue;
+    const separator = pair.indexOf('=');
+    const name = decodeComponent(separator === -1 ? pair : pair.slice(0, separator));
+    if (name === key) {
+      return decodeComponent(separator === -1 ? '' : pair.slice(separator + 1));
+    }
+  }
+  return undefined;
+}
+
 function parsePlugin(query: Record<string, string>): {
   plugin?: string;
   pluginOpts?: Record<string, unknown>;
@@ -721,6 +737,54 @@ export function parseAnyTLS(line: string): ProxyNode {
   return node;
 }
 
+/**
+ * Parse mieru's per-node "simple URL" (`mierus://`). The name travels in
+ * `profile` (falling back to `mieru <host>`); the first port/protocol binding
+ * wins, a ranged port uses its first number, and an unknown protocol becomes
+ * TCP. MTU/multiplexing/handshake/traffic-pattern options are out of scope.
+ *
+ * `mieru://<base64-protobuf>` is a whole client config, not a node link, so it
+ * is intentionally not registered and subscription parsing skips it.
+ */
+export function parseMieru(line: string): ProxyNode {
+  const { content } = splitFragment(line.slice('mierus://'.length));
+  const { head, query: rawQuery } = splitHeadAndQuery(content);
+  const params = parseQuery(rawQuery);
+
+  const atIndex = head.lastIndexOf('@');
+  if (atIndex === -1) throw new Error('Invalid mieru URI: missing credentials');
+
+  const userInfo = decodeComponent(head.slice(0, atIndex));
+  const separator = userInfo.indexOf(':');
+  if (separator === -1) throw new Error('Invalid mieru URI: invalid credentials');
+  const username = userInfo.slice(0, separator);
+  const password = userInfo.slice(separator + 1);
+  if (!username || !password) throw new Error('Invalid mieru URI: invalid credentials');
+
+  const rawServer = head.slice(atIndex + 1).replace(/\/$/, '');
+  const server = stripIpv6Brackets(rawServer);
+  if (!server.trim()) throw new Error('Invalid mieru URI: missing server');
+
+  const rawPort = firstQueryValue(rawQuery, 'port');
+  if (!rawPort) throw new Error('Invalid mieru URI: missing port');
+  const firstPortNumber = rawPort.match(/\d+/)?.[0];
+  if (!firstPortNumber) throw new Error('Invalid mieru URI: invalid port');
+  const port = parsePort(firstPortNumber);
+
+  const rawProtocol = firstQueryValue(rawQuery, 'protocol');
+  const transport = rawProtocol?.trim().toUpperCase() === 'UDP' ? 'UDP' : 'TCP';
+
+  return {
+    type: 'mieru',
+    name: normalizeLoopbackName(params.profile?.trim(), `mieru ${server}`),
+    server,
+    port,
+    username,
+    password,
+    transport,
+  };
+}
+
 const URI_PARSERS: Array<{
   test: (line: string) => boolean;
   parse: (line: string) => ProxyNode;
@@ -733,6 +797,7 @@ const URI_PARSERS: Array<{
   { test: (line) => /^(hysteria2|hy2):\/\//i.test(line), parse: parseHysteria2 },
   { test: (line) => /^tuic:\/\//i.test(line), parse: parseTuic },
   { test: (line) => /^anytls:\/\//i.test(line), parse: parseAnyTLS },
+  { test: (line) => /^mierus:\/\//i.test(line), parse: parseMieru },
 ];
 
 export function isShareLink(line: string): boolean {

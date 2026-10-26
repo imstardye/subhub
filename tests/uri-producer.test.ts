@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildShareLinks,
   encodeBase64,
+  isShareLink,
   parseShadowsocks,
   parseSubscription,
   parseUri,
@@ -97,6 +98,7 @@ describe('uri producer: skipped types', () => {
       'hysteria2',
       'tuic',
       'anytls',
+      'mieru',
     ]);
   });
 
@@ -660,6 +662,74 @@ describe('uri producer: AnyTLS', () => {
   });
 });
 
+describe('uri producer: mieru', () => {
+  const fixture = node({
+    type: 'mieru',
+    name: 'JP mieru',
+    server: 'jp.example.com',
+    port: 8443,
+    username: 'user-1',
+    password: 'fake-password',
+    transport: 'TCP',
+  });
+
+  it('emits the official mierus simple URL (name in profile, no fragment)', () => {
+    const [link] = buildShareLinks([fixture]);
+    expect(link).toBe(
+      'mierus://user-1:fake-password@jp.example.com?profile=JP%20mieru&port=8443&protocol=TCP',
+    );
+  });
+
+  it('uppercases transport and maps UDP to protocol=UDP', () => {
+    const [link] = buildShareLinks([{ ...fixture, transport: 'udp' } as ProxyNode]);
+    expect(link).toContain('protocol=UDP');
+  });
+
+  it('skips a node without credentials', () => {
+    expect(buildShareLinks([{ ...fixture, password: undefined } as ProxyNode])).toEqual([]);
+    expect(buildShareLinks([{ ...fixture, username: '' } as ProxyNode])).toEqual([]);
+  });
+
+  it('round-trips through the mierus parser', () => {
+    const [link] = buildShareLinks([fixture]);
+    expect(parseUri(link!)).toMatchObject({
+      type: 'mieru',
+      name: 'JP mieru',
+      server: 'jp.example.com',
+      port: 8443,
+      username: 'user-1',
+      password: 'fake-password',
+      transport: 'TCP',
+    });
+  });
+
+  it('uses the first port/protocol binding and the first number of a range', () => {
+    expect(
+      parseUri(
+        'mierus://user-1:fake-password@jp.example.com?profile=range&port=8000-9000&protocol=UDP&port=443&protocol=TCP',
+      ),
+    ).toMatchObject({ port: 8000, transport: 'UDP', name: 'range' });
+  });
+
+  it('percent-decodes credentials and falls back to a name when profile is absent', () => {
+    expect(
+      parseUri('mierus://user%20name:p%40ss%3Aword@jp.example.com?port=8443'),
+    ).toMatchObject({
+      type: 'mieru',
+      username: 'user name',
+      password: 'p@ss:word',
+      name: 'mieru jp.example.com',
+      transport: 'TCP',
+    });
+  });
+
+  it('never treats the whole-config mieru:// scheme as a node link', () => {
+    const wholeConfig = 'mieru://CgZqcC5leGFtcGxl'; // base64 protobuf, not a node
+    expect(isShareLink(wholeConfig)).toBe(false);
+    expect(parseSubscription(wholeConfig)).toEqual([]);
+  });
+});
+
 describe('uri producer: whole subscription round-trip', () => {
   it('parses every supported type back and keeps the key fields', () => {
     const nodes: ProxyNode[] = [
@@ -686,6 +756,15 @@ describe('uri producer: whole subscription round-trip', () => {
       node({ type: 'tuic', name: 'tuic-1', uuid: UUID, password: 'fake', port: 443 }),
       node({ type: 'hysteria2', name: 'hy2-1', password: 'fake', port: 443 }),
       node({ type: 'anytls', name: 'anytls-1', password: 'fake', port: 443 }),
+      node({
+        type: 'mieru',
+        name: 'mieru-1',
+        server: 'mieru.example.com',
+        port: 8443,
+        username: 'user-1',
+        password: 'fake',
+        transport: 'UDP',
+      }),
     ];
 
     const parsed = parseSubscription(produceUri(nodes));
