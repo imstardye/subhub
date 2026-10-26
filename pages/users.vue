@@ -92,6 +92,31 @@ function askClearOperators() {
   });
 }
 
+/** Saved source-order overrides of the user being edited (reordering is /my only). */
+const editingSourceOrderCount = computed(
+  () => users.value.find((user) => user.id === editingId.value)?.sourceOrderCount ?? 0,
+);
+
+/** Restore the default source order (PATCH sourceOrder: []). */
+function askClearSourceOrder() {
+  const user = users.value.find((entry) => entry.id === editingId.value);
+  if (!user || user.sourceOrderCount === 0) return;
+  dialog.warning({
+    title: '清除订阅排序',
+    content: `确定要清除「${user.name}」保存的 ${user.sourceOrderCount} 个订阅源排序吗？清除后恢复默认顺序。`,
+    positiveText: '确认清除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await patchUser(user, { sourceOrder: [] });
+        message.success(`「${user.name}」的订阅排序已清除`);
+      } catch (err) {
+        message.error(apiErrorMessage(err));
+      }
+    },
+  });
+}
+
 const copiedToken = ref('');
 
 const origin = ref('');
@@ -541,6 +566,23 @@ onMounted(() => {
               @click="askClearOperators"
             >
               清空管线
+            </n-button>
+          </div>
+        </n-form-item>
+        <n-form-item label="订阅排序" :show-feedback="false">
+          <div class="ops-admin-row">
+            <span class="muted">
+              {{ editingSourceOrderCount > 0 ? `已保存 ${editingSourceOrderCount} 个订阅源的顺序（在用户自己的 /my 里调整）` : '未设置（使用默认顺序）' }}
+            </span>
+            <n-button
+              v-if="editingSourceOrderCount > 0"
+              size="small"
+              secondary
+              type="error"
+              :disabled="saving"
+              @click="askClearSourceOrder"
+            >
+              清除排序
             </n-button>
           </div>
         </n-form-item>

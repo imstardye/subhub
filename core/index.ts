@@ -16,6 +16,7 @@ export {
 } from './utils';
 export * from './dns';
 export * from './operators';
+export * from './source-order';
 export * from './parsers';
 export * from './producers';
 export * from './rules';

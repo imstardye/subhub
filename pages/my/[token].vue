@@ -65,7 +65,7 @@ import {
   operatorSummary,
 } from '~/core/utils/operators-ui';
 import { CUSTOM_RULES_EXAMPLE_TEXT, type NodeOperator, type NodeOperatorType } from '~/core';
-import type { UserCenterOwnSource } from '~/server/utils/user-center';
+import type { UserCenterOwnSource, UserCenterSourceOrderItem } from '~/server/utils/user-center';
 
 const route = useRoute();
 const token = computed(() => String(route.params.token ?? ''));
@@ -448,6 +448,69 @@ async function saveCustomRules() {
     message.error(apiErrorMessage(err));
   } finally {
     rulesBusy.value = false;
+  }
+}
+
+/* ------------------------------------------------------------ source order -- */
+const SOURCE_KIND_LABELS: Record<UserCenterSourceOrderItem['kind'], string> = {
+  dedicated: '私有',
+  shared: '共享',
+  public: '公共',
+};
+
+const orderItems = ref<UserCenterSourceOrderItem[]>([]);
+const orderBusy = ref(false);
+
+watch(
+  () => center.value?.sourceOrder,
+  (value) => {
+    if (!value) return;
+    orderItems.value = value.map((item) => ({ ...item }));
+  },
+  { immediate: true },
+);
+
+function sourceKindLabel(kind: UserCenterSourceOrderItem['kind']): string {
+  return SOURCE_KIND_LABELS[kind];
+}
+
+function sourceKindType(kind: UserCenterSourceOrderItem['kind']): 'info' | 'warning' | 'default' {
+  if (kind === 'dedicated') return 'info';
+  if (kind === 'shared') return 'warning';
+  return 'default';
+}
+
+/**
+ * Move one row and immediately persist the full new order. On failure the
+ * previous local list is restored, so the card never shows an order the server
+ * did not accept.
+ */
+async function moveSource(index: number, delta: number) {
+  if (orderBusy.value) return;
+  const target = index + delta;
+  if (target < 0 || target >= orderItems.value.length) return;
+  const previous = orderItems.value.slice();
+  const next = [...orderItems.value];
+  const [item] = next.splice(index, 1);
+  next.splice(target, 0, item!);
+  orderItems.value = next;
+  orderBusy.value = true;
+  try {
+    const result = await $fetch<{ sourceIds: number[] }>(
+      userCenterApiPath(token.value, 'source-order'),
+      { method: 'PUT', body: { sourceIds: next.map((source) => source.id) } },
+    );
+    // The server returns the stored list (deduped/cleared); keep the card in
+    // sync with it without a full dashboard refetch.
+    if (result.sourceIds.length === 0) {
+      orderItems.value = [];
+    }
+    if (center.value) center.value.sourceOrder = orderItems.value;
+  } catch (err) {
+    orderItems.value = previous;
+    message.error(apiErrorMessage(err));
+  } finally {
+    orderBusy.value = false;
   }
 }
 
@@ -1049,6 +1112,50 @@ useHead({ title: '我的订阅 · subhub' });
         </n-card>
         </div>
       </div>
+
+      <!-- --------------------------------------------------- source order -- -->
+      <n-card class="panel panel-source-order" title="订阅排序">
+        <p class="hint tiny order-intro">
+          顺序决定节点在订阅中的出现次序；新订阅源会自动排在末尾。
+        </p>
+        <p v-if="orderItems.length === 0" class="hint">暂无可排序的订阅源。</p>
+        <template v-else>
+          <div class="order-list">
+            <div v-for="(source, index) in orderItems" :key="source.id" class="order-row">
+              <div class="order-name">
+                <strong>{{ source.name }}</strong>
+                <n-tag size="small" round :type="sourceKindType(source.kind)">
+                  {{ sourceKindLabel(source.kind) }}
+                </n-tag>
+              </div>
+              <span class="hint tiny">{{ source.nodeCount }} 个节点</span>
+              <div v-if="orderItems.length > 1" class="order-actions">
+                <n-button
+                  size="tiny"
+                  secondary
+                  :disabled="index === 0 || orderBusy"
+                  :aria-label="`上移 ${source.name}`"
+                  @click="moveSource(index, -1)"
+                >
+                  ↑
+                </n-button>
+                <n-button
+                  size="tiny"
+                  secondary
+                  :disabled="index === orderItems.length - 1 || orderBusy"
+                  :aria-label="`下移 ${source.name}`"
+                  @click="moveSource(index, 1)"
+                >
+                  ↓
+                </n-button>
+              </div>
+            </div>
+          </div>
+          <p v-if="orderItems.length < 2" class="hint tiny order-hint">
+            至少需要两个订阅源才能排序。
+          </p>
+        </template>
+      </n-card>
 
       <!-- ----------------------------------------------------- operators -- -->
       <n-card class="panel panel-operators" title="节点处理">
@@ -1902,6 +2009,45 @@ useHead({ title: '我的订阅 · subhub' });
 }
 .panel-operators {
   margin-top: 22px;
+}
+.panel-source-order {
+  margin-top: 22px;
+}
+.order-intro {
+  margin: 0 0 12px;
+}
+.order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.order-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: #fff;
+}
+.order-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.order-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.order-actions {
+  display: flex;
+  gap: 6px;
+}
+.order-hint {
+  margin: 12px 0 0;
 }
 .ops-intro {
   margin: 0 0 12px;

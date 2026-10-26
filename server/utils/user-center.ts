@@ -32,7 +32,7 @@
  * token's user, the mode to dedicated, and the type to `remote` (the refresh
  * task is what gives a self-service source its cache).
  */
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import {
   profiles,
@@ -57,7 +57,7 @@ import {
   filterInfoNodes,
   parseSubscription,
 } from '../../core';
-import { isSourceDisabled } from './export-nodes';
+import { isSourceDisabled, loadUserSourceCaches } from './export-nodes';
 import { readUserCustomRules, type UserCustomRules } from './custom-rules';
 import { readUserOperators } from './operators';
 import type { NodeOperator } from '../../core';
@@ -230,6 +230,15 @@ export interface UserCenterAvailableSource {
   included: boolean;
 }
 
+/** A contributing source as the 订阅排序 card shows it. */
+export interface UserCenterSourceOrderItem {
+  id: number;
+  name: string;
+  kind: 'dedicated' | 'shared' | 'public';
+  /** Export-visible node count (info pseudo-nodes already removed). */
+  nodeCount: number;
+}
+
 export interface UserCenterProfileInfo {
   /** The assigned rule profile's name, or null when none is assigned. */
   assignedProfile: string | null;
@@ -250,6 +259,12 @@ export interface UserCenterData {
   customRules: UserCustomRules;
   /** The user's node operator pipeline (applies to every export target). */
   operators: NodeOperator[];
+  /**
+   * The sources that actually contribute to this user's export, in today's
+   * effective order (default buckets + the saved source_order overlay). Paused
+   * and explicitly excluded sources are absent, just as they are from exports.
+   */
+  sourceOrder: UserCenterSourceOrderItem[];
   traffic: {
     summary: UserCenterTrafficSummary;
     sources: UserCenterTrafficSource[];
@@ -579,6 +594,41 @@ export function listAvailableSources(
     }));
 }
 
+/**
+ * The 订阅排序 card data: exactly the sources `loadUserSourceCaches` merges, in
+ * the same order the export uses, decorated with name/kind/node count. It never
+ * re-derives the bucket+overlay logic on the client.
+ */
+export function listSourceOrder(db: SubhubDb, userId: number): UserCenterSourceOrderItem[] {
+  const caches = loadUserSourceCaches(db, userId);
+  if (caches.length === 0) return [];
+  const rows = db
+    .select({
+      id: sources.id,
+      name: sources.name,
+      ownerUserId: sources.ownerUserId,
+      accessMode: sources.accessMode,
+    })
+    .from(sources)
+    .where(inArray(sources.id, caches.map((cache) => cache.id)))
+    .all();
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return caches.flatMap((cache) => {
+    const row = byId.get(cache.id);
+    if (!row) return [];
+    const kind: UserCenterSourceOrderItem['kind'] =
+      row.ownerUserId !== null && row.ownerUserId !== undefined
+        ? 'dedicated'
+        : availableSourceKind(row.accessMode);
+    return [{
+      id: row.id,
+      name: row.name,
+      kind,
+      nodeCount: countCachedNodes(cache.cacheBlob) ?? 0,
+    }];
+  });
+}
+
 /** Assigned profile name + all profile names (the link switcher). */
 export function loadProfileInfo(db: SubhubDb, user: User): UserCenterProfileInfo {
   const rows = db
@@ -621,6 +671,7 @@ export function loadUserCenterData(
     profile: loadProfileInfo(db, user),
     customRules: readUserCustomRules(user),
     operators: readUserOperators(user).operators,
+    sourceOrder: listSourceOrder(db, user.id),
     traffic: { summary: summarizeTraffic(cards, dedicated.length), sources: cards },
     ownSources: dedicated.map(toOwnSource),
     availableSources: listAvailableSources(db, user.id),
