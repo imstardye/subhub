@@ -10,6 +10,7 @@
 export {
   parseAnyTLS,
   parseHysteria2,
+  parseMieru,
   parseShadowsocks,
   parseSsr,
   parseTrojan,

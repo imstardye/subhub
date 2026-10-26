@@ -13,7 +13,7 @@
  * - `ss://`          SIP002: `ss://base64url(method:password)@host:port?plugin=…#name`
  * - `ssr://`         `ssr://base64(host:port:protocol:method:obfs:base64(password)/?params)`
  * - `vmess://`       V2rayN JSON, base64-encoded
- * - `vless://`, `trojan://`, `hysteria2://`, `tuic://`, `anytls://` standard URIs
+ * - `vless://`, `trojan://`, `hysteria2://`, `tuic://`, `anytls://`, `mierus://` standard URIs
  * - `socks://`, `http://` (also `https://` for TLS http proxies)
  *
  * Nodes Shadowrocket cannot load (anything without a share-link form, e.g.
@@ -28,6 +28,7 @@ import {
   stripIpv6Brackets,
 } from '../utils';
 import { prepareNode } from './common';
+import { buildMieruLink } from './uri';
 
 export interface PrefixNodeResult {
   /** One share link per representable node, in input order. */
@@ -376,7 +377,8 @@ function socksHttpLink(node: ProxyNode, scheme: 'socks' | 'http' | 'https'): str
 export function shadowrocketLink(node: ProxyNode): { line: string } | { skipped: string } {
   const proxy = prepareNode(node);
   const name = String(proxy.name ?? '').trim();
-  if (!name) return { skipped: 'missing name' };
+  // mieru carries its name in the link's `profile` and has a server:port fallback.
+  if (!name && proxy.type !== 'mieru') return { skipped: 'missing name' };
   if (!proxy.server || !proxy.port) return { skipped: 'missing server/port' };
   if (proxy['underlying-proxy'] || proxy['dialer-proxy']) {
     return { skipped: 'chained proxy not representable as a share link' };
@@ -410,6 +412,9 @@ export function shadowrocketLink(node: ProxyNode): { line: string } | { skipped:
     case 'anytls':
       line = anytlsLink(proxy);
       break;
+    case 'mieru':
+      line = buildMieruLink(proxy) || null;
+      break;
     case 'socks5':
     case 'socks':
       line = socksHttpLink(proxy, 'socks');
@@ -441,7 +446,10 @@ export function buildShadowrocketSubscription(nodes: ProxyNode[]): PrefixNodeRes
   for (const node of nodes) {
     const built = shadowrocketLink(node);
     if ('line' in built) {
-      const name = String(node.name);
+      const name =
+        node.type === 'mieru'
+          ? String(node.name ?? '').trim() || `mieru ${node.server}:${node.port}`
+          : String(node.name);
       if (seen.has(name)) {
         result.skipped.push({ name, reason: 'duplicate name' });
         continue;

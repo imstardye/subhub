@@ -8,8 +8,8 @@
  * the round-trip contract, and `tests/uri-producer.test.ts` enforces it.
  *
  * The supported type set is exactly `URI_PARSERS` in the parser module:
- * ss, ssr, vmess, vless, trojan, hysteria2, tuic, anytls. Everything else
- * (socks/http/snell/wireguard/…) is skipped rather than faked.
+ * ss, ssr, vmess, vless, trojan, hysteria2, tuic, anytls, mieru. Everything
+ * else (socks/http/snell/wireguard/…) is skipped rather than faked.
  *
  * Body: standard base64 (with padding) of the newline-joined links, which is
  * what the repo's `parseSubscription` accepts (`decodeBase64` also tolerates
@@ -30,6 +30,7 @@ export const URI_SUPPORTED_TYPES = [
   'hysteria2',
   'tuic',
   'anytls',
+  'mieru',
 ] as const;
 
 const URI_TYPES = new Set<string>(URI_SUPPORTED_TYPES);
@@ -384,6 +385,29 @@ function anytlsLink(node: ProxyNode): string {
 }
 
 /**
+ * mieru's official per-node "simple URL":
+ * `mierus://<user>:<password>@<host>?profile=<name>&port=<port>&protocol=<TCP|UDP>`.
+ * The node name travels in `profile` (there is no `#fragment`); `transport` is
+ * the protocol, uppercased, defaulting to TCP. The whole-config
+ * `mieru://<base64-protobuf>` scheme is deliberately never emitted.
+ * Returns `''` when credentials or the port make the link unusable.
+ */
+export function buildMieruLink(node: ProxyNode): string {
+  const username = toStringOrUndefined(node.username) ?? '';
+  const password = toStringOrUndefined(node.password) ?? '';
+  const port = node.port;
+  if (!username || !password || !Number.isInteger(port) || port < 1) return '';
+  const server = String(node.server ?? '');
+  if (!server) return '';
+
+  const name = String(node.name ?? '').trim() || `mieru ${server}:${port}`;
+  const rawProtocol = (toStringOrUndefined(node.transport) ?? 'TCP').trim().toUpperCase();
+  const protocol = rawProtocol === 'UDP' ? 'UDP' : 'TCP';
+
+  return `mierus://${component(username)}:${component(password)}@${formatHost(server)}?profile=${component(name)}&port=${port}&protocol=${protocol}`;
+}
+
+/**
  * Build one share link for a node, or `null` when the type has no share-link
  * form (also `null` for an unusable server/port).
  */
@@ -392,7 +416,8 @@ export function toShareLink(node: ProxyNode): string | null {
   if (!node.server || !Number.isInteger(node.port) || node.port < 1 || node.port > 65535) {
     return null;
   }
-  if (!node.name) return null;
+  // mieru carries its name in `profile`, which has a server:port fallback.
+  if (!node.name && node.type !== 'mieru') return null;
 
   switch (node.type) {
     case 'ss':
@@ -411,6 +436,8 @@ export function toShareLink(node: ProxyNode): string | null {
       return node.uuid && node.password !== undefined ? tuicLink(node) : null;
     case 'anytls':
       return node.password !== undefined ? anytlsLink(node) : null;
+    case 'mieru':
+      return buildMieruLink(node) || null;
     default:
       return null;
   }

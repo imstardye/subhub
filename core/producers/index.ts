@@ -25,6 +25,7 @@ export {
 } from './common';
 export type { ProxyNode, ProduceOptions } from '../types';
 export {
+  buildMieruLink,
   buildShareLinks,
   produceUri,
   toShareLink,

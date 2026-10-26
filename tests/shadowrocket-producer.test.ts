@@ -149,6 +149,39 @@ describe('Shadowrocket producer: link shapes', () => {
   });
 });
 
+describe('Shadowrocket producer: mieru', () => {
+  const fixture = node({
+    type: 'mieru',
+    name: 'JP mieru',
+    server: 'jp.example.com',
+    port: 8443,
+    username: 'user-1',
+    password: 'fake-password',
+    transport: 'TCP',
+  });
+  const expected =
+    'mierus://user-1:fake-password@jp.example.com?profile=JP%20mieru&port=8443&protocol=TCP';
+
+  it('emits the mierus link in the subscription output', () => {
+    expect(shadowrocketLink(fixture)).toEqual({ line: expected });
+    expect(buildShadowrocketSubscription([fixture])).toMatchObject({
+      lines: [expected],
+      names: ['JP mieru'],
+    });
+    expect(linksOf(produceShadowrocket([fixture]))).toEqual([expected]);
+  });
+
+  it('counts a password-less mieru node as skipped', () => {
+    const result = buildShadowrocketSubscription([
+      { ...fixture, password: undefined } as ProxyNode,
+    ]);
+    expect(result.lines).toEqual([]);
+    expect(result.skipped).toEqual([
+      { name: 'JP mieru', reason: 'missing or unrepresentable protocol options' },
+    ]);
+  });
+});
+
 describe('Shadowrocket producer: round trip through the repo URI parser', () => {
   const nodes: ProxyNode[] = [
     node({ name: 'SS', cipher: 'chacha20-ietf-poly1305', password: 'fake-password' }),
@@ -191,6 +224,14 @@ describe('Shadowrocket producer: round trip through the repo URI parser', () => 
     node({ name: 'HY2', type: 'hysteria2', port: 443, password: 'fake-pw', sni: 'h.example.com' }),
     node({ name: 'TUIC', type: 'tuic', port: 443, uuid: UUID, password: 'fake-pw', sni: 'u.example.com' }),
     node({ name: 'AnyTLS', type: 'anytls', port: 443, password: 'fake-pw', sni: 'a.example.com' }),
+    node({
+      name: 'Mieru',
+      type: 'mieru',
+      port: 8443,
+      username: 'user-1',
+      password: 'fake-pw',
+      transport: 'UDP',
+    }),
   ];
 
   it('produces one parseable link per node with the same name and server', () => {
