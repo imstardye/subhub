@@ -37,6 +37,7 @@ export const OPERATOR_PROTOCOL_TYPES = [
   'hysteria2',
   'tuic',
   'anytls',
+  'mieru',
   'wireguard',
   'snell',
   'socks5',

@@ -25,6 +25,7 @@ const SUPPORTED_NODE_TYPES = new Set([
   'hysteria2',
   'tuic',
   'anytls',
+  'mieru',
   'socks5',
   'http',
   'snell',

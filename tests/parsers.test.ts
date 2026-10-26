@@ -16,6 +16,7 @@ import {
   parseVmess,
 } from '../core/parsers';
 import { encodeBase64, parseQuery } from '../core/utils';
+import { produceMihomo } from '../core/producers';
 
 const UUID = '11111111-2222-3333-4444-555555555555';
 
@@ -574,6 +575,27 @@ proxies:
       uuid: UUID,
     });
     expect(nodes[1]).toMatchObject({ type: 'anytls', name: 'Clash-AnyTLS' });
+  });
+
+  it('keeps mieru nodes (mihomo supports the protocol) with their fields intact', () => {
+    // The exact shape a real mieru subscription ships: username/password
+    // credentials and a `transport` field the mihomo producer must not
+    // mistake for a vmess/vless transport.
+    const nodes = parseClashYaml(`
+proxies:
+  - { name: 'JP mieru', type: mieru, server: jp.example.com, port: 8443, username: ${UUID}, password: <redacted>, transport: TCP }
+`);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]).toMatchObject({
+      type: 'mieru',
+      name: 'JP mieru',
+      username: UUID,
+      transport: 'TCP',
+    });
+    const body = produceMihomo(nodes, { leadingRules: false });
+    expect(body).toContain('type: mieru');
+    expect(body).toContain('transport: TCP');
+    expect(body).toContain(`username: ${UUID}`);
   });
 
   it('ignores unsupported and malformed proxy entries', () => {
