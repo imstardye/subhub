@@ -257,7 +257,8 @@ describe('GET /api/user/:token — own data only', () => {
   it('returns profile, links and own sources for the token holder', async () => {
     const data = ready(await read());
     expect(data.user).toMatchObject({ name: 'alice', note: '爱丽丝', enabled: true, token: ALICE_TOKEN });
-    expect(data.targets).toHaveLength(7);
+    expect(data.targets).toHaveLength(8);
+    expect(data.targets).toContain('shadowrocket-conf');
     expect(data.subPrefix).toBe('s');
     expect(data.mainLink).toMatch(new RegExp(`/s/${ALICE_TOKEN}$`));
     // Own sources: exactly Alice's dedicated row.

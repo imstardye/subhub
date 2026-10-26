@@ -126,7 +126,7 @@ describe('page state', () => {
 describe('links', () => {
   const base = { origin: 'https://hub.example.com', token: TOKEN };
 
-  it('builds the main link and all seven target links', () => {
+  it('builds the main link and all target links', () => {
     expect(mainLink(base)).toBe(`https://hub.example.com/s/${TOKEN}`);
     const rows = targetLinks(base);
     expect(rows.map((row) => row.target)).toEqual(Object.keys(TARGET_LABELS));

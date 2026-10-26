@@ -277,6 +277,7 @@ describe('POST /api/admin/preview rendering', () => {
       singbox: 'application/json; charset=utf-8',
       uri: 'text/plain; charset=utf-8',
       shadowrocket: 'text/plain; charset=utf-8',
+      'shadowrocket-conf': 'text/plain; charset=utf-8',
       surge: 'text/plain; charset=utf-8',
       loon: 'text/plain; charset=utf-8',
     };
