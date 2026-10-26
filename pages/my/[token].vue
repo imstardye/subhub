@@ -147,7 +147,7 @@ const currentMainLink = computed(() =>
 
 /**
  * Link panel display state: which target's link is shown in the single
- * link box ('' = the bare main link). All seven full URLs used to be listed
+ * link box ('' = the bare main link). All full target URLs used to be listed
  * at once — a long repetitive column; now one link is shown and the target
  * chips switch it (the QR follows).
  */

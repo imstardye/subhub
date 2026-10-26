@@ -12,6 +12,7 @@ export const EXPORT_TARGETS = [
   'mihomo',
   'clash',
   'shadowrocket',
+  'shadowrocket-conf',
   'singbox',
   'surge',
   'loon',
@@ -43,6 +44,7 @@ export function contentTypeForTarget(target: ExportTarget): string {
   if (
     target === 'uri' ||
     target === 'shadowrocket' ||
+    target === 'shadowrocket-conf' ||
     target === 'surge' ||
     target === 'loon'
   ) {
@@ -55,7 +57,7 @@ export function contentTypeForTarget(target: ExportTarget): string {
 export function fileNameExtensionFor(target: ExportTarget): string {
   if (target === 'singbox') return 'json';
   if (target === 'uri' || target === 'shadowrocket') return 'txt';
-  if (target === 'surge' || target === 'loon') return 'conf';
+  if (target === 'shadowrocket-conf' || target === 'surge' || target === 'loon') return 'conf';
   return 'yaml';
 }
 

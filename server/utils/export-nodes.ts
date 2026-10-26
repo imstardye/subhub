@@ -36,6 +36,7 @@ import {
   buildLoonProxies,
   buildMihomoProxies,
   buildRules,
+  buildShadowrocketConfProxies,
   buildShadowrocketSubscription,
   buildSurgeProxies,
   compileExcludeRemarks,
@@ -51,10 +52,12 @@ import {
   produceMihomo,
   produceMihomoProxiesOnly,
   produceShadowrocket,
+  produceShadowrocketConf,
   produceSingbox,
   produceSurge,
   produceUri,
   pruneEmptyGroups,
+  sanitizeShadowrocketConfName,
   stringifyMihomoConfig,
   type ClashProxyGroup,
   type NodeOperator,
@@ -303,7 +306,9 @@ export type ProfileCapability = 'groups' | 'rules' | 'none';
 /**
  * Rules and rule-providers are mihomo/Clash syntax and mean nothing to the
  * line-based clients; they own their rules. Shadowrocket subscriptions carry
- * nodes only. Surge and loon consume the profile's proxy groups.
+ * nodes only, but the dedicated `shadowrocket-conf` document translates the
+ * profile's groups *and* rules, so it consumes the full profile. Surge and
+ * loon consume the profile's proxy groups.
  */
 export function exportProfileCapability(target: ExportTarget): ProfileCapability {
   if (target === 'shadowrocket') return 'none';
@@ -328,6 +333,16 @@ export function buildTargetProxies(
   nodes: ProxyNode[],
   options: ProduceOptions = {},
 ): ProxyNode[] {
+  if (target === 'shadowrocket-conf') {
+    // The conf format is comma-separated, so the emitted names must not carry
+    // `,`/`=`/newlines. Sanitising here keeps group expansion and the actual
+    // `[Proxy]` lines in agreement (see `sanitizeShadowrocketConfName`).
+    return nodes.map((node) => {
+      const prepared = prepareNode(node);
+      prepared.name = sanitizeShadowrocketConfName(prepared.name);
+      return prepared;
+    });
+  }
   if (target === 'shadowrocket' || target === 'surge' || target === 'loon') {
     // These producers drop what the client cannot load; expand the profile
     // group regexes against what actually survives (`targetProxyNames`).
@@ -345,6 +360,8 @@ export function targetProxyNames(target: ExportTarget, nodes: ProxyNode[]): stri
   switch (target) {
     case 'shadowrocket':
       return buildShadowrocketSubscription(nodes).names;
+    case 'shadowrocket-conf':
+      return buildShadowrocketConfProxies(nodes).names;
     case 'surge':
       return buildSurgeProxies(nodes).names;
     case 'loon':
@@ -556,6 +573,8 @@ export async function loadUserProfile(
  * - mihomo / clash: YAML with the anti-leak DNS/QUIC template and the profile's
  *   groups, rules and rule-providers.
  * - shadowrocket: base64 of newline-joined share links (nodes only).
+ * - shadowrocket-conf: a native Shadowrocket `.conf` document with `[Proxy]`,
+ *   `[Proxy Group]` and translated `[Rule]` sections.
  * - surge / loon: `[Proxy]` + `[Proxy Group]` text; the profile contributes the
  *   groups only (rules belong to the client's own template) and references to
  *   nodes the client cannot load are pruned.
@@ -586,6 +605,14 @@ export function renderTargetBody(
   if (target === 'singbox') return produceSingbox(nodes);
 
   if (target === 'shadowrocket') return produceShadowrocket(nodes);
+  if (target === 'shadowrocket-conf') {
+    return produceShadowrocketConf(
+      nodes,
+      profile?.proxyGroups ?? [],
+      profile?.rules ?? [],
+      profile?.ruleProviders ?? {},
+    );
+  }
   if (target === 'surge') return produceSurge(nodes, profile?.proxyGroups ?? []);
   if (target === 'loon') return produceLoon(nodes, profile?.proxyGroups ?? []);
 

@@ -20,11 +20,12 @@ import { EXPORT_TARGETS, type ExportTarget } from '../../server/utils/targets';
 
 export type UserCenterPayload = UserCenterData | UserCenterDisabledData;
 
-/** Chinese labels of the seven export targets, in the page's order. */
+/** Chinese labels of the export targets, in the page's order. */
 export const TARGET_LABELS: Record<ExportTarget, string> = {
   mihomo: 'Mihomo',
   clash: 'Clash',
   shadowrocket: 'Shadowrocket',
+  'shadowrocket-conf': '小火箭配置',
   singbox: 'sing-box',
   surge: 'Surge',
   loon: 'Loon',
@@ -104,7 +105,7 @@ export interface TargetLinkRow {
   url: string;
 }
 
-/** All seven links for the selected profile (the link table). */
+/** All target links for the selected profile (the link table). */
 export function targetLinks(options: {
   origin: string;
   token: string;

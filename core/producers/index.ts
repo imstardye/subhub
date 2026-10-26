@@ -58,5 +58,18 @@ export {
   produceShadowrocket,
   shadowrocketLink,
 } from './shadowrocket';
+export {
+  buildShadowrocketConfGroups,
+  buildShadowrocketConfProxies,
+  produceShadowrocketConf,
+  sanitizeShadowrocketConfName,
+  shadowrocketConfGroupLine,
+  shadowrocketConfProxyLine,
+  SHADOWROCKET_CONF_BUILTINS,
+  SHADOWROCKET_CONF_GROUP_INTERVAL,
+  SHADOWROCKET_CONF_GROUP_URL,
+  translateShadowrocketConfRule,
+  translateShadowrocketConfRules,
+} from './shadowrocket-conf';
 export { buildLineGroups, lineGroup, joinSections } from './groups';
 export type { LineGroup } from './groups';
