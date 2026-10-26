@@ -32,6 +32,7 @@
 import { and, eq, exists, isNull, or } from 'drizzle-orm';
 import {
   applyOperators,
+  applySourceOrder,
   BUILTIN_GROUP_MEMBERS,
   buildLoonProxies,
   buildMihomoProxies,
@@ -45,6 +46,7 @@ import {
   mergeCustomRules,
   parseCustomRules,
   parseOperatorsJson,
+  parseSourceOrderJson,
   parseIni,
   parseSubscription,
   prepareNode,
@@ -125,6 +127,14 @@ export function loadUserSourceCaches(db: SubhubDb, userId: number): CachedSource
       .map((row) => row.sourceId),
   );
 
+  // The user's saved ordering is applied after the default bucketing below, so
+  // an empty/NULL column is exactly the historical order.
+  const orderRow = db
+    .select({ sourceOrder: users.sourceOrder })
+    .from(users)
+    .where(eq(users.id, userId))
+    .get();
+  const sourceOrder = parseSourceOrderJson(orderRow?.sourceOrder);
 
   const rows = db
     .select({
@@ -159,20 +169,20 @@ export function loadUserSourceCaches(db: SubhubDb, userId: number): CachedSource
     row.ownerUserId === null && row.accessMode === 'restricted' ? 1 : row.ownerUserId === null ? 2 : 0;
   // A source its owner/admin PAUSED (user center toggle) leaves every export;
   // NULL reads as enabled, so rows from before the column behave as before.
-  return rows
+  const sorted = rows
     .filter((row) => !isSourceDisabled(row))
     .filter((row) => row.ownerUserId !== null || !excluded.has(row.id))
-    .sort((a, b) => bucket(a) - bucket(b) || a.id - b.id)
-    .map((row) => ({
-      id: row.id,
-      cacheBlob: row.cacheBlob,
-      userinfo: {
-        upload: row.userinfoUpload ?? null,
-        download: row.userinfoDownload ?? null,
-        total: row.userinfoTotal ?? null,
-        expire: row.userinfoExpire ?? null,
-      },
-    }));
+    .sort((a, b) => bucket(a) - bucket(b) || a.id - b.id);
+  return applySourceOrder(sorted, sourceOrder).map((row) => ({
+    id: row.id,
+    cacheBlob: row.cacheBlob,
+    userinfo: {
+      upload: row.userinfoUpload ?? null,
+      download: row.userinfoDownload ?? null,
+      total: row.userinfoTotal ?? null,
+      expire: row.userinfoExpire ?? null,
+    },
+  }));
 }
 
 /**
@@ -229,6 +239,9 @@ export function collectUserUserInfo(
   db: SubhubDb,
   userId: number,
 ): SubscriptionUserInfo | null {
+  // Aggregation is order-independent by construction: amounts are summed and
+  // expire takes the earliest positive date. A saved source order therefore
+  // cannot change the export header.
   const effective = loadUserSourceCaches(db, userId).map((entry) => {
     const header = entry.userinfo && hasUserInfo(entry.userinfo) ? entry.userinfo : null;
     if (!header) return null;

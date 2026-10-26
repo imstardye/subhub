@@ -43,6 +43,12 @@ export const users = sqliteTable('users', {
    * node list at export, before profile group expansion.
    */
   operators: text('operators'),
+  /**
+   * Preferred order of the user's merged sources (JSON array of source ids).
+   * Applied after the default dedicated/shared/public bucket sort; unlisted
+   * sources keep their default position at the tail. NULL/empty = default.
+   */
+  sourceOrder: text('source_order'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().defaultNow(),
 });
 

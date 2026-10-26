@@ -27,6 +27,7 @@ import { validatePassword } from '../../core/utils/user-password';
 import { hashPassword } from './user-password';
 import { readUserCustomRules, saveUserCustomRules } from './custom-rules';
 import { readUserOperators, saveUserOperators } from './operators';
+import { readUserSourceOrder, saveUserSourceOrder } from './source-order';
 import type { CustomRulePosition } from '../../core';
 
 /** User as exposed by the API — the token is included on purpose (owner UI). */
@@ -44,6 +45,8 @@ export interface AdminUser {
   customRulesPosition: CustomRulePosition;
   /** How many node operators the user has configured (content stays in /my). */
   operatorsCount: number;
+  /** How many source ids the user's saved ordering carries (clear-only in admin). */
+  sourceOrderCount: number;
   createdAt: string;
 }
 
@@ -60,6 +63,7 @@ export function toAdminUser(row: User): AdminUser {
     customRules: custom.text,
     customRulesPosition: custom.position,
     operatorsCount: readUserOperators(row).count,
+    sourceOrderCount: readUserSourceOrder(row).length,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -143,6 +147,15 @@ export async function updateUser(
   // admin UI only sends this to clear the pipeline (`operators: []`).
   if ('operators' in body) {
     saveUserOperators(db, id, body.operators);
+    const refreshed = db.select().from(users).where(eq(users.id, id)).get();
+    if (!refreshed) throw new ValidationError('user not found', 404);
+    row = refreshed;
+  }
+
+  // The saved source order shares its validated save path with /my; the admin
+  // surface is clear-only (`sourceOrder: []`), never reordering.
+  if ('sourceOrder' in body) {
+    saveUserSourceOrder(db, id, body.sourceOrder);
     const refreshed = db.select().from(users).where(eq(users.id, id)).get();
     if (!refreshed) throw new ValidationError('user not found', 404);
     row = refreshed;

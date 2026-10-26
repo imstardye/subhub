@@ -60,6 +60,7 @@ function payload(overrides: Partial<UserCenterData> = {}): UserCenterData {
     profile: { assignedProfile: null, profileNames: [] },
     customRules: { text: '', position: 'prepend', count: 0 },
     operators: [],
+    sourceOrder: [],
     traffic: {
       summary: {
         upload: null,
