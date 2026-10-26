@@ -41,6 +41,8 @@ import {
   buildShadowrocketSubscription,
   buildSurgeProxies,
   compileExcludeRemarks,
+  expandRuleProviders,
+  MIHOMO_EXPANSION_RULE_TYPES,
   filterCustomRulesForExport,
   filterInfoAndRemarkNodes,
   mergeCustomRules,
@@ -70,6 +72,7 @@ import { stringify as stringifyYaml } from 'yaml';
 import type { SubhubDb } from '../db';
 import { profiles, sourceAllowedUsers, sources, userSourceChoices, users } from '../db/schema';
 import { isFallbackTarget, type ExportTarget } from './targets';
+import { getRuleListBodies } from './rule-lists';
 import {
   aggregateUserInfo,
   hasUserInfo,
@@ -397,6 +400,12 @@ export function targetProxyNames(target: ExportTarget, nodes: ProxyNode[]): stri
 export interface LoadedUserProfile {
   profile: ExportProfile;
   nodes: ProxyNode[];
+  /**
+   * Provider keys before remote-list expansion. Export-time validation runs
+   * before expansion, but the custom-rules save path needs the original keys
+   * even when every referenced provider was successfully inlined.
+   */
+  ruleProviderNames: string[];
 }
 
 /**
@@ -556,9 +565,42 @@ export async function loadUserProfile(
       }
     }
 
+    // Remote list bodies are fetched only after group pruning and the
+    // custom-rules liveness check above: both need the original provider
+    // registry. Rule-carrying targets then receive literal rules and only the
+    // providers whose body was unavailable (the old remote-reference fallback).
+    let finalProviders = built.ruleProviders;
+    const ruleProviderNames = Object.keys(built.ruleProviders);
+    if (capability === 'rules' && ruleProviderNames.length > 0) {
+      const urls = [
+        ...new Set(Object.values(built.ruleProviders).map((provider) => provider.url)),
+      ];
+      const bodies = await getRuleListBodies(db, urls);
+      const policies = new Set<string>([
+        ...pruned.proxyGroups.map((group) => group.name),
+        ...nodeNames,
+        ...BUILTIN_GROUP_MEMBERS,
+      ]);
+      // mihomo/clash promote the expanded lines to the top-level rules array,
+      // where a provider-only type (URL-REGEX) is fatal — filter to the types
+      // that array accepts. Line/JSON producers filter per target themselves
+      // and keep types like URL-REGEX that their client does support.
+      const expanded = expandRuleProviders(
+        finalRules,
+        built.ruleProviders,
+        bodies,
+        policies,
+        exportTarget === 'mihomo' || exportTarget === 'clash'
+          ? MIHOMO_EXPANSION_RULE_TYPES
+          : undefined,
+      );
+      finalRules = expanded.rules;
+      finalProviders = expanded.providers;
+    }
+
     return {
       profile: {
-        ruleProviders: built.ruleProviders,
+        ruleProviders: finalProviders,
         rules: finalRules,
         proxyGroups: pruned.proxyGroups,
         // Only the groups that survived the prune: a caller resolving a name in
@@ -570,6 +612,7 @@ export async function loadUserProfile(
       },
       // Same nodes when there is no usable `exclude_remarks`.
       nodes: visibleNodes,
+      ruleProviderNames,
     };
   } catch {
     return null;

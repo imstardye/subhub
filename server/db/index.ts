@@ -127,6 +127,13 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL DEFAULT (cast((julianday('now') - 2440587.5)*86400000 as integer))
 );
+
+-- Remote rule-list bodies, expanded into exports (see rule-lists.ts).
+CREATE TABLE IF NOT EXISTS rule_list_cache (
+  url TEXT PRIMARY KEY NOT NULL,
+  body TEXT NOT NULL,
+  fetched_at INTEGER NOT NULL
+);
 `;
 
 /**

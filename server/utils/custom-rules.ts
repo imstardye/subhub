@@ -88,7 +88,7 @@ export async function saveUserCustomRules(
     const policyErrors = validateCustomRulePolicies(
       parsed.entries,
       allowedPolicies,
-      new Set(Object.keys(loaded.profile.ruleProviders)),
+      new Set(loaded.ruleProviderNames),
     );
     if (policyErrors.length > 0) throw new ValidationError(formatRuleErrors(policyErrors));
   }

@@ -165,6 +165,18 @@ export const profiles = sqliteTable('profiles', {
   options: text('options', { mode: 'json' }).$type<Record<string, unknown>>(),
 });
 
+/**
+ * Cached remote rule-list bodies (inline rule expansion). Keyed by the list URL;
+ * `fetched_at` is epoch milliseconds and decides the 12h freshness window in
+ * `server/utils/rule-lists.ts`. Keeping the body after it goes stale is
+ * deliberate: an upstream failure falls back to the last known-good list.
+ */
+export const ruleListCache = sqliteTable('rule_list_cache', {
+  url: text('url').primaryKey(),
+  body: text('body').notNull(),
+  fetchedAt: integer('fetched_at').notNull(),
+});
+
 /** Subscription access log (retention handled outside this skeleton). */
 export const accessLogs = sqliteTable(
   'access_logs',
@@ -213,3 +225,5 @@ export type Profile = typeof profiles.$inferSelect;
 export type NewProfile = typeof profiles.$inferInsert;
 export type AccessLog = typeof accessLogs.$inferSelect;
 export type NewAccessLog = typeof accessLogs.$inferInsert;
+export type RuleListCache = typeof ruleListCache.$inferSelect;
+export type NewRuleListCache = typeof ruleListCache.$inferInsert;
