@@ -1096,7 +1096,6 @@ useHead({ title: '我的订阅 · subhub' });
         </n-card>
 
       <div class="lower-grid">
-        <div class="stack">
         <!-- --------------------------------------------------- own sources -- -->
         <n-card class="panel panel-sources">
           <template #header>我的订阅源</template>
@@ -1189,9 +1188,7 @@ useHead({ title: '我的订阅 · subhub' });
           </div>
           <p class="hint tiny">取消勾选后，该订阅源不会出现在你的订阅链接中。</p>
         </n-card>
-        </div>
 
-        <div class="stack">
         <!-- -------------------------------------------------- custom rules -- -->
         <n-card class="panel panel-rules" title="自定义规则">
           <n-input
@@ -1309,7 +1306,6 @@ useHead({ title: '我的订阅 · subhub' });
             Auth Key 写入后不可查看（写-only），仅用于导出附带 ?tailscale=1 的 Mihomo / Clash 配置。
           </p>
         </n-card>
-        </div>
       </div>
 
       <!-- --------------------------------------------------- source order -- -->
@@ -1921,7 +1917,7 @@ useHead({ title: '我的订阅 · subhub' });
 /* ------------------------------------------------------------- tiles */
 .tiles {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 14px;
   margin-bottom: 18px;
 }
@@ -1999,17 +1995,16 @@ useHead({ title: '我的订阅 · subhub' });
 .links-qr .qr {
   padding: 0;
 }
+/* The panels below the links band flow in balanced columns instead of two
+   fixed stacks: the browser evens out the column heights, so a short stack
+   no longer leaves a dead blank beside a tall one, at any panel mix. */
 .lower-grid {
-  display: grid;
-  grid-template-columns: 1.12fr 1fr;
-  gap: 18px;
-  align-items: start;
+  columns: 2;
+  column-gap: 18px;
 }
-.stack {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  min-width: 0;
+.lower-grid > .panel {
+  break-inside: avoid;
+  margin-bottom: 18px;
 }
 .panel {
   border-radius: 20px;
@@ -2433,7 +2428,7 @@ useHead({ title: '我的订阅 · subhub' });
 /* -------------------------------------------------------- responsive */
 @media (max-width: 960px) {
   .lower-grid {
-    grid-template-columns: 1fr;
+    columns: 1;
   }
   .links-layout {
     flex-direction: column;
@@ -2468,9 +2463,6 @@ useHead({ title: '我的订阅 · subhub' });
   }
   .hero-number {
     font-size: 36px;
-  }
-  .tiles {
-    grid-template-columns: 1fr;
   }
   .topbar h1 {
     font-size: 18px;
