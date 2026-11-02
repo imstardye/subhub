@@ -16,9 +16,15 @@
  */
 definePageMeta({ layout: 'admin' });
 
-import { NAlert, NButton, NCard, NForm, NFormItem, NInput, NSpin, useMessage } from 'naive-ui';
+import { NAlert, NButton, NCard, NForm, NFormItem, NInput, NSpin, NSwitch, NTag, useMessage } from 'naive-ui';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import { validateSubPathInput, type SettingsView } from '~/core/utils/admin-ui';
+import {
+  oidcAdminUrls,
+  oidcSavePayload,
+  oidcSecretLabel,
+  type OidcSettingsView,
+} from '~/core/utils/oidc';
 
 const requestFetch = useRequestFetch();
 
@@ -96,6 +102,74 @@ async function save() {
 function useDefault() {
   draft.value = settings.value?.defaultSubPath ?? 's';
 }
+
+/* ------------------------------------------------------------------ XAuth -- */
+/**
+ * XAuth (OIDC) client settings — stored in the same app-settings table as the
+ * prefix (never env vars). The client secret is write-only: the field always
+ * starts empty, `已配置/未配置` is the only thing the server reports, blank =
+ * keep, and 清除 clears it explicitly.
+ */
+const oidcDraft = reactive({
+  enabled: false,
+  issuer: '',
+  clientId: '',
+  clientSecret: '',
+  clearClientSecret: false,
+  scopes: 'openid profile email',
+});
+const oidcSaving = ref(false);
+const oidcLoaded = ref(false);
+
+function seedOidc(oidc: OidcSettingsView | undefined) {
+  if (!oidc) return;
+  oidcDraft.enabled = oidc.enabled;
+  oidcDraft.issuer = oidc.issuer;
+  oidcDraft.clientId = oidc.clientId;
+  oidcDraft.scopes = oidc.scopes;
+  oidcDraft.clientSecret = '';
+  oidcDraft.clearClientSecret = false;
+  oidcLoaded.value = true;
+}
+
+watch(settings, (value) => seedOidc(value?.oidc), { immediate: true });
+
+/** Current site origin — the URLs the admin must register at the IdP. */
+const siteOrigin = ref('');
+onMounted(() => {
+  siteOrigin.value = window.location.origin;
+});
+const oidcUrls = computed(() => oidcAdminUrls(siteOrigin.value));
+
+const oidcActive = computed(() => settings.value?.oidc.active ?? false);
+const oidcSecretSet = computed(() => settings.value?.oidc.clientSecretSet ?? false);
+
+async function copyUrl(text: string, label: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    message.success(`${label}已复制`);
+  } catch {
+    message.error('复制失败，请手动复制');
+  }
+}
+
+async function saveOidc() {
+  if (oidcSaving.value) return;
+  oidcSaving.value = true;
+  try {
+    const saved = await $fetch<SettingsView>('/api/admin/settings', {
+      method: 'PUT',
+      body: { oidc: oidcSavePayload(oidcDraft) },
+    });
+    settings.value = saved;
+    seedOidc(saved.oidc);
+    message.success(saved.oidc.active ? 'XAuth 已启用' : 'XAuth 设置已保存');
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+  } finally {
+    oidcSaving.value = false;
+  }
+}
 </script>
 
 <template>
@@ -151,6 +225,128 @@ function useDefault() {
         </n-form>
       </template>
     </n-card>
+
+    <n-card class="settings-card" title="XAuth 登录（OIDC）">
+      <template #header-extra>
+        <n-tag size="small" round :type="oidcActive ? 'success' : 'default'" :bordered="false">
+          {{ oidcActive ? '已启用' : '未启用' }}
+        </n-tag>
+      </template>
+
+      <p class="hint">
+        仅用于 <code class="mono">/my</code> 用户中心登录，管理后台不经过 XAuth。用户由管理员预先创建：
+        填写「预绑邮箱」后，用户首次使用 XAuth 登录时认领绑定；绑定后密码登录停用，解绑后恢复。
+        未匹配到用户的身份一律拒绝，不会自动注册。
+      </p>
+
+      <n-spin v-if="loading && !oidcLoaded" size="small">
+        <span class="muted">加载中…</span>
+      </n-spin>
+      <n-form v-else class="form" @submit.prevent="saveOidc">
+        <n-form-item label="启用 XAuth 登录" :show-feedback="false">
+          <n-switch v-model:value="oidcDraft.enabled" :disabled="oidcSaving">
+            <template #checked>启用</template>
+            <template #unchecked>停用</template>
+          </n-switch>
+        </n-form-item>
+        <n-form-item label="Issuer" :show-feedback="false">
+          <div class="field-stack">
+            <n-input
+              v-model:value="oidcDraft.issuer"
+              placeholder="https://id.example.com"
+              autocomplete="off"
+              spellcheck="false"
+              :disabled="oidcSaving"
+            />
+            <span class="field-hint">XAuth 的 issuer 地址（用于发现 endpoints 与校验 ID token），不要带查询参数。</span>
+          </div>
+        </n-form-item>
+        <n-form-item label="Client ID" :show-feedback="false">
+          <n-input
+            v-model:value="oidcDraft.clientId"
+            autocomplete="off"
+            spellcheck="false"
+            :disabled="oidcSaving"
+          />
+        </n-form-item>
+        <n-form-item label="Client Secret" :show-feedback="false">
+          <div class="field-stack">
+            <div class="secret-row">
+              <n-input
+                v-model:value="oidcDraft.clientSecret"
+                type="password"
+                show-password-on="click"
+                autocomplete="new-password"
+                :placeholder="oidcSecretSet ? '已配置，留空表示不修改' : '粘贴 client secret'"
+                :disabled="oidcSaving || oidcDraft.clearClientSecret"
+              />
+              <n-tag size="small" :type="oidcDraft.clearClientSecret ? 'warning' : oidcSecretSet ? 'success' : 'default'">
+                {{ oidcDraft.clearClientSecret ? '将清除' : oidcSecretLabel(oidcSecretSet) }}
+              </n-tag>
+              <n-button
+                v-if="oidcSecretSet && !oidcDraft.clearClientSecret"
+                secondary
+                type="error"
+                size="small"
+                :disabled="oidcSaving"
+                @click="oidcDraft.clearClientSecret = true"
+              >
+                清除
+              </n-button>
+              <n-button
+                v-else-if="oidcDraft.clearClientSecret"
+                secondary
+                size="small"
+                :disabled="oidcSaving"
+                @click="oidcDraft.clearClientSecret = false"
+              >
+                撤销
+              </n-button>
+            </div>
+            <span class="field-hint">写入后不可查看（写-only），留空保持不变，点「清除」后保存即可删除。</span>
+          </div>
+        </n-form-item>
+        <n-form-item label="Scopes" :show-feedback="false">
+          <div class="field-stack">
+            <n-input
+              v-model:value="oidcDraft.scopes"
+              autocomplete="off"
+              spellcheck="false"
+              :disabled="oidcSaving"
+            />
+            <span class="field-hint">
+              默认 <code class="mono">openid profile email</code>；v1 不申请 offline_access，登录态由本站 30 天的会话 cookie 维持。
+            </span>
+          </div>
+        </n-form-item>
+
+        <n-form-item label="回调地址（在 XAuth 中注册为 Redirect URI）" :show-feedback="false">
+          <div class="url-row">
+            <code class="mono url-text">{{ oidcUrls.redirectUri }}</code>
+            <n-button size="small" secondary :disabled="!siteOrigin" @click="copyUrl(oidcUrls.redirectUri, '回调地址')">
+              复制
+            </n-button>
+          </div>
+        </n-form-item>
+        <n-form-item label="退出后跳转地址（Post Logout URI）" :show-feedback="false">
+          <div class="url-row">
+            <code class="mono url-text">{{ oidcUrls.postLogoutUri }}</code>
+            <n-button size="small" secondary :disabled="!siteOrigin" @click="copyUrl(oidcUrls.postLogoutUri, '退出跳转地址')">
+              复制
+            </n-button>
+          </div>
+        </n-form-item>
+
+        <div class="actions">
+          <n-button type="primary" attr-type="submit" :loading="oidcSaving">
+            {{ oidcSaving ? '保存中…' : '保存 XAuth 设置' }}
+          </n-button>
+        </div>
+        <p v-if="oidcDraft.enabled && !oidcActive" class="field-hint">
+          XAuth 仅在「启用」且 Issuer、Client ID、Client Secret 全部配置后生效；未生效时 /auth 路由返回 404。
+        </p>
+      </n-form>
+    </n-card>
   </section>
 </template>
 
@@ -181,5 +377,37 @@ function useDefault() {
   color: var(--muted-foreground);
   font-size: var(--text-xs);
   font-weight: 400;
+}
+
+.secret-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.secret-row :deep(.n-input) {
+  flex: 1;
+}
+
+.url-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+/* The two cards stack at the page gap radius (no global .page glue needed). */
+.settings-card + .settings-card {
+  margin-top: var(--space-5);
+}
+
+.url-text {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--muted, #f1f5f9);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
 }
 </style>

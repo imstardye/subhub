@@ -44,6 +44,15 @@ export const RESERVED_ADMIN_PATH_SEGMENTS = ['s', 'my', 'api', '_nuxt'] as const
 export const USER_CENTER_PAGES = ['/my'] as const;
 export const USER_API_PREFIX = '/api/user';
 
+/**
+ * XAuth (OIDC) login routes for `/my`: `/auth/login`, `/auth/callback`,
+ * `/auth/logout`, `/auth/logged-out`, `/auth/error`. They are the second half of
+ * the user-center entrance (a browser with only a `/my` link is redirected here
+ * by the user, no admin knock cookie involved), so they are exempt exactly like
+ * `/login` — never blanked, never redirected to the entrance.
+ */
+export const AUTH_PAGES = ['/auth'] as const;
+
 /** One entrance segment: lowercase, no dots, starts with a letter or digit. */
 const SEGMENT_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;
 
@@ -185,6 +194,8 @@ export function gateScope(
   // `/my/<token>`: the token is the credential; never gated (the route itself
   // answers 404 for unknown tokens, exactly like `/s/*`).
   if ((USER_CENTER_PAGES as readonly string[]).includes(`/${first}`)) return { kind: 'public' };
+  // `/auth/*`: the XAuth login routes of the user center (see AUTH_PAGES).
+  if ((AUTH_PAGES as readonly string[]).includes(`/${first}`)) return { kind: 'public' };
   if (first === '_nuxt') return { kind: 'assets' };
   if (first === 'api') {
     const second = segments[1] ?? '';

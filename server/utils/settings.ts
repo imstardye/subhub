@@ -22,7 +22,17 @@
 import { eq } from 'drizzle-orm';
 import type { SubhubDb } from '../db';
 import { settings } from '../db/schema';
+import { decrypt, encrypt, isEncrypted } from '../db/crypto';
 import { ValidationError } from './admin-validation';
+import {
+  OIDC_DEFAULT_SCOPES,
+  OIDC_SETTING_KEYS,
+  effectiveOidcConfig,
+  normalizeOidcIssuer,
+  parseOidcScopes,
+  type OidcEffectiveConfig,
+  type OidcRawSettings,
+} from '../../core/oidc';
 
 /** Setting key holding the subscription URL prefix. */
 export const SUB_PATH_KEY = 'sub_path';
@@ -45,6 +55,7 @@ export const RESERVED_SUB_PATH_ROOTS = [
   'preview',
   'logs',
   'my',
+  'auth',
 ] as const;
 
 /**
@@ -195,7 +206,174 @@ export function primeSubPathCache(value: string, now: number = Date.now()): void
   cache = { value, at: now };
 }
 
+/* ------------------------------------------------------------------ OIDC -- */
+
+/**
+ * XAuth (OIDC) client settings — the same `settings` table, five keys
+ * (`core/oidc.ts` owns the names and the rules):
+ *
+ * - `oidc_enabled`      '1' / '0' (default '0');
+ * - `oidc_issuer`       the issuer identifier (`https://id.example.com`), no
+ *                       trailing slash, no query/hash (the callback matches
+ *                       `event.path`, which carries no query string);
+ * - `oidc_client_id`    the confidential web client's id;
+ * - `oidc_client_secret` ENCRYPTED with `server/db/crypto.ts` (same as source
+ *                       URLs) — write-only: it is never serialised;
+ * - `oidc_scopes`       default `openid profile email` (v1 never asks for
+ *                       `offline_access`; the local session is the 30-day
+ *                       `subhub_my` cookie).
+ *
+ * The client is ACTIVE only when enabled AND issuer, client id and secret are
+ * all set; an inactive client answers 404 on `/auth/*` and no UI surfaces it.
+ * Nothing here is an env var (owner decision: settings UI, like `sub_path`).
+ */
+export function getOidcRawSettings(db: SubhubDb): OidcRawSettings {
+  return {
+    enabled: readSetting(db, OIDC_SETTING_KEYS.enabled),
+    issuer: readSetting(db, OIDC_SETTING_KEYS.issuer),
+    clientId: readSetting(db, OIDC_SETTING_KEYS.clientId),
+    clientSecret: readSetting(db, OIDC_SETTING_KEYS.clientSecret),
+    scopes: readSetting(db, OIDC_SETTING_KEYS.scopes),
+  };
+}
+
+/**
+ * The stored client secret in plaintext, or `null` when unset/unreadable
+ * (a rotated SUBHUB_SECRET makes old ciphertext undecryptable — the client
+ * then counts as "secret not configured" instead of breaking every request).
+ */
+export function readOidcClientSecret(db: SubhubDb): string | null {
+  const stored = readSetting(db, OIDC_SETTING_KEYS.clientSecret);
+  if (!stored) return null;
+  if (!isEncrypted(stored)) return null;
+  try {
+    const value = decrypt(stored);
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Effective, secret-free OIDC configuration (what `isOidcActive` and the admin
+ * GET answer use). Decrypting the secret decides "secret configured".
+ */
+export function getOidcConfig(db: SubhubDb): OidcEffectiveConfig {
+  return effectiveOidcConfig(getOidcRawSettings(db), readOidcClientSecret(db) !== null);
+}
+
+/** True when XAuth is enabled and fully configured (see `getOidcConfig`). */
+export function isOidcActive(db: SubhubDb): boolean {
+  return getOidcConfig(db).active;
+}
+
+/** Everything `PUT /api/admin/settings` may change about the OIDC client. */
+export interface OidcSettingsInput {
+  enabled: boolean;
+  issuer: string;
+  clientId: string;
+  /** '' = keep the stored secret (write-only field), like the write-only URLs. */
+  clientSecret: string;
+  /** Clears the stored secret (the clear affordance next to the field). */
+  clearClientSecret: boolean;
+  scopes: string;
+}
+
+/** OIDC fields of the settings PUT body (`oidc` object; absent = untouched). */
+export interface OidcPatch {
+  enabled?: boolean;
+  issuer?: unknown;
+  clientId?: unknown;
+  clientSecret?: unknown;
+  clearClientSecret?: boolean;
+  scopes?: unknown;
+}
+
+function parseMandatoryText(raw: unknown, label: string, max = 512): string {
+  if (typeof raw !== 'string') throw new ValidationError(`${label}必须是字符串`);
+  const value = raw.trim();
+  if (value.length > max) throw new ValidationError(`${label}过长`);
+  return value;
+}
+
+/**
+ * Validate and persist the OIDC settings (one save path for the settings API).
+ *
+ * Write-only secret, mirroring the source-URL convention: a blank
+ * `clientSecret` keeps the stored value; a non-empty value replaces it (and is
+ * encrypted); `clearClientSecret: true` removes it. Issuer/client id/scopes
+ * are validated here (400 with a Chinese message; nothing is written on error).
+ */
+export function setOidcSettings(db: SubhubDb, patch: OidcPatch): OidcEffectiveConfig {
+  const values: Partial<Record<(typeof OIDC_SETTING_KEYS)[keyof typeof OIDC_SETTING_KEYS], string>> = {};
+  const secret = patch.clientSecret === undefined || patch.clientSecret === null
+    ? ''
+    : parseMandatoryText(patch.clientSecret, 'client_secret', 1024);
+
+  if (patch.enabled !== undefined) {
+    if (typeof patch.enabled !== 'boolean') throw new ValidationError('启用状态必须是布尔值');
+    values[OIDC_SETTING_KEYS.enabled] = patch.enabled ? '1' : '0';
+  }
+  if (patch.issuer !== undefined) {
+    const raw = parseMandatoryText(patch.issuer, 'Issuer');
+    const issuer = raw ? normalizeOidcIssuer(raw) : '';
+    if (raw && issuer === null) {
+      throw new ValidationError('Issuer 必须是 http(s) 地址，且不能带查询参数或 # 片段');
+    }
+    values[OIDC_SETTING_KEYS.issuer] = issuer ?? '';
+  }
+  if (patch.clientId !== undefined) {
+    values[OIDC_SETTING_KEYS.clientId] = parseMandatoryText(patch.clientId, 'client_id', 256);
+  }
+  if (patch.scopes !== undefined) {
+    const scopes = parseOidcScopes(patch.scopes);
+    if (scopes === null) throw new ValidationError('Scopes 只能包含以空格分隔的合法 scope 名称');
+    values[OIDC_SETTING_KEYS.scopes] = scopes;
+  }
+
+  // Secret: explicit clear wins over a (blank) field; a filled field replaces.
+  if (patch.clearClientSecret === true) {
+    values[OIDC_SETTING_KEYS.clientSecret] = '';
+  } else if (secret) {
+    values[OIDC_SETTING_KEYS.clientSecret] = encrypt(secret);
+  }
+
+  // Nothing to do for an empty patch; a no-op save must not rewrite rows.
+  for (const [key, value] of Object.entries(values)) {
+    writeSetting(db, key, value ?? '');
+  }
+  return getOidcConfig(db);
+}
+
 /* ------------------------------------------------------------------- DTO -- */
+
+/** OIDC fields of GET /api/admin/settings — never the client secret value. */
+export interface AdminOidcSettings {
+  /** The `oidc_enabled` switch (true also when the client is not configured). */
+  enabled: boolean;
+  /** True only when enabled AND issuer + client id + secret are all set. */
+  active: boolean;
+  issuer: string;
+  clientId: string;
+  /** True when a client secret is stored. The value itself is never returned. */
+  clientSecretSet: boolean;
+  scopes: string;
+  defaultScopes: string;
+}
+
+export function getAdminOidcSettings(db: SubhubDb): AdminOidcSettings {
+  const raw = getOidcRawSettings(db);
+  const config = getOidcConfig(db);
+  return {
+    enabled: raw.enabled === '1',
+    active: config.active,
+    issuer: raw.issuer ?? '',
+    clientId: raw.clientId ?? '',
+    clientSecretSet: config.clientSecretConfigured,
+    scopes: config.scopes,
+    defaultScopes: OIDC_DEFAULT_SCOPES,
+  };
+}
 
 /** Settings as exposed by GET /api/admin/settings. */
 export interface AdminSettings {
@@ -207,6 +385,8 @@ export interface AdminSettings {
   reservedRoots: string[];
   /** Effective admin entrance path (validated against the prefix). */
   adminPath: string;
+  /** XAuth (OIDC) client settings, secret-free. */
+  oidc: AdminOidcSettings;
 }
 
 export function getAdminSettings(db: SubhubDb): AdminSettings {
@@ -215,6 +395,7 @@ export function getAdminSettings(db: SubhubDb): AdminSettings {
     defaultSubPath: DEFAULT_SUB_PATH,
     reservedRoots: [...RESERVED_SUB_PATH_ROOTS],
     adminPath: adminEntrancePath(),
+    oidc: getAdminOidcSettings(db),
   };
 }
 

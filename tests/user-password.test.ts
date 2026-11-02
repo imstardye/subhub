@@ -242,6 +242,16 @@ describe('session payload and signature', () => {
     expect(userSessionMatches(session, { id: 7, passwordHash: null, passwordVersion: 3 })).toBe(false);
     expect(userSessionMatches(null, { id: 7, passwordHash: 'scrypt$x', passwordVersion: 3 })).toBe(false);
   });
+
+  it('accepts a callback-minted session for a bound user who never set a password', () => {
+    const session = { userId: 7, passwordVersion: 3 };
+    // Bound via XAuth, no password: the OIDC callback is the only mint path.
+    expect(userSessionMatches(session, { id: 7, passwordHash: null, passwordVersion: 3, oidcSub: 'sub-1' })).toBe(true);
+    // The version check still binds (an admin password reset kills it).
+    expect(userSessionMatches(session, { id: 7, passwordHash: null, passwordVersion: 4, oidcSub: 'sub-1' })).toBe(false);
+    // Unbound + password-less stays impossible, as before.
+    expect(userSessionMatches(session, { id: 7, passwordHash: null, passwordVersion: 3, oidcSub: null })).toBe(false);
+  });
 });
 
 describe('server-enforced gate', () => {
@@ -249,21 +259,37 @@ describe('server-enforced gate', () => {
     seedUser({ password: null });
     const result = await read();
     expect(result.status).toBe(401);
-    expect(result.body).toEqual({ error: '请先设置密码', status: 'needs-setup' });
+    // The lock facts ride on every 401 (booleans only; both false here).
+    expect(result.body).toEqual({
+      error: '请先设置密码',
+      status: 'needs-setup',
+      oidcEnabled: false,
+      oidcBound: false,
+    });
 
     const write = await call(userSourceCreateHandler, `/api/user/${TOKEN}/sources`, {
       method: 'POST',
       body: { name: 'x', url: 'https://example.com/sub' },
     });
     expect(write.status).toBe(401);
-    expect(write.body).toEqual({ error: '请先设置密码', status: 'needs-setup' });
+    expect(write.body).toEqual({
+      error: '请先设置密码',
+      status: 'needs-setup',
+      oidcEnabled: false,
+      oidcBound: false,
+    });
   });
 
   it('401 needs-password for a user with a password but no valid cookie', async () => {
     seedUser();
     const result = await read();
     expect(result.status).toBe(401);
-    expect(result.body).toEqual({ error: '请输入密码', status: 'needs-password' });
+    expect(result.body).toEqual({
+      error: '请输入密码',
+      status: 'needs-password',
+      oidcEnabled: false,
+      oidcBound: false,
+    });
 
     // A session for another user is not accepted either.
     const other = seedUser({ name: 'other', token: OTHER_TOKEN, password: PASSWORD });
@@ -297,7 +323,12 @@ describe('setup → unlock → change password', () => {
     // Wrong password: 401 and no cookie.
     const wrong = await unlock(TOKEN, 'not-the-password');
     expect(wrong.status).toBe(401);
-    expect(wrong.body).toEqual({ error: '密码错误', status: 'wrong-password' });
+    expect(wrong.body).toEqual({
+      error: '密码错误',
+      status: 'wrong-password',
+      oidcEnabled: false,
+      oidcBound: false,
+    });
     expect(wrong.headers['set-cookie']).toBeUndefined();
 
     // Correct password issues a fresh cookie for the same version.
@@ -309,7 +340,12 @@ describe('setup → unlock → change password', () => {
     // Change password: current password required, version bumps.
     const wrongCurrent = await changePassword(TOKEN, secondSession, 'nope', NEW_PASSWORD);
     expect(wrongCurrent.status).toBe(401);
-    expect(wrongCurrent.body).toEqual({ error: '密码错误', status: 'wrong-password' });
+    expect(wrongCurrent.body).toEqual({
+      error: '密码错误',
+      status: 'wrong-password',
+      oidcEnabled: false,
+      oidcBound: false,
+    });
 
     const changed = await changePassword(TOKEN, secondSession, PASSWORD, NEW_PASSWORD);
     expect(changed.status).toBe(200);
@@ -473,8 +509,18 @@ describe('admin password management', () => {
     // Old session and old password are useless; the page starts at setup.
     const locked = await read(TOKEN, session);
     expect(locked.status).toBe(401);
-    expect(locked.body).toEqual({ error: '请先设置密码', status: 'needs-setup' });
-    expect((await unlock(TOKEN, PASSWORD)).body).toEqual({ error: '请先设置密码', status: 'needs-setup' });
+    expect(locked.body).toEqual({
+      error: '请先设置密码',
+      status: 'needs-setup',
+      oidcEnabled: false,
+      oidcBound: false,
+    });
+    expect((await unlock(TOKEN, PASSWORD)).body).toEqual({
+      error: '请先设置密码',
+      status: 'needs-setup',
+      oidcEnabled: false,
+      oidcBound: false,
+    });
 
     // The admin can also set a fresh password directly.
     const setAgain = await adminCall(adminUserPasswordSetHandler, {

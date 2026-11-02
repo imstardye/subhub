@@ -72,6 +72,7 @@ import {
   type UserSessionOptions,
 } from './user-session';
 import { hashPassword, verifyPassword } from './user-password';
+import { isOidcLoginActive } from './oidc';
 import { userSessionMatches } from '../../core/utils/user-session';
 import { validatePassword } from '../../core/utils/user-password';
 import {
@@ -254,6 +255,17 @@ export interface UserCenterData {
     enabled: boolean;
     /** The token the page was opened with (used for link building). */
     token: string;
+    /**
+     * True when this request's `/my` session was minted by XAuth (the
+     * `subhub_oidc_idt` cookie matches the signed session), so the logout
+     * button ends the SSO session (`/auth/logout` → IdP `end_session`) instead
+     * of only clearing the local cookie. Booleans only — no token/sub leaks.
+     */
+    sessionOidc: boolean;
+    /** Whether this user claimed an XAuth binding (password login disabled). */
+    oidcBound: boolean;
+    /** Whether XAuth is active site-wide (only then is /auth/* reachable). */
+    oidcEnabled: boolean;
   };
   profile: UserCenterProfileInfo;
   /** The user's own extra Clash rules (mihomo/clash exports only). */
@@ -325,14 +337,32 @@ export function requireUnlockedUserByToken(
   options: UserSessionOptions = {},
 ): User {
   const user = requireUserByToken(db, token);
-  if (!user.passwordHash) {
-    throw new UserCenterAuthError('请先设置密码', 'needs-setup');
-  }
+  // The lock-screen facts ride on every 401 (booleans only). A bound user's
+  // password login is disabled (`oidc-only`), but an existing valid session
+  // (e.g. minted by XAuth) still unlocks the page — binding does not kick a
+  // session out; unbinding/rotating does what it did before.
+  const info = userCenterLockInfo(db, user);
   const session = userSessionFromEvent(event, options);
-  if (!userSessionMatches(session, user)) {
-    throw new UserCenterAuthError('请输入密码', 'needs-password');
+  if (userSessionMatches(session, user)) return user;
+  if (user.oidcSub) {
+    throw new UserCenterAuthError('该账号已绑定 XAuth 单点登录，请使用 XAuth 登录', 'oidc-only', info);
   }
-  return user;
+  if (!user.passwordHash) {
+    throw new UserCenterAuthError('请先设置密码', 'needs-setup', info);
+  }
+  throw new UserCenterAuthError('请输入密码', 'needs-password', info);
+}
+
+/**
+ * The two facts the locked `/my` screen needs (see `core/utils/oidc.ts`):
+ * `oidcEnabled` is the site-wide XAuth switch (active client), `oidcBound`
+ * whether THIS user claimed a binding. Booleans only — never the sub/email.
+ */
+export function userCenterLockInfo(
+  db: SubhubDb,
+  user: { oidcSub?: string | null },
+): { oidcEnabled: boolean; oidcBound: boolean } {
+  return { oidcEnabled: isOidcLoginActive(db), oidcBound: Boolean(user.oidcSub) };
 }
 
 /** Process-wide throttle for password verification (user center only). */
@@ -389,6 +419,8 @@ async function verifyPasswordThrottled(
  */
 export function setupUserPassword(db: SubhubDb, token: string, rawPassword: unknown): User {
   const user = requireUserByToken(db, token);
+  // A bound user never gets a password path back through setup.
+  assertPasswordLoginAllowed(db, user);
   if (user.passwordHash) throw new ValidationError('密码已设置', 409);
   const checked = validatePassword(rawPassword);
   if (!checked.ok) throw new ValidationError(checked.error);
@@ -405,6 +437,19 @@ export function setupUserPassword(db: SubhubDb, token: string, rawPassword: unkn
   return row;
 }
 
+/**
+ * Reject password login for a user bound to XAuth, BEFORE any password work.
+ * The stored hash stays, so unbinding restores the password path unchanged.
+ */
+function assertPasswordLoginAllowed(db: SubhubDb, user: User): void {
+  if (!user.oidcSub) return;
+  throw new UserCenterAuthError(
+    '该账号已绑定 XAuth 单点登录，请使用 XAuth 登录',
+    'oidc-only',
+    userCenterLockInfo(db, user),
+  );
+}
+
 /** Unlock with the current password (`POST /api/user/:token/unlock`). */
 export async function unlockUserPassword(
   db: SubhubDb,
@@ -413,8 +458,9 @@ export async function unlockUserPassword(
   options: PasswordAttemptOptions = {},
 ): Promise<User> {
   const user = requireUserByToken(db, token);
+  assertPasswordLoginAllowed(db, user);
   if (!user.passwordHash) {
-    throw new UserCenterAuthError('请先设置密码', 'needs-setup');
+    throw new UserCenterAuthError('请先设置密码', 'needs-setup', userCenterLockInfo(db, user));
   }
   await verifyPasswordThrottled(user, rawPassword, options);
   return user;
@@ -431,6 +477,8 @@ export async function changeUserPassword(
   input: { currentPassword: unknown; newPassword: unknown },
   options: PasswordAttemptOptions = {},
 ): Promise<User> {
+  // Changing the password is a password login: disabled while bound.
+  assertPasswordLoginAllowed(db, user);
   if (!user.passwordHash) {
     throw new UserCenterAuthError('请先设置密码', 'needs-setup');
   }
@@ -658,7 +706,7 @@ export function loadProfileInfo(db: SubhubDb, user: User): UserCenterProfileInfo
 export function loadUserCenterData(
   db: SubhubDb,
   token: string,
-  options: { origin?: string | null } = {},
+  options: { origin?: string | null; sessionOidc?: boolean } = {},
 ): UserCenterData | UserCenterDisabledData {
   const user = requireUserByToken(db, token);
   if (!user.enabled) return { user: { enabled: false } };
@@ -672,8 +720,17 @@ export function loadUserCenterData(
 
   const cards = dedicated.map(toTrafficSource);
   const prefix = resolveSubPrefix(db);
+  const info = userCenterLockInfo(db, user);
   return {
-    user: { name: user.name, note: user.note ?? null, enabled: true, token: user.token },
+    user: {
+      name: user.name,
+      note: user.note ?? null,
+      enabled: true,
+      token: user.token,
+      sessionOidc: options.sessionOidc === true,
+      oidcBound: Boolean(user.oidcSub),
+      oidcEnabled: info.oidcEnabled,
+    },
     profile: loadProfileInfo(db, user),
     customRules: readUserCustomRules(user),
     operators: readUserOperators(user).operators,

@@ -39,6 +39,7 @@ import {
   trafficCard,
   userCenterApiPath,
   userCenterLockFromError,
+  userCenterLockOidc,
   userCenterPath,
   userCenterView,
   withTailscaleParam,
@@ -59,7 +60,15 @@ const TOKEN = 'a'.repeat(32);
 /** Minimal `ready` payload; tests override only what they assert. */
 function payload(overrides: Partial<UserCenterData> = {}): UserCenterData {
   return {
-    user: { name: 'alice', note: null, enabled: true, token: TOKEN },
+    user: {
+      name: 'alice',
+      note: null,
+      enabled: true,
+      token: TOKEN,
+      sessionOidc: false,
+      oidcBound: false,
+      oidcEnabled: false,
+    },
     profile: { assignedProfile: null, profileNames: [] },
     customRules: { text: '', position: 'prepend', count: 0 },
     operators: [],
@@ -108,10 +117,14 @@ describe('page state', () => {
     expect(userCenterView({ pending: true, lock: 'needs-setup' })).toEqual({
       kind: 'locked',
       lock: 'needs-setup',
+      oidcEnabled: false,
+      oidcBound: false,
     });
     expect(userCenterView({ pending: true, lock: 'needs-password' })).toEqual({
       kind: 'locked',
       lock: 'needs-password',
+      oidcEnabled: false,
+      oidcBound: false,
     });
     // A real error still wins over a stale cached payload.
     expect(userCenterView({ data: payload(), lock: 'needs-password' }).kind).toBe('locked');
@@ -122,9 +135,27 @@ describe('page state', () => {
     expect(userCenterLockFromError({ data: { status: 'needs-setup' } })).toBe('needs-setup');
     expect(userCenterLockFromError({ data: { status: 'needs-password' } })).toBe('needs-password');
     expect(userCenterLockFromError({ response: { _data: { status: 'needs-setup' } } })).toBe('needs-setup');
+    // The XAuth-exclusive lock is a lock state too.
+    expect(userCenterLockFromError({ data: { status: 'oidc-only' } })).toBe('oidc-only');
     for (const error of [null, undefined, 'boom', {}, { data: { status: 'wrong-password' } }, { data: { status: 401 } }]) {
       expect(userCenterLockFromError(error)).toBeNull();
     }
+  });
+
+  it('reads the two XAuth lock facts (booleans only) from the same 401', () => {
+    expect(
+      userCenterLockOidc({ data: { status: 'needs-password', oidcEnabled: true, oidcBound: false } }),
+    ).toEqual({ oidcEnabled: true, oidcBound: false });
+    expect(
+      userCenterLockOidc({ response: { _data: { status: 'oidc-only', oidcEnabled: 1, oidcBound: true } } }),
+    ).toEqual({ oidcEnabled: false, oidcBound: true });
+    for (const error of [null, undefined, {}, { data: { oidcEnabled: 'yes' } }]) {
+      expect(userCenterLockOidc(error)).toEqual({ oidcEnabled: false, oidcBound: false });
+    }
+    // The view carries them through so the locked template can decide.
+    expect(
+      userCenterView({ lock: 'needs-password', oidc: { oidcEnabled: true, oidcBound: false } }),
+    ).toEqual({ kind: 'locked', lock: 'needs-password', oidcEnabled: true, oidcBound: false });
   });
 });
 

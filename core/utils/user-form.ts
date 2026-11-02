@@ -22,6 +22,8 @@ export interface UserForm {
   /** The user's custom rules (edit only; creation ignores them). */
   customRules: string;
   customRulesPosition: 'prepend' | 'append';
+  /** XAuth (OIDC) pre-bound email; '' = none (never bound). */
+  bindEmail: string;
 }
 
 /** Body sent to POST /api/admin/users and PATCH /api/admin/users/:id. */
@@ -32,10 +34,20 @@ export interface UserPayload {
   profileId: string | null;
   customRules: string;
   customRulesPosition: 'prepend' | 'append';
+  /** Lower-cased/trimmed expected XAuth email, or null (absent = untouched). */
+  bindEmail: string | null;
 }
 
 export function emptyUserForm(): UserForm {
-  return { name: '', enabled: true, note: '', profileId: '', customRules: '', customRulesPosition: 'prepend' };
+  return {
+    name: '',
+    enabled: true,
+    note: '',
+    profileId: '',
+    customRules: '',
+    customRulesPosition: 'prepend',
+    bindEmail: '',
+  };
 }
 
 /** Seed the edit form from a listed user; a missing profile id becomes ''. */
@@ -46,6 +58,7 @@ export function userFormFromUser(user: {
   profileId?: number | null;
   customRules?: string | null;
   customRulesPosition?: string | null;
+  oidcEmail?: string | null;
 }): UserForm {
   return {
     name: user.name,
@@ -54,6 +67,7 @@ export function userFormFromUser(user: {
     profileId: user.profileId === null || user.profileId === undefined ? '' : String(user.profileId),
     customRules: user.customRules ?? '',
     customRulesPosition: user.customRulesPosition === 'append' ? 'append' : 'prepend',
+    bindEmail: user.oidcEmail ?? '',
   };
 }
 
@@ -65,6 +79,9 @@ export type UserPayloadResult = { ok: true; payload: UserPayload } | { ok: false
  * The 规则档 ID is optional: empty (or whitespace) means "no profile" and is
  * sent as `null`, which clears the assignment on PATCH. A non-empty value must
  * be a positive integer (what the API's `parseProfileId` accepts).
+ * 预绑邮箱 (XAuth) is sent as `bindEmail` (trimmed/lower-cased; empty = null,
+ * i.e. clears the pre-bind — the server unbinds `oidc_sub` when the email of a
+ * bound user changes).
  */
 export function buildUserPayload(form: UserForm): UserPayloadResult {
   const name = form.name.trim();
@@ -78,6 +95,10 @@ export function buildUserPayload(form: UserForm): UserPayloadResult {
     }
   }
 
+  // XAuth expected email: blank clears the pre-bind (`bindEmail: null`). The
+  // server normalises (lower-case/trim) and owns the 400s (bad shape, taken).
+  const bindEmail = (form.bindEmail ?? '').trim().toLowerCase();
+
   return {
     ok: true,
     payload: {
@@ -85,6 +106,7 @@ export function buildUserPayload(form: UserForm): UserPayloadResult {
       enabled: form.enabled,
       note: form.note.trim() || null,
       profileId: rawProfileId || null,
+      bindEmail: bindEmail || null,
       // Sent verbatim; the server validates and normalizes the rule lines.
       customRules: form.customRules,
       customRulesPosition: form.customRulesPosition === 'append' ? 'append' : 'prepend',

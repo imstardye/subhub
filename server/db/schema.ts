@@ -55,6 +55,18 @@ export const users = sqliteTable('users', {
    * value never appears in any DTO/response (only `tailscaleKeySet` does).
    */
   tailscaleAuthKey: text('tailscale_auth_key'),
+  /**
+   * XAuth (OIDC) binding — see `core/oidc.ts`. `oidcEmail` is the admin's
+   * pre-filled expected email (lower-cased/trimmed; NULL = none), and the
+   * user's FIRST XAuth login with that verified email writes the identity's
+   * `sub` into `oidcSub` (unique). SQLite treats NULLs as distinct, so any
+   * number of unbound users coexist on the unique sub index. Once `oidcSub` is
+   * set, `/my` password login is disabled (`oidc-only`) until the admin
+   * unbinds (the password hash is kept, so unbinding restores it). Never
+   * serialised: the admin DTO exposes `oidcEmail` + `oidcBound` only.
+   */
+  oidcSub: text('oidc_sub'),
+  oidcEmail: text('oidc_email'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().defaultNow(),
 });
 
@@ -204,9 +216,11 @@ export const accessLogs = sqliteTable(
 
 /**
  * Site settings (key/value). In-app configuration that must be changeable
- * without a redeploy — currently `sub_path`, the subscription URL prefix (see
- * `server/utils/settings.ts`). Deliberately not an env var: the owner changes
- * it from the admin UI and expects it to take effect immediately.
+ * without a redeploy — `sub_path`, the subscription URL prefix (see
+ * `server/utils/settings.ts`), and the XAuth (`oidc_*`) client configuration
+ * (`server/utils/oidc.ts`; the client secret is stored ENCRYPTED). Deliberately
+ * not env vars: the owner changes them from the admin UI and expects them to
+ * take effect immediately.
  */
 export const settings = sqliteTable('settings', {
   key: text('key').primaryKey(),

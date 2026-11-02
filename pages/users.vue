@@ -44,6 +44,7 @@ import {
   type UserSourceCounts,
 } from '~/core/utils/admin-ui';
 import { validateCustomToken } from '~/core/utils/token-form';
+import { oidcBindingLabel } from '~/core/utils/oidc';
 import {
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
@@ -118,6 +119,43 @@ function askClearSourceOrder() {
 }
 
 const copiedToken = ref('');
+
+/* ------------------------------------------------------------------ XAuth -- */
+/** Binding badge of a user row: 未预绑 / 待认领 / 已绑定. */
+function oidcLabel(user: AdminUser): string {
+  return oidcBindingLabel(user);
+}
+
+function oidcTagType(user: AdminUser): 'success' | 'info' | 'default' {
+  if (user.oidcBound) return 'success';
+  if (user.oidcEmail) return 'info';
+  return 'default';
+}
+
+/** XAuth 解绑: clear `oidc_sub`, keep the pre-bound email (PATCH unbind). */
+function askUnbindOidc(user: AdminUser) {
+  if (busyId.value !== null || !user.oidcBound) return;
+  dialog.warning({
+    title: '解绑 XAuth',
+    content: `确定解除「${user.name}」的 XAuth 绑定？解绑后会保留预绑邮箱${
+      user.oidcEmail ? `（${user.oidcEmail}）` : ''
+    }，该用户恢复密码登录，下次 XAuth 登录会重新认领绑定。`,
+    positiveText: '确认解绑',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      busyId.value = user.id;
+      // `patchUser` surfaces failures through the caller's catch.
+      try {
+        await patchUser(user, { unbind: true });
+        message.success(`「${user.name}」已解绑 XAuth，密码登录已恢复`);
+      } catch (err) {
+        message.error(apiErrorMessage(err));
+      } finally {
+        busyId.value = null;
+      }
+    },
+  });
+}
 
 const origin = ref('');
 /** Effective subscription prefix, shared with the settings page. */
@@ -523,6 +561,23 @@ onMounted(() => {
       <n-form-item label="启用" :show-feedback="false">
         <n-switch v-model:value="form.enabled" :disabled="saving" />
       </n-form-item>
+      <n-form-item label="预绑邮箱（XAuth，可选）" :show-feedback="false">
+        <div class="field-stack">
+          <n-input
+            v-model:value="form.bindEmail"
+            type="email"
+            autocomplete="off"
+            spellcheck="false"
+            maxlength="254"
+            placeholder="user@example.com"
+            :disabled="saving"
+          />
+          <span class="field-hint">
+            该用户首次使用 XAuth 登录、且令牌邮箱已验证并与此一致时认领绑定；绑定后密码登录停用，解绑后恢复。
+            修改已绑用户邮箱会同时解绑。
+          </span>
+        </div>
+      </n-form-item>
       <n-form-item label="备注（可选）" :show-feedback="false">
         <n-input
           v-model:value="form.note"
@@ -615,6 +670,15 @@ onMounted(() => {
               <n-tag size="small" :type="user.passwordSet ? 'success' : 'default'" :bordered="false">
                 {{ user.passwordSet ? '已设密码' : '未设密码' }}
               </n-tag>
+              <n-tag
+                v-if="user.oidcBound || user.oidcEmail"
+                size="small"
+                :type="oidcTagType(user)"
+                :bordered="false"
+                :title="user.oidcEmail ? `预绑邮箱：${user.oidcEmail}` : ''"
+              >
+                XAuth · {{ oidcLabel(user) }}
+              </n-tag>
               <n-switch
                 :value="user.enabled"
                 size="small"
@@ -696,6 +760,15 @@ onMounted(() => {
             >
               重置密码
             </n-button>
+            <n-button
+              v-if="user.oidcBound"
+              size="small"
+              tertiary
+              :disabled="busyId !== null"
+              @click="askUnbindOidc(user)"
+            >
+              解绑 XAuth
+            </n-button>
             <n-button size="small" secondary type="error" :disabled="busyId !== null" @click="askDelete(user)">
               删除
             </n-button>
@@ -768,6 +841,18 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+.field-hint {
+  color: var(--muted-foreground);
+  font-size: var(--text-xs);
+  font-weight: 400;
+  line-height: 1.6;
+}
 .ops-admin-row {
   display: flex;
   align-items: center;
