@@ -18,6 +18,7 @@ export * from './dns';
 export * from './tailscale';
 export * from './operators';
 export * from './source-order';
+export * from './oidc';
 export * from './parsers';
 export * from './producers';
 export * from './rules';

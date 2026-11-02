@@ -30,6 +30,7 @@ import { readUserOperators, saveUserOperators } from './operators';
 import { readUserSourceOrder, saveUserSourceOrder } from './source-order';
 import { clearUserTailscaleKey, isTailscaleKeySet } from './tailscale';
 import type { CustomRulePosition } from '../../core';
+import { isValidOidcEmail, normalizeOidcEmail } from '../../core/oidc';
 
 /** User as exposed by the API — the token is included on purpose (owner UI). */
 export interface AdminUser {
@@ -50,6 +51,13 @@ export interface AdminUser {
   sourceOrderCount: number;
   /** Whether a Tailscale auth key is bound. The key itself is never exposed. */
   tailscaleKeySet: boolean;
+  /**
+   * XAuth (OIDC) binding: the admin's pre-filled expected email (lower-cased,
+   * `null` = none) and whether an identity claimed the binding. The `sub` is an
+   * identifier the admin has no use for, so it is never serialised.
+   */
+  oidcEmail: string | null;
+  oidcBound: boolean;
   createdAt: string;
 }
 
@@ -68,6 +76,8 @@ export function toAdminUser(row: User): AdminUser {
     operatorsCount: readUserOperators(row).count,
     sourceOrderCount: readUserSourceOrder(row).length,
     tailscaleKeySet: isTailscaleKeySet(row),
+    oidcEmail: row.oidcEmail ?? null,
+    oidcBound: Boolean(row.oidcSub),
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -83,6 +93,34 @@ export function getUser(db: SubhubDb, rawId: unknown): AdminUser {
   return toAdminUser(row);
 }
 
+/**
+ * Validate a pre-filled XAuth binding email (`users.oidc_email`): trimmed,
+ * lower-cased (`normalizeOidcEmail` owns the canonical form), `''`/null/absent
+ * = none. Uniqueness across users is enforced below (case-insensitively — the
+ * stored form is already lower-case) because `/auth/callback` refuses to guess
+ * between two candidates (`conflict`).
+ */
+function parseOidcEmail(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw new ValidationError('bindEmail 必须是字符串');
+  const email = normalizeOidcEmail(value);
+  if (!email) return null;
+  if (!isValidOidcEmail(email)) throw new ValidationError('bindEmail 不是合法的邮箱地址');
+  return email;
+}
+
+/** Throw 400 when another user already holds this expected email. */
+function assertOidcEmailFree(db: SubhubDb, email: string | null, excludeUserId: number): void {
+  if (!email) return;
+  const clash = db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.oidcEmail, email))
+    .all()
+    .find((row) => row.id !== excludeUserId);
+  if (clash) throw new ValidationError('该邮箱已被其他用户预绑', 400);
+}
+
 /** Username-like token for the profile link; `null`/absent stays null. */
 function parseProfileId(value: unknown): number | null {
   if (value === undefined || value === null || value === '') return null;
@@ -96,12 +134,16 @@ export function createUser(db: SubhubDb, body: Record<string, unknown>): AdminUs
   const enabled = parseEnabled(body.enabled);
   const note = parseOptionalText(body.note, 'note', NOTE_MAX_LENGTH);
   const profileId = parseProfileId(body.profileId);
+  // Pre-filling the expected XAuth email at creation is allowed; a new user can
+  // never be created already bound (the first login claims the binding).
+  const oidcEmail = parseOidcEmail(body.bindEmail);
+  assertOidcEmailFree(db, oidcEmail, 0);
 
   // Retry on the (astronomically unlikely) unique-token collision.
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const token = generateUserToken();
     try {
-      const row = db.insert(users).values({ name, token, enabled, note, profileId }).returning().get();
+      const row = db.insert(users).values({ name, token, enabled, note, profileId, oidcEmail }).returning().get();
       if (row) return toAdminUser(row);
     } catch (error) {
       if (attempt === 2) throw error;
@@ -127,11 +169,26 @@ export async function updateUser(
   const existing = db.select().from(users).where(eq(users.id, id)).get();
   if (!existing) throw new ValidationError('user not found', 404);
 
-  const patch: Partial<Pick<User, 'name' | 'enabled' | 'note' | 'profileId'>> = {};
+  const patch: Partial<Pick<User, 'name' | 'enabled' | 'note' | 'profileId' | 'oidcEmail' | 'oidcSub'>> = {};
   if ('name' in body) patch.name = parseName(body.name);
   if ('enabled' in body) patch.enabled = parseEnabled(body.enabled);
   if ('note' in body) patch.note = parseOptionalText(body.note, 'note', NOTE_MAX_LENGTH);
   if ('profileId' in body) patch.profileId = parseProfileId(body.profileId);
+
+  // XAuth binding (`bindEmail` = the expected email). Changing the email of a
+  // BOUND user unbinds it in the same write: `oidc_sub` no longer belongs to the
+  // expected identity, and the user must not keep a login that matches it.
+  // Unbinding alone (`unbind: true`) clears `oidc_sub` and keeps the email.
+  if ('bindEmail' in body) {
+    const email = parseOidcEmail(body.bindEmail);
+    assertOidcEmailFree(db, email, id);
+    patch.oidcEmail = email;
+    if (email !== (existing.oidcEmail ?? null)) patch.oidcSub = null;
+  }
+  if ('unbind' in body) {
+    if (typeof body.unbind !== 'boolean') throw new ValidationError('unbind 必须是布尔值');
+    if (body.unbind) patch.oidcSub = null;
+  }
 
   let row = existing;
   if (Object.keys(patch).length > 0) {

@@ -91,6 +91,7 @@ describe('users page form: payload building', () => {
       profileId: '1',
       customRules: 'DOMAIN-SUFFIX,example.com,DIRECT',
       customRulesPosition: 'append',
+      bindEmail: '',
     };
     expect(buildUserPayload(form)).toEqual({
       ok: true,
@@ -101,6 +102,7 @@ describe('users page form: payload building', () => {
         profileId: '1',
         customRules: 'DOMAIN-SUFFIX,example.com,DIRECT',
         customRulesPosition: 'append',
+        bindEmail: null,
       },
     });
   });
@@ -109,14 +111,30 @@ describe('users page form: payload building', () => {
     for (const profileId of ['', '   ']) {
       expect(buildUserPayload({ ...emptyUserForm(), name: 'x', profileId })).toEqual({
         ok: true,
-        payload: { name: 'x', enabled: true, note: null, profileId: null, customRules: '', customRulesPosition: 'prepend' },
+        payload: {
+          name: 'x',
+          enabled: true,
+          note: null,
+          profileId: null,
+          customRules: '',
+          customRulesPosition: 'prepend',
+          bindEmail: null,
+        },
       });
     }
     // Every field is present even when the form was reset.
     const built = buildUserPayload({ ...emptyUserForm(), name: 'x' });
     expect(built).toEqual({
       ok: true,
-      payload: { name: 'x', enabled: true, note: null, profileId: null, customRules: '', customRulesPosition: 'prepend' },
+      payload: {
+        name: 'x',
+        enabled: true,
+        note: null,
+        profileId: null,
+        customRules: '',
+        customRulesPosition: 'prepend',
+        bindEmail: null,
+      },
     });
   });
 
@@ -141,6 +159,7 @@ describe('users page form: payload building', () => {
       profileId: '7',
       customRules: '',
       customRulesPosition: 'prepend',
+      bindEmail: '',
     });
     expect(userFormFromUser({ name: 'b', enabled: true, profileId: null }).profileId).toBe('');
     // A missing column (older API shape) is treated as "no profile" too.
@@ -167,6 +186,7 @@ describe('users page form: submit path against the API', () => {
       profileId: '1',
       customRules: '',
       customRulesPosition: 'prepend',
+      bindEmail: null,
     });
 
     const res = await send(userUpdateHandler, {

@@ -2,8 +2,10 @@
 /**
  * GET /api/admin/settings — current site settings (admin).
  *
- * `{ subPath, defaultSubPath, reservedRoots, adminPath }`; `subPath` is the
- * effective subscription URL prefix every share/copy link must use.
+ * `{ subPath, defaultSubPath, reservedRoots, adminPath, oidc }`; `subPath` is
+ * the effective subscription URL prefix every share/copy link must use, and
+ * `oidc` carries the XAuth client settings with only `clientSecretSet: boolean`
+ * — the secret value is write-only and never appears in any response.
  */
 import { getAdminSettings } from '../../../utils/settings';
 import { handleAdminRequest, type AdminRequestOptions } from '../../../utils/admin-routes';

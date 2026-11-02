@@ -62,11 +62,21 @@ export function decodeUserSessionPayload(payload: string): {
 /** True when the session belongs to this user at the user's current version. */
 export function userSessionMatches(
   payload: { userId: number; passwordVersion: number } | null | undefined,
-  user: { id: number; passwordVersion?: number | null; passwordHash?: string | null },
+  user: {
+    id: number;
+    passwordVersion?: number | null;
+    passwordHash?: string | null;
+    oidcSub?: string | null;
+  },
 ): boolean {
   if (!payload) return false;
   if (payload.userId !== user.id) return false;
-  // No password = no valid session can exist (setup is the only way in).
-  if (!user.passwordHash) return false;
+  // No password and no XAuth binding = no valid session can exist (password
+  // setup is the only way in). A BOUND user is the exception: the OIDC
+  // callback mints this very session after the IdP verified them, and a
+  // bound user may never have set a password at all — the callback is the
+  // only mint path for such a user, and the version check below still
+  // applies (an admin password reset bumps the version and kills it).
+  if (!user.passwordHash && !user.oidcSub) return false;
   return payload.passwordVersion === (user.passwordVersion ?? 0);
 }

@@ -65,7 +65,14 @@ export function sourceIdFromPath(event: AdminApiEvent): string | undefined {
 /** Same shape as the admin routes; no session is involved. */
 function errorResponse(event: AdminApiEvent, error: unknown): unknown {
   if (error instanceof UserCenterAuthError) {
-    return sendJson(event, 401, { error: error.message, status: error.status });
+    // Booleans only: the locked /my screen decides whether to show the XAuth
+    // button (enabled + not yet bound) or only that button (bound).
+    return sendJson(event, 401, {
+      error: error.message,
+      status: error.status,
+      oidcEnabled: error.info.oidcEnabled,
+      oidcBound: error.info.oidcBound,
+    });
   }
   if (error instanceof ValidationError) {
     return sendJson(event, error.statusCode, { error: error.message });

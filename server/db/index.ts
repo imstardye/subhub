@@ -47,9 +47,14 @@ CREATE TABLE IF NOT EXISTS users (
   operators TEXT,
   source_order TEXT,
   tailscale_auth_key TEXT,
+  oidc_sub TEXT,
+  oidc_email TEXT,
   created_at INTEGER NOT NULL DEFAULT (cast((julianday('now') - 2440587.5)*86400000 as integer))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_token_unique ON users (token);
+-- The XAuth (OIDC) indexes are created in ensureAddedColumns AFTER the guarded
+-- ALTER TABLEs: on an existing database this DDL runs before users.oidc_sub
+-- exists, and an index over a missing column would abort the whole batch.
 
 CREATE TABLE IF NOT EXISTS sources (
   id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -178,6 +183,18 @@ function ensureAddedColumns(sqlite: Database.Database): void {
   if (!userColumns.some((column) => column.name === 'tailscale_auth_key')) {
     sqlite.exec('ALTER TABLE users ADD COLUMN tailscale_auth_key TEXT');
   }
+  // XAuth (OIDC) binding: the expected email (admin pre-fills it) and the
+  // claimed identity `sub`. NULLs are distinct in SQLite, so every unbound
+  // user passes the unique index on `oidc_sub`.
+  if (!userColumns.some((column) => column.name === 'oidc_sub')) {
+    sqlite.exec('ALTER TABLE users ADD COLUMN oidc_sub TEXT');
+  }
+  if (!userColumns.some((column) => column.name === 'oidc_email')) {
+    sqlite.exec('ALTER TABLE users ADD COLUMN oidc_email TEXT');
+  }
+
+  sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub_unique ON users (oidc_sub)');
+  sqlite.exec('CREATE INDEX IF NOT EXISTS users_oidc_email_idx ON users (oidc_email)');
 
   const columns = sqlite.pragma('table_info(sources)') as Array<{ name: string }>;
   const hasOwner = columns.some((column) => column.name === 'owner_user_id');

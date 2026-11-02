@@ -9,20 +9,27 @@
  * `/login` is the only admin page and is let through immediately (the server is
  * not even asked). The self-service user center (`/my/<token>`, see
  * `USER_CENTER_PAGES`) is public by design — the token in the URL is the
- * credential — so it must not be redirected to the login page either.
+ * credential — so it must not be redirected to the login page either, and the
+ * same holds for the XAuth routes (`/auth/*`, `AUTH_PAGES`).
  * Everything else requires a session: an anonymous visitor is sent to
  * `/login?redirect=<full path>`.
  */
-import { USER_CENTER_PAGES } from './admin-entrance';
+import { AUTH_PAGES, USER_CENTER_PAGES } from './admin-entrance';
 
 /** The only admin page reachable without a session. */
 export const ADMIN_LOGIN_PATH = '/login';
 
-/** True for `/login` and for every public user-center page (`/my/*`). */
+/**
+ * True for `/login`, every public user-center page (`/my/*`) and the XAuth
+ * routes (`/auth/*`).
+ */
 export function isPublicPage(path: string): boolean {
   if (path === ADMIN_LOGIN_PATH) return true;
   const first = path.split('/').filter((segment) => segment.length > 0)[0] ?? '';
-  return (USER_CENTER_PAGES as readonly string[]).includes(`/${first}`);
+  return (
+    (USER_CENTER_PAGES as readonly string[]).includes(`/${first}`) ||
+    (AUTH_PAGES as readonly string[]).includes(`/${first}`)
+  );
 }
 
 /** The bits of the router's `to` the gate actually uses. */

@@ -55,10 +55,19 @@ import {
   trafficCard,
   userCenterApiPath,
   userCenterLockFromError,
+  userCenterLockOidc,
   userCenterPath,
   userCenterView,
   type UserCenterPayload,
 } from '~/core/utils/user-center';
+import {
+  XAUTH_LOGIN_LABEL,
+  XAUTH_ONLY_NOTICE,
+  lockedScreenMode,
+  logoutPlan,
+  xauthLoginUrl,
+  xauthLogoutUrl,
+} from '~/core/utils/oidc';
 import {
   OPERATOR_PROTOCOL_TYPES,
   OPERATOR_TYPE_LABELS,
@@ -86,15 +95,28 @@ const { data, pending, error, refresh } = await useAsyncData(
 );
 
 const lock = computed(() => userCenterLockFromError(error.value));
+/** `{ oidcEnabled, oidcBound }` from the same 401 (booleans only). */
+const lockOidc = computed(() => userCenterLockOidc(error.value));
 const view = computed(() =>
   userCenterView({
     data: data.value,
     error: error.value ? apiErrorMessage(error.value) : null,
     pending: pending.value,
     lock: lock.value,
+    oidc: userCenterLockOidc(error.value),
   }),
 );
 const center = computed(() => (view.value.kind === 'ready' ? view.value.data : null));
+/**
+ * Locked screen composition (pure, `core/utils/oidc.ts`): bound user → only the
+ * XAuth button; not bound + XAuth active → password form plus the XAuth button;
+ * XAuth inactive → exactly today's password UI.
+ */
+const lockedMode = computed(() =>
+  view.value.kind === 'locked' ? lockedScreenMode(view.value.lock, lockOidc.value) : null,
+);
+/** Account-panel logout: SSO logout for an XAuth session, local otherwise. */
+const logout = computed(() => logoutPlan(center.value?.user ?? null, ''));
 
 /**
  * Request origin, taken from the browser itself after mount. The API's
@@ -683,6 +705,38 @@ async function saveOperators() {
   }
 }
 
+/* ------------------------------------------------------------- XAuth -- */
+/**
+ * XAuth login is a plain browser navigation (the server answers with a 302 to
+ * the IdP and sets the flow cookie) — never a `$fetch`.
+ */
+function goXAuthLogin() {
+  window.location.assign(xauthLoginUrl(originFromLocation(window.location)));
+}
+
+/**
+ * 退出登录: an XAuth-backed session logs out through `/auth/logout` (clears the
+ * cookies and ends the IdP session when it advertises `end_session`); a password
+ * session keeps the local `/api/user/:token/logout`.
+ */
+async function submitLogout() {
+  if (busy.value) return;
+  const plan = logout.value;
+  if (plan.sso) {
+    window.location.assign(xauthLogoutUrl(originFromLocation(window.location)));
+    return;
+  }
+  busy.value = true;
+  try {
+    await $fetch(userCenterApiPath(token.value, 'logout'), { method: 'POST' });
+    window.location.reload();
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+  } finally {
+    busy.value = false;
+  }
+}
+
 /* --------------------------------------------------------- password gate -- */
 /**
  * Setup vs. unlock form. The server decides which one is needed and answers
@@ -695,7 +749,8 @@ const authError = ref('');
 
 async function submitAuth() {
   const mode = view.value.kind === 'locked' ? view.value.lock : null;
-  if (!mode || authBusy.value) return;
+  // `oidc-only`: a bound user has no password form (only the XAuth button).
+  if (!mode || mode === 'oidc-only' || authBusy.value) return;
   const checked = validatePassword(authForm.password);
   if (!checked.ok) {
     authError.value = checked.error;
@@ -828,7 +883,16 @@ useHead({ title: '我的订阅 · subhub' });
     </div>
 
     <section v-else-if="view.kind === 'locked'" class="auth-wrap">
-      <div class="auth-card">
+      <!-- Bound to XAuth: only the XAuth button (the password path answers oidc-only). -->
+      <div v-if="lockedMode?.xauthOnly" class="auth-card">
+        <div class="auth-mark" aria-hidden="true">S</div>
+        <h1 class="auth-title">XAuth 登录</h1>
+        <p class="auth-sub">{{ XAUTH_ONLY_NOTICE }}</p>
+        <n-button class="auth-submit" type="primary" size="large" block @click="goXAuthLogin">
+          {{ XAUTH_LOGIN_LABEL }}
+        </n-button>
+      </div>
+      <div v-else class="auth-card">
         <div class="auth-mark" aria-hidden="true">S</div>
         <h1 class="auth-title">{{ view.lock === 'needs-setup' ? '设置访问密码' : '欢迎回来' }}</h1>
         <p class="auth-sub">
@@ -836,7 +900,7 @@ useHead({ title: '我的订阅 · subhub' });
             ? `首次进入请设置密码（${PASSWORD_MIN_LENGTH}–${PASSWORD_MAX_LENGTH} 个字符），之后凭密码进入本页。`
             : '该账号已设置密码，请输入后进入。' }}
         </p>
-        <n-form class="form" @submit.prevent="submitAuth">
+        <n-form v-if="lockedMode?.passwordForm" class="form" @submit.prevent="submitAuth">
           <n-form-item :label="view.lock === 'needs-setup' ? '设置密码' : '密码'" :show-feedback="false">
             <n-input
               v-model:value="authForm.password"
@@ -868,6 +932,20 @@ useHead({ title: '我的订阅 · subhub' });
             {{ authBusy ? '处理中…' : view.lock === 'needs-setup' ? '设置并进入' : '进入' }}
           </n-button>
         </n-form>
+        <!-- XAuth active and this user not bound yet: password OR XAuth. -->
+        <n-button
+          v-if="lockedMode?.xauthButton"
+          class="auth-submit auth-submit-xauth"
+          secondary
+          size="large"
+          block
+          @click="goXAuthLogin"
+        >
+          {{ XAUTH_LOGIN_LABEL }}
+        </n-button>
+        <p v-if="lockedMode?.xauthButton" class="auth-sub-hint">
+          首次使用 XAuth 登录时会绑定管理员的预绑邮箱，之后密码登录将停用。
+        </p>
       </div>
     </section>
 
@@ -1164,13 +1242,29 @@ useHead({ title: '我的订阅 · subhub' });
               <n-button secondary :loading="rotating" @click="askRotate">刷新令牌</n-button>
             </div>
           </div>
-          <div class="account-row">
+          <div v-if="!center.user.oidcBound" class="account-row">
             <div class="account-text">
               <span class="account-label">访问密码</span>
               <span class="hint tiny">修改后其他设备上的登录会失效，需要重新输入新密码。</span>
             </div>
             <div class="row">
               <n-button secondary @click="openPasswordChange">修改密码</n-button>
+            </div>
+          </div>
+          <div v-else class="account-row">
+            <div class="account-text">
+              <span class="account-label">登录方式</span>
+              <n-tag size="small" round type="success">XAuth 单点登录</n-tag>
+              <span class="hint tiny">该账号已绑定 XAuth，密码登录已停用；如需恢复密码登录，请联系管理员解绑。</span>
+            </div>
+          </div>
+          <div class="account-row">
+            <div class="account-text">
+              <span class="account-label">退出登录</span>
+              <span class="hint tiny">{{ logout.hint }}</span>
+            </div>
+            <div class="row">
+              <n-button secondary :loading="busy" @click="submitLogout">{{ logout.label }}</n-button>
             </div>
           </div>
         </n-card>
@@ -2272,6 +2366,18 @@ useHead({ title: '我的订阅 · subhub' });
 .ops-preview .hint {
   margin: 6px 0 0;
 }
+.auth-submit-xauth {
+  margin-top: 12px;
+}
+
+.auth-sub-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: #64748b;
+  text-align: center;
+  line-height: 1.6;
+}
+
 .account-row {
   display: flex;
   align-items: center;

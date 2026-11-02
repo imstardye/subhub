@@ -467,19 +467,24 @@ export function editFormFromSource(source: UserCenterOwnSource): {
 export type UserCenterView =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'locked'; lock: UserCenterLock }
+  | { kind: 'locked'; lock: UserCenterLock; oidcEnabled: boolean; oidcBound: boolean }
   | { kind: 'disabled'; title: string; message: string }
   | { kind: 'ready'; data: UserCenterData };
 
-/** The two password-gate forms the page can render. */
-export type UserCenterLock = 'needs-setup' | 'needs-password';
+/**
+ * The lock forms the page can render: the password setup form, the password
+ * entry form, or `oidc-only` (the user is bound to XAuth, so only the XAuth
+ * button is shown and no password endpoint is offered).
+ */
+export type UserCenterLock = 'needs-setup' | 'needs-password' | 'oidc-only';
 
 /**
  * Extract the gate state from a failed `/api/user/:token` request.
  *
- * The server answers 401 `{ error, status: 'needs-setup' | 'needs-password' }`;
- * `$fetch` exposes the JSON body as `err.data`. Anything else (404, network,
- * 500) is not a password state and must stay an ordinary error.
+ * The server answers 401 `{ error, status: 'needs-setup' | 'needs-password' |
+ * 'oidc-only', oidcEnabled, oidcBound }`; `$fetch` exposes the JSON body as
+ * `err.data`. Anything else (404, network, 500) is not a lock state and must
+ * stay an ordinary error.
  */
 export function userCenterLockFromError(error: unknown): UserCenterLock | null {
   if (!error || typeof error !== 'object') return null;
@@ -488,7 +493,23 @@ export function userCenterLockFromError(error: unknown): UserCenterLock | null {
     response?: { _data?: { status?: unknown } };
   };
   const status = candidate.data?.status ?? candidate.response?._data?.status;
-  return status === 'needs-setup' || status === 'needs-password' ? status : null;
+  return status === 'needs-setup' || status === 'needs-password' || status === 'oidc-only'
+    ? status
+    : null;
+}
+
+/**
+ * The two lock facts the page needs (booleans only), read from the same 401
+ * body. Missing/malformed values mean "do not surface XAuth".
+ */
+export function userCenterLockOidc(error: unknown): { oidcEnabled: boolean; oidcBound: boolean } {
+  if (!error || typeof error !== 'object') return { oidcEnabled: false, oidcBound: false };
+  const candidate = error as {
+    data?: { oidcEnabled?: unknown; oidcBound?: unknown };
+    response?: { _data?: { oidcEnabled?: unknown; oidcBound?: unknown } };
+  };
+  const data = candidate.data ?? candidate.response?._data;
+  return { oidcEnabled: data?.oidcEnabled === true, oidcBound: data?.oidcBound === true };
 }
 
 /**
@@ -501,8 +522,17 @@ export function userCenterView(input: {
   error?: string | null;
   pending?: boolean;
   lock?: UserCenterLock | null;
+  /** `{ oidcEnabled, oidcBound }` from the same 401 (defaults: no XAuth). */
+  oidc?: { oidcEnabled: boolean; oidcBound: boolean } | null;
 }): UserCenterView {
-  if (input.lock) return { kind: 'locked', lock: input.lock };
+  if (input.lock) {
+    return {
+      kind: 'locked',
+      lock: input.lock,
+      oidcEnabled: input.oidc?.oidcEnabled === true,
+      oidcBound: input.oidc?.oidcBound === true,
+    };
+  }
   if (input.error) return { kind: 'error', message: input.error };
   if (input.pending && !input.data) return { kind: 'loading' };
   if (!input.data) return { kind: 'error', message: '加载失败，请稍后再试' };

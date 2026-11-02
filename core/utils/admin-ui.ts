@@ -13,6 +13,7 @@
  */
 // Relative imports (not `~/…`): the root `tsc --noEmit` runs without the Nuxt
 // alias table, and type-only imports still resolve at build time.
+import type { OidcSettingsView } from './oidc';
 import { decodeBase64 } from './index';
 import type { AdminSource } from '../../server/utils/admin-sources';
 import type { AdminAccessLog } from '../../server/utils/admin-logs';
@@ -408,6 +409,8 @@ export interface SettingsView {
   defaultSubPath: string;
   reservedRoots: string[];
   adminPath: string;
+  /** XAuth (OIDC) client settings — never the secret value (write-only). */
+  oidc: OidcSettingsView;
 }
 
 /**

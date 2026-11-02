@@ -195,17 +195,27 @@ export function clearUserSessionCookieHeader(): string {
   return `${USER_SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
 }
 
+/** Machine-readable status of a user-center 401. */
+export type UserCenterAuthStatus = 'needs-setup' | 'needs-password' | 'wrong-password' | 'oidc-only';
+
 /**
  * Authentication failure of the user-center gate. A distinct 401 response with
  * a machine-readable `status` so the page can render 设置密码 vs 输入密码:
- * `needs-setup`, `needs-password` or `wrong-password`.
+ * `needs-setup`, `needs-password` or `wrong-password`. `oidc-only` is answered
+ * for a user bound to XAuth (their password login is disabled until the admin
+ * unbinds). `info` carries the two lock-screen booleans (`oidcEnabled`,
+ * `oidcBound`) so the page can show the XAuth button without a second request.
  */
 export class UserCenterAuthError extends Error {
   readonly statusCode = 401 as const;
 
   constructor(
     message: string,
-    readonly status: 'needs-setup' | 'needs-password' | 'wrong-password',
+    readonly status: UserCenterAuthStatus,
+    readonly info: { oidcEnabled: boolean; oidcBound: boolean } = {
+      oidcEnabled: false,
+      oidcBound: false,
+    },
   ) {
     super(message);
     this.name = 'UserCenterAuthError';
