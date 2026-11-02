@@ -55,6 +55,13 @@ export const users = sqliteTable('users', {
    * value never appears in any DTO/response (only `tailscaleKeySet` does).
    */
   tailscaleAuthKey: text('tailscale_auth_key'),
+  /**
+   * Policy-group name the Tailscale outbound's control connection dials
+   * through (`dialer-proxy`). NULL = direct connection. The allowed values are
+   * derived server-side from the user's assigned profile; the export only
+   * emits the field when the name survives that render's group pruning.
+   */
+  tailscaleDialerProxy: text('tailscale_dialer_proxy'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().defaultNow(),
 });
 

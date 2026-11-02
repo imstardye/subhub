@@ -61,7 +61,7 @@ export interface ProduceOptions {
    * `tskey-auth-…` credential when one is bound. Consumed by the mihomo
    * producer alone — every other producer ignores it.
    */
-  tailscale?: { hostname: string; authKey?: string };
+  tailscale?: { hostname: string; authKey?: string; dialerProxy?: string };
 }
 
 export interface RulesetEntry {

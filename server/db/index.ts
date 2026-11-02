@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS users (
   operators TEXT,
   source_order TEXT,
   tailscale_auth_key TEXT,
+  tailscale_dialer_proxy TEXT,
   created_at INTEGER NOT NULL DEFAULT (cast((julianday('now') - 2440587.5)*86400000 as integer))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_token_unique ON users (token);
@@ -177,6 +178,10 @@ function ensureAddedColumns(sqlite: Database.Database): void {
   // Per-user Tailscale auth key (encrypted, write-only): NULL = unbound.
   if (!userColumns.some((column) => column.name === 'tailscale_auth_key')) {
     sqlite.exec('ALTER TABLE users ADD COLUMN tailscale_auth_key TEXT');
+  }
+  // Per-user Tailscale `dialer-proxy` (a policy-group name): NULL = direct.
+  if (!userColumns.some((column) => column.name === 'tailscale_dialer_proxy')) {
+    sqlite.exec('ALTER TABLE users ADD COLUMN tailscale_dialer_proxy TEXT');
   }
 
   const columns = sqlite.pragma('table_info(sources)') as Array<{ name: string }>;

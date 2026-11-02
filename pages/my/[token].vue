@@ -50,6 +50,8 @@ import {
   sourcePatchPayload,
   summaryBar,
   supportsTailscale,
+  tailscaleDialerSelectOptions,
+  tailscaleDialerSelectable,
   tailscaleLink,
   targetLinks,
   trafficCard,
@@ -488,6 +490,46 @@ async function saveTailscaleKey() {
     message.error(apiErrorMessage(err));
   } finally {
     tailscaleBusy.value = false;
+  }
+}
+
+/**
+ * 「经代理连接」: the policy group the Tailscale control connection dials
+ * through (直连 = null). The allowed set is derived server-side from the
+ * assigned profile; the select PUTs immediately and reverts on failure, like
+ * the 订阅排序 card. The stored choice is independent of the key state, so the
+ * panel keeps showing it while the key is rebound/cleared.
+ */
+const tailscaleDialerBusy = ref(false);
+const tailscaleDialerProxy = computed(() => center.value?.tailscaleDialerProxy ?? null);
+const tailscaleDialerOptions = computed(() => center.value?.tailscaleDialerOptions ?? []);
+const tailscaleDialerSelectOptions = computed(() =>
+  tailscaleDialerSelectOptions(tailscaleDialerOptions.value),
+);
+const tailscaleDialerSelectable = computed(() =>
+  tailscaleDialerSelectable(tailscaleDialerOptions.value),
+);
+
+async function changeTailscaleDialer(value: string | null) {
+  if (!center.value || tailscaleDialerBusy.value || tailscaleBusy.value) return;
+  const previous = center.value.tailscaleDialerProxy;
+  if (value === previous) return;
+  center.value.tailscaleDialerProxy = value;
+  tailscaleDialerBusy.value = true;
+  try {
+    const result = await $fetch<{ tailscaleDialerProxy: string | null }>(
+      userCenterApiPath(token.value, 'tailscale-dialer'),
+      { method: 'PUT', body: { group: value } },
+    );
+    if (center.value) center.value.tailscaleDialerProxy = result.tailscaleDialerProxy;
+    message.success(
+      result.tailscaleDialerProxy ? `已改为经 ${result.tailscaleDialerProxy} 连接` : '已改为直连',
+    );
+  } catch (err) {
+    if (center.value) center.value.tailscaleDialerProxy = previous;
+    message.error(apiErrorMessage(err));
+  } finally {
+    tailscaleDialerBusy.value = false;
   }
 }
 
@@ -1213,6 +1255,24 @@ useHead({ title: '我的订阅 · subhub' });
           </div>
           <p class="hint tiny">
             Auth Key 写入后不可查看（写-only），仅用于导出附带 ?tailscale=1 的 Mihomo / Clash 配置。
+          </p>
+          <div class="tailscale-dialer">
+            <span class="account-label">经代理连接</span>
+            <n-select
+              size="small"
+              :value="tailscaleDialerProxy"
+              :options="tailscaleDialerSelectOptions"
+              :disabled="!tailscaleDialerSelectable || tailscaleDialerBusy || tailscaleBusy"
+              :loading="tailscaleDialerBusy"
+              placeholder="直连"
+              @update:value="changeTailscaleDialer"
+            />
+          </div>
+          <p class="hint tiny">
+            控制服务器的连接走所选策略组（直连不通时用）；连通后 P2P 流量仍是直连。
+          </p>
+          <p v-if="!tailscaleDialerSelectable" class="hint tiny">
+            你的规则档暂无可选策略组。
           </p>
         </n-card>
         </div>
@@ -2306,6 +2366,12 @@ useHead({ title: '我的订阅 · subhub' });
 }
 .tailscale-actions {
   margin-top: 12px;
+}
+.tailscale-dialer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
 }
 .account-text {
   display: flex;

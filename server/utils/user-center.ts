@@ -88,6 +88,7 @@ import {
 } from './sub-prefix';
 import type { ExportTarget } from './targets';
 import { isTailscaleKeySet } from './tailscale';
+import { readUserTailscaleDialerProxy, loadTailscaleDialerGroups } from './tailscale-dialer';
 
 /**
  * Kind of a public/shared source as the inclusion list spells it: `shared` is
@@ -279,6 +280,14 @@ export interface UserCenterData {
    * never serialised; the page shows 已绑定/未绑定 and the clear button from this.
    */
   tailscaleKeySet: boolean;
+  /** Stored `dialer-proxy` group for the Tailscale outbound; null = 直连. */
+  tailscaleDialerProxy: string | null;
+  /**
+   * Policy groups the user may pick as the Tailscale dialer (their assigned
+   * profile's `custom_proxy_group=` names, reserved Tailscale names and relays
+   * excluded). Empty = no choice available (直连 only).
+   */
+  tailscaleDialerOptions: string[];
   /** Export targets in display order (the page lists all of them). */
   targets: string[];
   /** Pre-built main link (before any profile suffix). */
@@ -683,6 +692,9 @@ export function loadUserCenterData(
     availableSources: listAvailableSources(db, user.id),
     subPrefix: prefix,
     tailscaleKeySet: isTailscaleKeySet(user),
+    // Names only, never a profile fetch: a URL-only profile just has no options.
+    tailscaleDialerProxy: readUserTailscaleDialerProxy(user),
+    tailscaleDialerOptions: loadTailscaleDialerGroups(db, user),
     targets: [...USER_CENTER_EXPORT_TARGETS],
     mainLink: buildSubscriptionUrl({
       origin: (options.origin ?? '').replace(/\/+$/, ''),
