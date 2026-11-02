@@ -131,6 +131,44 @@ export function mainLink(options: {
   return targetLink({ ...options, target: null });
 }
 
+/** Export targets whose renderer supports the built-in Tailscale outbound. */
+export const TAILSCALE_TARGETS: readonly string[] = ['mihomo', 'clash'];
+
+/** Whether the `?tailscale=1` toggle applies to this target. */
+export function supportsTailscale(target: string | null | undefined): boolean {
+  return target === 'mihomo' || target === 'clash';
+}
+
+/**
+ * Append the opt-in Tailscale query parameter to a subscription URL.
+ *
+ * The export URLs carry no query string today, so the append uses `?`; a URL
+ * that already has one gets `&` (and a `#fragment`, if any, is preserved). An
+ * empty URL is returned unchanged.
+ */
+export function withTailscaleParam(url: string): string {
+  if (!url) return url;
+  const hashIndex = url.indexOf('#');
+  const base = hashIndex >= 0 ? url.slice(0, hashIndex) : url;
+  const hash = hashIndex >= 0 ? url.slice(hashIndex) : '';
+  if (!base) return url;
+  const separator = base.includes('?') ? '&' : '?';
+  return `${base}${separator}tailscale=1${hash}`;
+}
+
+/**
+ * The link a target row should display/QR: the plain URL, or its Tailscale
+ * variant when the toggle is on and the target supports it. A non-mihomo/clash
+ * target is always plain (the page hides the toggle there).
+ */
+export function tailscaleLink(
+  url: string,
+  target: string | null | undefined,
+  enabled: boolean,
+): string {
+  return enabled && supportsTailscale(target) ? withTailscaleParam(url) : url;
+}
+
 /** Byte amounts for the cards: `1.5 GB`, `—` when unknown. */
 export function formatBytes(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—';

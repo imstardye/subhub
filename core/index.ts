@@ -15,6 +15,7 @@ export {
   tryDecodeBase64,
 } from './utils';
 export * from './dns';
+export * from './tailscale';
 export * from './operators';
 export * from './source-order';
 export * from './parsers';

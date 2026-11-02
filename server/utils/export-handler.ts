@@ -31,6 +31,8 @@ interface ExportEvent {
   node: {
     req: {
       headers: Record<string, string | string[] | undefined>;
+      /** Raw request URL (may carry the query string); used for `?tailscale=1`. */
+      url?: string;
       socket?: { remoteAddress?: string | null };
     };
     res: {
@@ -38,6 +40,29 @@ interface ExportEvent {
       setHeader(name: string, value: string | number | string[]): unknown;
     };
   };
+}
+
+/**
+ * Is the opt-in Tailscale flag set? Only the exact values `1` / `true`
+ * (whitespace tolerated) count; anything else — including `0`, `yes`, absent —
+ * leaves the export untouched.
+ */
+export function isTailscaleRequested(value: string | null | undefined): boolean {
+  if (value === null || value === undefined) return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true';
+}
+
+/** Put the `tailscale` query parameter; `event.path` first, raw URL as fallback. */
+export function tailscaleRequestedFromEvent(event: ExportEvent): boolean {
+  for (const raw of [event.path, event.node.req.url]) {
+    if (typeof raw !== 'string') continue;
+    const queryIndex = raw.indexOf('?');
+    if (queryIndex < 0) continue;
+    const params = new URLSearchParams(raw.slice(queryIndex + 1));
+    if (isTailscaleRequested(params.get('tailscale'))) return true;
+  }
+  return false;
 }
 
 /**
@@ -90,6 +115,10 @@ export function requestFromEvent(event: ExportEvent): ExportRequest {
     // Same rule as the login throttle: socket by default, trusted header only
     // when SUBHUB_TRUSTED_IP_HEADER is set (see client-ip.ts).
     ip: getClientIpOrNull(event),
+    // Opt-in built-in Tailscale outbound (mihomo/clash only). Reading it here
+    // keeps the route a thin wrapper; `handleSubscriptionExport` decides
+    // whether the resolved target actually supports it.
+    tailscale: tailscaleRequestedFromEvent(event),
   };
 }
 

@@ -49,6 +49,8 @@ import {
   sourceCreatePayload,
   sourcePatchPayload,
   summaryBar,
+  supportsTailscale,
+  tailscaleLink,
   targetLinks,
   trafficCard,
   userCenterApiPath,
@@ -152,10 +154,15 @@ const currentMainLink = computed(() =>
  * chips switch it (the QR follows).
  */
 const selectedTarget = ref('');
-const activeLink = computed(
-  () =>
-    links.value.find((link) => link.target === selectedTarget.value)?.url ??
-    currentMainLink.value,
+/** Opt-in built-in Tailscale outbound for the mihomo/clash links only. */
+const tailscaleEnabled = ref(false);
+const tailscaleAvailable = computed(() => supportsTailscale(selectedTarget.value || null));
+const activeLink = computed(() =>
+  tailscaleLink(
+    links.value.find((link) => link.target === selectedTarget.value)?.url ?? currentMainLink.value,
+    selectedTarget.value || null,
+    tailscaleEnabled.value,
+  ),
 );
 const activeTargetLabel = computed(
   () => links.value.find((link) => link.target === selectedTarget.value)?.label ?? '',
@@ -448,6 +455,57 @@ async function saveCustomRules() {
     message.error(apiErrorMessage(err));
   } finally {
     rulesBusy.value = false;
+  }
+}
+
+/* ------------------------------------------------------- tailscale key -- */
+/**
+ * Write-only Tailscale binding. The input always starts empty (the stored key
+ * can never be shown back); 保存 only submits a non-empty value, and 清除绑定
+ * (shown only while bound) sends the explicit empty body.
+ */
+const tailscaleInput = ref('');
+const tailscaleBusy = ref(false);
+const tailscaleKeySet = computed(() => center.value?.tailscaleKeySet ?? false);
+
+async function saveTailscaleKey() {
+  const value = tailscaleInput.value.trim();
+  if (!value) {
+    message.error('请输入 Tailscale Auth Key');
+    return;
+  }
+  if (tailscaleBusy.value) return;
+  tailscaleBusy.value = true;
+  try {
+    await $fetch<{ tailscaleKeySet: boolean }>(
+      userCenterApiPath(token.value, 'tailscale-key'),
+      { method: 'PUT', body: { authKey: value } },
+    );
+    tailscaleInput.value = '';
+    await refresh();
+    message.success('Tailscale 已绑定');
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+  } finally {
+    tailscaleBusy.value = false;
+  }
+}
+
+async function clearTailscaleKey() {
+  if (tailscaleBusy.value) return;
+  tailscaleBusy.value = true;
+  try {
+    await $fetch<{ tailscaleKeySet: boolean }>(
+      userCenterApiPath(token.value, 'tailscale-key'),
+      { method: 'PUT', body: { authKey: '' } },
+    );
+    tailscaleInput.value = '';
+    await refresh();
+    message.success('Tailscale 绑定已清除');
+  } catch (err) {
+    message.error(apiErrorMessage(err));
+  } finally {
+    tailscaleBusy.value = false;
   }
 }
 
@@ -934,6 +992,12 @@ useHead({ title: '我的订阅 · subhub' });
             </button>
           </div>
 
+          <div v-if="tailscaleAvailable" class="tailscale-toggle">
+            <n-switch v-model:value="tailscaleEnabled" size="small" />
+            <span>Tailscale 版</span>
+            <span class="hint tiny">当前链接附带 ?tailscale=1</span>
+          </div>
+
           <div class="main-link">
             <code>{{ activeLink }}</code>
             <n-button type="primary" size="small" @click="copy(activeLink, 'active')">
@@ -1109,6 +1173,47 @@ useHead({ title: '我的订阅 · subhub' });
               <n-button secondary @click="openPasswordChange">修改密码</n-button>
             </div>
           </div>
+        </n-card>
+
+        <!-- ---------------------------------------------------- tailscale -- -->
+        <n-card class="panel panel-tailscale" title="Tailscale 绑定">
+          <p class="hint">
+            状态：<n-tag size="small" round :type="tailscaleKeySet ? 'success' : 'default'">
+              {{ tailscaleKeySet ? '已绑定' : '未绑定' }}
+            </n-tag>
+          </p>
+          <n-input
+            v-model:value="tailscaleInput"
+            type="password"
+            show-password-on="click"
+            :disabled="tailscaleBusy"
+            :placeholder="tailscaleKeySet ? '已绑定，留空表示不修改' : '粘贴 tskey-auth-… 后保存'"
+            :input-props="{ 'aria-label': 'Tailscale Auth Key' }"
+          />
+          <div class="row tailscale-actions">
+            <n-button
+              type="primary"
+              size="small"
+              :loading="tailscaleBusy"
+              :disabled="!tailscaleInput.trim()"
+              @click="saveTailscaleKey"
+            >
+              保存
+            </n-button>
+            <n-button
+              v-if="tailscaleKeySet"
+              secondary
+              type="error"
+              size="small"
+              :disabled="tailscaleBusy"
+              @click="clearTailscaleKey"
+            >
+              清除绑定
+            </n-button>
+          </div>
+          <p class="hint tiny">
+            Auth Key 写入后不可查看（写-only），仅用于导出附带 ?tailscale=1 的 Mihomo / Clash 配置。
+          </p>
         </n-card>
         </div>
       </div>
@@ -2182,6 +2287,25 @@ useHead({ title: '我的订阅 · subhub' });
 }
 .account-row:last-child {
   padding-bottom: 2px;
+}
+/* --------------------------------------------------------- tailscale */
+.tailscale-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+}
+.panel-tailscale :deep(.n-input) {
+  margin-top: 10px;
+}
+.panel-tailscale .hint {
+  margin: 10px 0 0;
+}
+.tailscale-actions {
+  margin-top: 12px;
 }
 .account-text {
   display: flex;

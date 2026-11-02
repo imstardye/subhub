@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS users (
   custom_rules_position TEXT,
   operators TEXT,
   source_order TEXT,
+  tailscale_auth_key TEXT,
   created_at INTEGER NOT NULL DEFAULT (cast((julianday('now') - 2440587.5)*86400000 as integer))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_token_unique ON users (token);
@@ -172,6 +173,10 @@ function ensureAddedColumns(sqlite: Database.Database): void {
   // Per-user source ordering (JSON array of source ids): NULL = default order.
   if (!userColumns.some((column) => column.name === 'source_order')) {
     sqlite.exec('ALTER TABLE users ADD COLUMN source_order TEXT');
+  }
+  // Per-user Tailscale auth key (encrypted, write-only): NULL = unbound.
+  if (!userColumns.some((column) => column.name === 'tailscale_auth_key')) {
+    sqlite.exec('ALTER TABLE users ADD COLUMN tailscale_auth_key TEXT');
   }
 
   const columns = sqlite.pragma('table_info(sources)') as Array<{ name: string }>;

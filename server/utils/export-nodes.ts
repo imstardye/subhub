@@ -40,6 +40,7 @@ import {
   buildShadowrocketConfProxies,
   buildShadowrocketSubscription,
   buildSurgeProxies,
+  buildTailscaleInjection,
   compileExcludeRemarks,
   expandRuleProviders,
   MIHOMO_EXPANSION_RULE_TYPES,
@@ -683,22 +684,38 @@ export function renderTargetBody(
   };
 
   if (!profile) {
-    // No profile: dns + proxies + the leading (QUIC) rules.
+    // No profile: dns + proxies + the leading (QUIC) rules (+ the opt-in
+    // Tailscale proxy/group/rules when `options.tailscale` is set).
     return produceMihomo(nodes, dnsOptions);
   }
+
+  // Built-in Tailscale injection (mihomo/clash only). The proxy is appended
+  // after the converted nodes, its group after the profile groups, and its two
+  // rules are inserted by the assembler after the QUIC block and before every
+  // profile rule. Skipped entirely when a node/group already owns the reserved
+  // names (`buildTailscaleInjection`).
+  const builtProxies = buildMihomoProxies(nodes, dnsOptions);
+  const injection = buildTailscaleInjection(
+    dnsOptions.tailscale,
+    builtProxies.map((proxy) => proxy.name),
+    profile.proxyGroups.map((group) => group.name),
+  );
+  const proxies = injection ? [...builtProxies, injection.proxy] : builtProxies;
 
   const sections: Record<string, unknown> = {};
   if (Object.keys(profile.ruleProviders).length > 0) {
     sections['rule-providers'] = profile.ruleProviders;
   }
-  if (profile.proxyGroups.length > 0) sections['proxy-groups'] = profile.proxyGroups;
+  const groups = injection ? [...profile.proxyGroups, injection.group] : profile.proxyGroups;
+  if (groups.length > 0) sections['proxy-groups'] = groups;
 
   // The producer owns the `rules` block so the QUIC rule can be prepended in
   // front of every profile rule (and de-duplicated) in one place.
   const head = stringifyMihomoConfig(
-    buildMihomoProxies(nodes, dnsOptions),
+    proxies,
     dnsOptions,
     profile.rules,
+    injection ? { rules: injection.rules } : null,
   );
   if (Object.keys(sections).length === 0) return head;
 

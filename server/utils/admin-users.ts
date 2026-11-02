@@ -28,6 +28,7 @@ import { hashPassword } from './user-password';
 import { readUserCustomRules, saveUserCustomRules } from './custom-rules';
 import { readUserOperators, saveUserOperators } from './operators';
 import { readUserSourceOrder, saveUserSourceOrder } from './source-order';
+import { clearUserTailscaleKey, isTailscaleKeySet } from './tailscale';
 import type { CustomRulePosition } from '../../core';
 
 /** User as exposed by the API — the token is included on purpose (owner UI). */
@@ -47,6 +48,8 @@ export interface AdminUser {
   operatorsCount: number;
   /** How many source ids the user's saved ordering carries (clear-only in admin). */
   sourceOrderCount: number;
+  /** Whether a Tailscale auth key is bound. The key itself is never exposed. */
+  tailscaleKeySet: boolean;
   createdAt: string;
 }
 
@@ -64,6 +67,7 @@ export function toAdminUser(row: User): AdminUser {
     customRulesPosition: custom.position,
     operatorsCount: readUserOperators(row).count,
     sourceOrderCount: readUserSourceOrder(row).length,
+    tailscaleKeySet: isTailscaleKeySet(row),
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -156,6 +160,20 @@ export async function updateUser(
   // surface is clear-only (`sourceOrder: []`), never reordering.
   if ('sourceOrder' in body) {
     saveUserSourceOrder(db, id, body.sourceOrder);
+    const refreshed = db.select().from(users).where(eq(users.id, id)).get();
+    if (!refreshed) throw new ValidationError('user not found', 404);
+    row = refreshed;
+  }
+
+  // Tailscale binding: clear-only admin surface. The value is a write-only
+  // credential, so the console can never read or set it (`tailscaleAuthKey: ''`
+  // clears; any non-empty value is refused).
+  if ('tailscaleAuthKey' in body) {
+    const raw = body.tailscaleAuthKey;
+    if (raw !== undefined && raw !== null && raw !== '') {
+      throw new ValidationError('tailscaleAuthKey can only be cleared from the admin API');
+    }
+    clearUserTailscaleKey(db, id);
     const refreshed = db.select().from(users).where(eq(users.id, id)).get();
     if (!refreshed) throw new ValidationError('user not found', 404);
     row = refreshed;
