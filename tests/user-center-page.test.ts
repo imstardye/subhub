@@ -32,6 +32,8 @@ import {
   summaryBar,
   progressRing,
   supportsTailscale,
+  tailscaleDialerSelectOptions,
+  tailscaleDialerSelectable,
   tailscaleLink,
   targetLink,
   targetLinks,
@@ -91,6 +93,8 @@ function payload(overrides: Partial<UserCenterData> = {}): UserCenterData {
     availableSources: [],
     subPrefix: 's',
     tailscaleKeySet: false,
+    tailscaleDialerProxy: null,
+    tailscaleDialerOptions: [],
     targets: [...Object.keys(TARGET_LABELS)],
     mainLink: `https://hub.example.com/s/${TOKEN}`,
     ...overrides,
@@ -198,6 +202,17 @@ describe('links', () => {
     expect(targetLink({ ...base, subPrefix: 'sub', target: 'surge' })).toBe(
       `https://hub.example.com/sub/${TOKEN}/surge`,
     );
+  });
+
+  it('offers 直连 first in the Tailscale dialer select', () => {
+    expect(tailscaleDialerSelectOptions([])).toEqual([{ label: '直连', value: null }]);
+    expect(tailscaleDialerSelectOptions(null)).toEqual([{ label: '直连', value: null }]);
+    expect(tailscaleDialerSelectOptions(['🚀 节点选择'])).toEqual([
+      { label: '直连', value: null },
+      { label: '🚀 节点选择', value: '🚀 节点选择' },
+    ]);
+    expect(tailscaleDialerSelectable([])).toBe(false);
+    expect(tailscaleDialerSelectable(['🚀 节点选择'])).toBe(true);
   });
 
   it('appends ?tailscale=1 only for mihomo/clash and only when enabled', () => {

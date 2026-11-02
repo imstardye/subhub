@@ -157,6 +157,33 @@ export function withTailscaleParam(url: string): string {
 }
 
 /**
+ * Options of the 「经代理连接」 select: 直连 (`null`) first, then one entry per
+ * allowed policy group. Empty input still yields 直连, which is the only
+ * reachable choice for a profile-less user.
+ */
+export const TAILSCALE_DIALER_DIRECT_LABEL = '直连';
+
+export function tailscaleDialerSelectOptions(
+  groups: readonly string[] | null | undefined,
+): Array<{ label: string; value: string | null }> {
+  return [
+    { label: TAILSCALE_DIALER_DIRECT_LABEL, value: null },
+    ...(groups ?? [])
+      .filter((group): group is string => typeof group === 'string' && group.trim() !== '')
+      .map((group) => ({ label: group, value: group })),
+  ];
+}
+
+/**
+ * Whether the 经代理连接 select is usable: only when the profile offers at
+ * least one policy group (otherwise 直连 is the only choice and the select is
+ * disabled with its hint).
+ */
+export function tailscaleDialerSelectable(groups: readonly string[] | null | undefined): boolean {
+  return Array.isArray(groups) && groups.length > 0;
+}
+
+/**
  * The link a target row should display/QR: the plain URL, or its Tailscale
  * variant when the toggle is on and the target supports it. A non-mihomo/clash
  * target is always plain (the page hides the toggle there).

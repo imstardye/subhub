@@ -31,6 +31,7 @@ import {
 import { formatUserInfo, type SubscriptionUserInfo } from './userinfo';
 import { buildTailscaleHostname, type ProduceOptions } from '../../core';
 import { readUserTailscaleKey } from './tailscale';
+import { readUserTailscaleDialerProxy } from './tailscale-dialer';
 import {
   contentTypeForTarget,
   fileNameExtensionFor,
@@ -356,9 +357,14 @@ export async function handleSubscriptionExport(
     const produceOptions: ProduceOptions = {};
     if (request.tailscale && (target === 'mihomo' || target === 'clash')) {
       const authKey = readUserTailscaleKey(user);
+      // `dialerProxy` is the stored policy-group name; the core emits it only
+      // when the group survived this render's pruning (an export must never
+      // reference a group that is not in the file).
+      const dialerProxy = readUserTailscaleDialerProxy(user);
       produceOptions.tailscale = {
         hostname: buildTailscaleHostname(user.name),
         ...(authKey ? { authKey } : {}),
+        ...(dialerProxy ? { dialerProxy } : {}),
       };
     }
     body = renderTargetBody(

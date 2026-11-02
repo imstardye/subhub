@@ -14,6 +14,12 @@
  * ProxyGroup"). The verified-good shape is a proxy named `Tailscale` and a
  * group named `🔗 Tailscale` (select, `[Tailscale, DIRECT]`); the rules point at
  * the GROUP.
+ *
+ * Dialer: mihomo dials the outbound's control-plane connection through its
+ * base dialer, which honours `dialer-proxy`. A CN network often cannot reach
+ * the Tailscale control plane directly, so the user may route that single
+ * connection through one of their policy groups (P2P traffic stays direct).
+ * The field is only emitted when the named group is actually in the render.
  */
 import type { ClashProxyGroup, ProduceOptions, ProxyNode } from './types';
 
@@ -61,6 +67,32 @@ export function buildTailscaleHostname(userName: unknown): string {
   return hostname || TAILSCALE_HOSTNAME_FALLBACK;
 }
 
+/**
+ * Names the injection itself owns. A stored `dialer-proxy` pointing at either
+ * of them would be a self-reference, so they are never emitted.
+ */
+export const TAILSCALE_RESERVED_NAMES: readonly string[] = [
+  TAILSCALE_PROXY_NAME,
+  TAILSCALE_GROUP_NAME,
+];
+
+/**
+ * The `dialer-proxy` the render may carry: the stored policy-group name when it
+ * is one of the groups this render actually emits — and not a reserved
+ * Tailscale name. `null` otherwise (an export must never reference a group the
+ * output does not define; mihomo rejects the whole config over a dangling
+ * reference).
+ */
+export function resolveTailscaleDialerProxy(
+  name: string | null | undefined,
+  emittedGroupNames: readonly string[],
+): string | null {
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  if (!trimmed) return null;
+  if (TAILSCALE_RESERVED_NAMES.includes(trimmed)) return null;
+  return emittedGroupNames.includes(trimmed) ? trimmed : null;
+}
+
 /** A planned injection: the raw proxy, its group and the head rules. */
 export interface TailscaleInjection {
   proxy: ProxyNode;
@@ -75,7 +107,8 @@ export interface TailscaleInjection {
  * Returns `null` when no option was passed, or when the export already carries
  * a node named `Tailscale` or a group named `🔗 Tailscale` (names share one
  * namespace, so injecting either would collide). `proxyNames`/`groupNames` are
- * the names the render will actually emit.
+ * the names the render will actually emit; `groupNames` also decides whether
+ * `option.dialerProxy` survives (see `resolveTailscaleDialerProxy`).
  */
 export function buildTailscaleInjection(
   option: ProduceOptions['tailscale'],
@@ -85,6 +118,10 @@ export function buildTailscaleInjection(
   if (!option) return null;
   if (proxyNames.includes(TAILSCALE_PROXY_NAME)) return null;
   if (groupNames.includes(TAILSCALE_GROUP_NAME)) return null;
+  // The control connection may be dialled through one of the render's own
+  // policy groups (mihomo's `dialer-proxy`). Omitted silently when the stored
+  // name did not survive this render.
+  const dialerProxy = resolveTailscaleDialerProxy(option.dialerProxy, groupNames);
   // Field order matches mihomo's option struct.
   const proxy = {
     name: TAILSCALE_PROXY_NAME,
@@ -95,6 +132,7 @@ export function buildTailscaleInjection(
     ephemeral: false,
     udp: true,
     'accept-routes': true,
+    ...(dialerProxy ? { 'dialer-proxy': dialerProxy } : {}),
   } as unknown as ProxyNode;
   return {
     proxy,

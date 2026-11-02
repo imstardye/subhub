@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS users (
   tailscale_auth_key TEXT,
   oidc_sub TEXT,
   oidc_email TEXT,
+  tailscale_dialer_proxy TEXT,
   created_at INTEGER NOT NULL DEFAULT (cast((julianday('now') - 2440587.5)*86400000 as integer))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS users_token_unique ON users (token);
@@ -195,6 +196,10 @@ function ensureAddedColumns(sqlite: Database.Database): void {
 
   sqlite.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_oidc_sub_unique ON users (oidc_sub)');
   sqlite.exec('CREATE INDEX IF NOT EXISTS users_oidc_email_idx ON users (oidc_email)');
+  // Per-user Tailscale `dialer-proxy` (a policy-group name): NULL = direct.
+  if (!userColumns.some((column) => column.name === 'tailscale_dialer_proxy')) {
+    sqlite.exec('ALTER TABLE users ADD COLUMN tailscale_dialer_proxy TEXT');
+  }
 
   const columns = sqlite.pragma('table_info(sources)') as Array<{ name: string }>;
   const hasOwner = columns.some((column) => column.name === 'owner_user_id');

@@ -20,7 +20,9 @@ import {
   TAILSCALE_PROXY_NAME,
   TAILSCALE_RULES,
   buildTailscaleHostname,
+  buildTailscaleInjection,
   produceMihomo,
+  resolveTailscaleDialerProxy,
   stringifyMihomoConfig,
   type ProxyNode,
 } from '../core';
@@ -32,13 +34,19 @@ import { profiles, sources, users } from '../server/db/schema';import {
   readUserTailscaleKey,
   setUserTailscaleKey,
 } from '../server/utils/tailscale';
+import {
+  loadTailscaleDialerGroups,
+  tailscaleDialerGroupsFromIni,
+} from '../server/utils/tailscale-dialer';
 import { toAdminUser, updateUser } from '../server/utils/admin-users';
+import { tailscaleDialerSelectOptions, tailscaleDialerSelectable } from '../core/utils/user-center';
 import { loadUserCenterData } from '../server/utils/user-center';
 import { handleSubscriptionExport, resetExportRateLimiter } from '../server/utils/subscription';
 import { isTailscaleRequested, requestFromEvent } from '../server/utils/export-handler';
 import { hashPassword } from '../server/utils/user-password';
 import { issueUserSession, USER_SESSION_COOKIE } from '../server/utils/user-session';
 import userTailscaleKeyHandler from '../server/api/user/[token]/tailscale-key.put';
+import userTailscaleDialerHandler from '../server/api/user/[token]/tailscale-dialer.put';
 import { makeApiEvent } from './helpers/admin-api';
 import type { AdminApiEvent } from '../server/utils/admin-api';
 
@@ -425,5 +433,340 @@ describe('export handler ?tailscale=1', () => {
     expect(document['proxy-groups'].map((g) => g.name)).toEqual([TAILSCALE_GROUP_NAME]);
     // No duplicate group and no injected tailscale proxy.
     expect(document['proxy-groups']).toHaveLength(1);
+  });
+});
+
+/* --------------------------------------------------------------------------
+ * dialer-proxy: route the Tailscale control connection through a policy group
+ * ------------------------------------------------------------------------ */
+
+/**
+ * A profile whose groups all survive a render of `fixture-ss` (the reserved
+ * `🔗 Tailscale` name is only *declared* here so the derivation can be shown to
+ * exclude it; exporting assigns a variant without it, see `assignExportProfile`).
+ */
+const DIALER_PROFILE_INI = [
+  '[custom]',
+  'custom_proxy_group=🚀 节点选择`select`.*',
+  'custom_proxy_group=🔗 备用链路`select`fixture-ss',
+  'custom_proxy_group=🔗 Tailscale`select`.*',
+  'ruleset=🚀 节点选择,[]MATCH',
+].join('\n');
+
+/** The same profile without the reserved-name group (safe to export). */
+const EXPORT_PROFILE_INI = [
+  '[custom]',
+  'custom_proxy_group=🚀 节点选择`select`.*',
+  'custom_proxy_group=🔗 备用链路`select`fixture-ss',
+  'ruleset=🚀 节点选择,[]MATCH',
+].join('\n');
+
+function assignProfile(iniText: string, name = 'dialer-profile'): number {
+  db.insert(profiles).values({ name, iniText }).run();
+  const profileId = db.select({ id: profiles.id }).from(profiles).get()!.id;
+  db.update(users).set({ profileId }).where(eq(users.id, userId)).run();
+  return profileId;
+}
+
+describe('buildTailscaleInjection dialer-proxy', () => {
+  const groups = ['🚀 节点选择', '🔗 备用链路'];
+
+  it('emits dialer-proxy after accept-routes when the group is emitted', () => {
+    const injected = buildTailscaleInjection(
+      { hostname: 'subhub-alice-wong', dialerProxy: '🚀 节点选择' },
+      [NODE_NAME],
+      groups,
+    );
+    const proxy = injected!.proxy as unknown as Record<string, unknown>;
+    expect(proxy['dialer-proxy']).toBe('🚀 节点选择');
+    expect(Object.keys(proxy)).toEqual([
+      'name',
+      'type',
+      'hostname',
+      'state-dir',
+      'ephemeral',
+      'udp',
+      'accept-routes',
+      'dialer-proxy',
+    ]);
+
+    const second = buildTailscaleInjection(
+      { hostname: 'subhub-alice-wong', dialerProxy: '🔗 备用链路' },
+      [NODE_NAME],
+      groups,
+    );
+    expect(second?.proxy['dialer-proxy']).toBe('🔗 备用链路');
+  });
+
+  it('omits the field when the group is not among the emitted groups', () => {
+    const injected = buildTailscaleInjection(
+      { hostname: 'subhub-alice-wong', dialerProxy: '不存在的组' },
+      [NODE_NAME],
+      groups,
+    );
+    expect(injected).not.toBeNull();
+    expect(injected!.proxy).not.toHaveProperty('dialer-proxy');
+  });
+
+  it('never emits a reserved Tailscale name even if it is in the group list', () => {
+    for (const name of [TAILSCALE_PROXY_NAME, TAILSCALE_GROUP_NAME]) {
+      expect(resolveTailscaleDialerProxy(name, [...groups, name])).toBeNull();
+    }
+    // (A group named 🔗 Tailscale would also skip the whole injection — that
+    // guard is covered above; the proxy name is a node name, not a group.)
+    expect(resolveTailscaleDialerProxy(` ${TAILSCALE_PROXY_NAME} `, [TAILSCALE_PROXY_NAME])).toBeNull();
+    expect(resolveTailscaleDialerProxy('🚀 节点选择', groups)).toBe('🚀 节点选择');
+  });
+
+  it('omits the field when unset, blank or null', () => {
+    for (const dialerProxy of [undefined, null, '', '   ']) {
+      const injected = buildTailscaleInjection(
+        { hostname: 'subhub-alice-wong', dialerProxy: dialerProxy as string | undefined },
+        [NODE_NAME],
+        groups,
+      );
+      expect(injected?.proxy).not.toHaveProperty('dialer-proxy');
+    }
+  });
+
+  it('is byte-identical to the no-dialer output when nothing is configured', () => {
+    const plain = produceMihomo([node()], { tailscale: { hostname: 'subhub-alice-wong' } });
+    expect(plain).not.toContain('dialer-proxy');
+    const absent = produceMihomo([node()], {
+      tailscale: { hostname: 'subhub-alice-wong', dialerProxy: undefined },
+    });
+    expect(absent).toBe(plain);
+    // A configured dialer on a group-less render (no-profile path) is dropped.
+    const noGroups = produceMihomo([node()], {
+      tailscale: { hostname: 'subhub-alice-wong', dialerProxy: '🚀 节点选择' },
+    });
+    expect(noGroups).toBe(plain);
+  });
+});
+
+describe('tailscale dialer allowed-set derivation', () => {
+  it('lists the INI groups minus reserved names, relay groups and duplicates', () => {
+    expect(tailscaleDialerGroupsFromIni(DIALER_PROFILE_INI)).toEqual([
+      '🚀 节点选择',
+      '🔗 备用链路',
+    ]);
+    expect(tailscaleDialerGroupsFromIni([
+      'custom_proxy_group=A`select`.*',
+      'custom_proxy_group=Chain`relay`A`B',
+      'custom_proxy_group=A`select`.*',
+      'custom_proxy_group=Tailscale`select`.*',
+      'custom_proxy_group=🔗 Tailscale`select`.*',
+    ].join('\n'))).toEqual(['A']);
+    expect(tailscaleDialerGroupsFromIni(null)).toEqual([]);
+    expect(tailscaleDialerGroupsFromIni('')).toEqual([]);
+  });
+
+  it('gives a profile-less user an empty option set', () => {
+    expect(loadTailscaleDialerGroups(db, userRow())).toEqual([]);
+  });
+});
+
+async function callDialerPut(
+  body: unknown,
+  behavior: { session?: boolean } = {},
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const { event } = makeApiEvent({
+    url: `/api/user/${TOKEN}/tailscale-dialer`,
+    method: 'PUT',
+    body,
+  });
+  if (behavior.session !== false) {
+    const session = issueUserSession({ id: userId, passwordVersion: 1 });
+    event.node.req.headers.cookie = `${USER_SESSION_COOKIE}=${encodeURIComponent(session.token)}`;
+  }
+  const result = (await userTailscaleDialerHandler(event as AdminApiEvent, { db })) as Record<
+    string,
+    unknown
+  >;
+  return { status: event.node.res.statusCode, body: result };
+}
+
+describe('user API PUT /api/user/:token/tailscale-dialer', () => {
+  beforeEach(() => {
+    assignProfile(DIALER_PROFILE_INI);
+  });
+
+  it('is locked without a valid /my session', async () => {
+    const result = await callDialerPut({ group: '🚀 节点选择' }, { session: false });
+    expect(result.status).toBe(401);
+    expect(result.body).toMatchObject({ status: 'needs-password' });
+  });
+
+  it('stores a valid group and the /my payload reflects it', async () => {
+    const result = await callDialerPut({ group: '🚀 节点选择' });
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({
+      tailscaleDialerProxy: '🚀 节点选择',
+      tailscaleDialerOptions: ['🚀 节点选择', '🔗 备用链路'],
+    });
+    expect(userRow().tailscaleDialerProxy).toBe('🚀 节点选择');
+    const data = loadUserCenterData(db, TOKEN) as {
+      tailscaleDialerProxy: string | null;
+      tailscaleDialerOptions: string[];
+    };
+    expect(data.tailscaleDialerProxy).toBe('🚀 节点选择');
+    expect(data.tailscaleDialerOptions).toEqual(['🚀 节点选择', '🔗 备用链路']);
+  });
+
+  it('rejects an unknown or reserved group with 400 and keeps the value', async () => {
+    await callDialerPut({ group: '🚀 节点选择' });
+    for (const group of ['不存在的组', '🔗 Tailscale', 'Tailscale', 'DIRECT', '.*']) {
+      const result = await callDialerPut({ group });
+      expect(result.status).toBe(400);
+    }
+    expect(userRow().tailscaleDialerProxy).toBe('🚀 节点选择');
+  });
+
+  it('rejects a non-string group with 400', async () => {
+    const result = await callDialerPut({ group: 42 });
+    expect(result.status).toBe(400);
+  });
+
+  it('clears with null and with a blank string', async () => {
+    await callDialerPut({ group: '🔗 备用链路' });
+    const cleared = await callDialerPut({ group: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.tailscaleDialerProxy).toBeNull();
+    expect(userRow().tailscaleDialerProxy).toBeNull();
+
+    await callDialerPut({ group: '🔗 备用链路' });
+    const blank = await callDialerPut({ group: '  ' });
+    expect(blank.status).toBe(200);
+    expect(userRow().tailscaleDialerProxy).toBeNull();
+  });
+
+  it('refuses any group for a profile-less user and offers only 直连', async () => {
+    db.update(users).set({ profileId: null }).where(eq(users.id, userId)).run();
+    const data = loadUserCenterData(db, TOKEN) as {
+      tailscaleDialerProxy: string | null;
+      tailscaleDialerOptions: string[];
+    };
+    expect(data.tailscaleDialerOptions).toEqual([]);
+    const result = await callDialerPut({ group: '🚀 节点选择' });
+    expect(result.status).toBe(400);
+  });
+
+  it('keeps the stored choice visible while the key state changes', async () => {
+    await callTailscalePut({ authKey: AUTH_KEY });
+    await callDialerPut({ group: '🚀 节点选择' });
+    await callTailscalePut({ authKey: '' });
+    const data = loadUserCenterData(db, TOKEN) as {
+      tailscaleKeySet: boolean;
+      tailscaleDialerProxy: string | null;
+    };
+    expect(data.tailscaleKeySet).toBe(false);
+    expect(data.tailscaleDialerProxy).toBe('🚀 节点选择');
+  });
+});
+
+describe('/my GET payload tailscale dialer options', () => {
+  it('derives them from the assigned profile and excludes the reserved names', () => {
+    assignProfile(DIALER_PROFILE_INI);
+    const data = loadUserCenterData(db, TOKEN) as {
+      tailscaleDialerProxy: string | null;
+      tailscaleDialerOptions: string[];
+    };
+    expect(data.tailscaleDialerProxy).toBeNull();
+    expect(data.tailscaleDialerOptions).toEqual(['🚀 节点选择', '🔗 备用链路']);
+    expect(data.tailscaleDialerOptions).not.toContain(TAILSCALE_GROUP_NAME);
+    expect(data.tailscaleDialerOptions).not.toContain(TAILSCALE_PROXY_NAME);
+  });
+
+  it('select options put 直连 first and are disabled without groups', () => {
+    expect(tailscaleDialerSelectOptions([])).toEqual([{ label: '直连', value: null }]);
+    expect(tailscaleDialerSelectOptions(['A', 'B'])).toEqual([
+      { label: '直连', value: null },
+      { label: 'A', value: 'A' },
+      { label: 'B', value: 'B' },
+    ]);
+    expect(tailscaleDialerSelectable([])).toBe(false);
+    expect(tailscaleDialerSelectable(['A'])).toBe(true);
+  });
+});
+
+describe('export handler dialer-proxy', () => {
+  it('emits dialer-proxy for a stored group that survives the render', async () => {
+    assignProfile(EXPORT_PROFILE_INI);
+    await callDialerPut({ group: '🚀 节点选择' });
+
+    const result = await exportPath(`/s/${TOKEN}/mihomo?tailscale=1`);
+    expect(result.status).toBe(200);
+    const document = parseYaml(result.body) as {
+      proxies: Array<Record<string, unknown>>;
+      rules: string[];
+      'proxy-groups': Array<{ name: string }>;
+    };
+    expect(document.proxies[1]).toMatchObject({
+      name: TAILSCALE_PROXY_NAME,
+      'dialer-proxy': '🚀 节点选择',
+    });
+    expect(result.body).toContain("dialer-proxy: 🚀 节点选择");
+    expect(document.rules).toEqual([QUIC_BLOCK_RULE, ...TAILSCALE_RULES, 'MATCH,🚀 节点选择']);
+    expect(document['proxy-groups'].map((g) => g.name)).toEqual([
+      '🚀 节点选择',
+      '🔗 备用链路',
+      TAILSCALE_GROUP_NAME,
+    ]);
+  });
+
+  it('drops the field when that group prunes away, keeping the rest intact', async () => {
+    // 🔗 备用链路 is selectable here (the dialer allowlist is name-based), but
+    // its regex matches no node, so the prune drops it from this export while
+    // the choice stays stored. 🚀 节点选择 survives, so the rest of the
+    // injection (proxy/group/rules) must be intact.
+    assignProfile([
+      '[custom]',
+      'custom_proxy_group=🚀 节点选择`select`.*',
+      'custom_proxy_group=🔗 备用链路`select`nothing-matches',
+      'ruleset=🚀 节点选择,[]MATCH',
+    ].join('\n'));
+    const result = await callDialerPut({ group: '🔗 备用链路' });
+    expect(result.status).toBe(200);
+    expect(result.body.tailscaleDialerProxy).toBe('🔗 备用链路');
+
+    const exported = await exportPath(`/s/${TOKEN}/mihomo?tailscale=1`);
+    const document = parseYaml(exported.body) as {
+      proxies: Array<Record<string, unknown>>;
+      rules: string[];
+      'proxy-groups': Array<{ name: string }>;
+    };
+    expect(exported.body).not.toContain('dialer-proxy');
+    expect(document['proxy-groups'].map((g) => g.name)).toEqual([
+      '🚀 节点选择',
+      TAILSCALE_GROUP_NAME,
+    ]);
+    expect(document.proxies.map((proxy) => proxy.name)).toEqual([
+      NODE_NAME,
+      TAILSCALE_PROXY_NAME,
+    ]);
+    expect(document.proxies[1]).toMatchObject({ name: TAILSCALE_PROXY_NAME, type: 'tailscale' });
+    expect(document.proxies[1]).not.toHaveProperty('dialer-proxy');
+    expect(document.rules).toEqual([QUIC_BLOCK_RULE, ...TAILSCALE_RULES, 'MATCH,🚀 节点选择']);
+  });
+
+  it('leaves the export byte-identical when no dialer is stored', async () => {
+    assignProfile(EXPORT_PROFILE_INI);
+    const withProfile = await exportPath(`/s/${TOKEN}/mihomo?tailscale=1`);
+    expect(withProfile.body).not.toContain('dialer-proxy');
+    const plain = await exportPath(`/s/${TOKEN}/mihomo`);
+    expect(plain.body).not.toContain('dialer-proxy');
+  });
+
+  it('never emits a reserved name (a stray stored value is dropped)', async () => {
+    assignProfile(EXPORT_PROFILE_INI);
+    // The INI's 🔗 Tailscale group makes the whole injection skip; the stored
+    // value can only be set while the profile still offers other groups.
+    await callDialerPut({ group: '🚀 节点选择' });
+    db.update(users)
+      .set({ tailscaleDialerProxy: TAILSCALE_PROXY_NAME })
+      .where(eq(users.id, userId))
+      .run();
+    const result = await exportPath(`/s/${TOKEN}/mihomo?tailscale=1`);
+    expect(result.body).not.toContain('dialer-proxy');
   });
 });
