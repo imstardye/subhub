@@ -29,6 +29,8 @@ import {
   type ProfileIniResolver,
 } from './export-nodes';
 import { formatUserInfo, type SubscriptionUserInfo } from './userinfo';
+import { buildTailscaleHostname, type ProduceOptions } from '../../core';
+import { readUserTailscaleKey } from './tailscale';
 import {
   contentTypeForTarget,
   fileNameExtensionFor,
@@ -117,6 +119,12 @@ export interface ExportRequest {
   profile?: string | null;
   userAgent?: string | null;
   ip?: string | null;
+  /**
+   * Opt-in built-in Tailscale outbound (`?tailscale=1`). Only the mihomo and
+   * clash targets render it; every other target ignores the flag and stays
+   * byte-identical.
+   */
+  tailscale?: boolean;
 }
 
 export interface ExportResult {
@@ -341,10 +349,22 @@ export async function handleSubscriptionExport(
       deps.resolveProfileIni,
       overrideProfileId,
     );
+    // Built-in Tailscale outbound: only the mihomo/clash renderer reads the
+    // option. The auth key is decrypted at render time and never logged or
+    // serialised on its own; a missing/failed decrypt just yields an
+    // unauthenticated outbound (an export must never fail over it).
+    const produceOptions: ProduceOptions = {};
+    if (request.tailscale && (target === 'mihomo' || target === 'clash')) {
+      const authKey = readUserTailscaleKey(user);
+      produceOptions.tailscale = {
+        hostname: buildTailscaleHostname(user.name),
+        ...(authKey ? { authKey } : {}),
+      };
+    }
     body = renderTargetBody(
       target,
       loaded?.nodes ?? applyStoredOperators(db, user.id, nodes),
-      {},
+      produceOptions,
       loaded?.profile ?? null,
     );
     userinfo = collectUserUserInfo(db, user.id);

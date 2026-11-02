@@ -49,6 +49,12 @@ export const users = sqliteTable('users', {
    * sources keep their default position at the tail. NULL/empty = default.
    */
   sourceOrder: text('source_order'),
+  /**
+   * The user's Tailscale auth key (`tskey-auth-…`), stored ENCRYPTED with
+   * `server/db/crypto.ts` like a source URL. NULL = unbound. Write-only: the
+   * value never appears in any DTO/response (only `tailscaleKeySet` does).
+   */
+  tailscaleAuthKey: text('tailscale_auth_key'),
   createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull().defaultNow(),
 });
 

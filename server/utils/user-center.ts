@@ -87,6 +87,7 @@ import {
   resolveSubPrefix,
 } from './sub-prefix';
 import type { ExportTarget } from './targets';
+import { isTailscaleKeySet } from './tailscale';
 
 /**
  * Kind of a public/shared source as the inclusion list spells it: `shared` is
@@ -273,6 +274,11 @@ export interface UserCenterData {
   availableSources: UserCenterAvailableSource[];
   /** Subscription prefix the links are built with (seam: feat/sub-path). */
   subPrefix: string;
+  /**
+   * Whether a Tailscale auth key is bound. The key itself is write-only and
+   * never serialised; the page shows 已绑定/未绑定 and the clear button from this.
+   */
+  tailscaleKeySet: boolean;
   /** Export targets in display order (the page lists all of them). */
   targets: string[];
   /** Pre-built main link (before any profile suffix). */
@@ -676,6 +682,7 @@ export function loadUserCenterData(
     ownSources: dedicated.map(toOwnSource),
     availableSources: listAvailableSources(db, user.id),
     subPrefix: prefix,
+    tailscaleKeySet: isTailscaleKeySet(user),
     targets: [...USER_CENTER_EXPORT_TARGETS],
     mainLink: buildSubscriptionUrl({
       origin: (options.origin ?? '').replace(/\/+$/, ''),

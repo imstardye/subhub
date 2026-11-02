@@ -31,6 +31,8 @@ import {
   sourcePatchPayload,
   summaryBar,
   progressRing,
+  supportsTailscale,
+  tailscaleLink,
   targetLink,
   targetLinks,
   trafficBar,
@@ -39,6 +41,7 @@ import {
   userCenterLockFromError,
   userCenterPath,
   userCenterView,
+  withTailscaleParam,
 } from '../core/utils/user-center';
 import { qrModules, qrSvgPath } from '../core/utils/qr';
 import { gateScope } from '../core/utils/admin-entrance';
@@ -78,6 +81,7 @@ function payload(overrides: Partial<UserCenterData> = {}): UserCenterData {
     ownSources: [],
     availableSources: [],
     subPrefix: 's',
+    tailscaleKeySet: false,
     targets: [...Object.keys(TARGET_LABELS)],
     mainLink: `https://hub.example.com/s/${TOKEN}`,
     ...overrides,
@@ -163,6 +167,32 @@ describe('links', () => {
     expect(targetLink({ ...base, subPrefix: 'sub', target: 'surge' })).toBe(
       `https://hub.example.com/sub/${TOKEN}/surge`,
     );
+  });
+
+  it('appends ?tailscale=1 only for mihomo/clash and only when enabled', () => {
+    const mihomo = `https://hub.example.com/s/${TOKEN}/mihomo`;
+    const clash = `https://hub.example.com/s/${TOKEN}/clash`;
+    expect(supportsTailscale('mihomo')).toBe(true);
+    expect(supportsTailscale('clash')).toBe(true);
+    for (const target of ['surge', 'uri', 'singbox', null, undefined, '']) {
+      expect(supportsTailscale(target as string | null | undefined)).toBe(false);
+    }
+    // Export URLs carry no query string today; the append uses `?`.
+    expect(withTailscaleParam(mihomo)).toBe(`${mihomo}?tailscale=1`);
+    // A URL that already has a query gets `&`; a fragment is preserved.
+    expect(withTailscaleParam(`${clash}?x=1`)).toBe(`${clash}?x=1&tailscale=1`);
+    expect(withTailscaleParam(`${mihomo}#frag`)).toBe(`${mihomo}?tailscale=1#frag`);
+    expect(withTailscaleParam('')).toBe('');
+
+    expect(tailscaleLink(mihomo, 'mihomo', true)).toBe(`${mihomo}?tailscale=1`);
+    expect(tailscaleLink(clash, 'clash', true)).toBe(`${clash}?tailscale=1`);
+    // Disabled, or a target that does not support it, stays plain.
+    expect(tailscaleLink(mihomo, 'mihomo', false)).toBe(mihomo);
+    expect(tailscaleLink(`https://hub.example.com/s/${TOKEN}/surge`, 'surge', true)).toBe(
+      `https://hub.example.com/s/${TOKEN}/surge`,
+    );
+    // The main link (no target) is never wrapped even when the toggle is on.
+    expect(tailscaleLink(mainLink(base), null, true)).toBe(mainLink(base));
   });
 
   it('offers the assigned profile first, then every other name once', () => {

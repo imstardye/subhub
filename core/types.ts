@@ -55,6 +55,13 @@ export interface ProduceOptions {
    * `false` disables it. Profile rules are appended after this block.
    */
   leadingRules?: string[] | false;
+  /**
+   * Opt-in built-in Tailscale outbound (mihomo/clash only, via `?tailscale=1`).
+   * `hostname` is always emitted; `authKey` carries the user's stored
+   * `tskey-auth-…` credential when one is bound. Consumed by the mihomo
+   * producer alone — every other producer ignores it.
+   */
+  tailscale?: { hostname: string; authKey?: string };
 }
 
 export interface RulesetEntry {

@@ -7,8 +7,9 @@
  * See the repository LICENSE file.
  */
 
-import type { ProduceOptions, ProxyNode } from '../types';
+import type { ClashProxyGroup, ProduceOptions, ProxyNode } from '../types';
 import { resolveDnsTemplate } from '../dns';
+import { buildTailscaleInjection } from '../tailscale';
 import { stringify as stringifyYaml } from 'yaml';
 import {
   normalizeAlpn,
@@ -149,25 +150,49 @@ export function produceMihomo(
   nodes: ProxyNode[],
   options: ProduceOptions = {},
 ): string {
-  return stringifyMihomoConfig(buildMihomoProxies(nodes, options), options);
+  const proxies = buildMihomoProxies(nodes, options);
+  // Built-in Tailscale outbound (opt-in). The proxy is appended AFTER the
+  // converted nodes; the group and head rules go through the shared assembler
+  // below so the QUIC block stays first. Without `options.tailscale` this is a
+  // no-op and the output is byte-identical.
+  const injection = buildTailscaleInjection(
+    options.tailscale,
+    proxies.map((proxy) => proxy.name),
+    [],
+  );
+  return stringifyMihomoConfig(
+    injection ? [...proxies, injection.proxy] : proxies,
+    options,
+    [],
+    injection ? { rules: injection.rules, group: injection.group } : null,
+  );
 }
 
 /**
  * Assemble a mihomo body. `leadingRules` are emitted before `profileRules`;
  * QUIC is injected unless it is disabled or already present.
+ *
+ * `injection` is the optional built-in Tailscale block (see
+ * `core/tailscale.ts`): its `rules` are inserted right after the leading rules
+ * and before `profileRules`, and its `group` is emitted as a `proxy-groups`
+ * section when the caller does not assemble groups itself (the no-profile
+ * `produceMihomo` path). Callers that build their own `proxy-groups` pass only
+ * `{ rules }` and append the group to their own list.
  */
 export function stringifyMihomoConfig(
   proxies: ProxyNode[],
   options: ProduceOptions = {},
   profileRules: string[] = [],
+  injection: { rules?: readonly string[]; group?: ClashProxyGroup } | null = null,
 ): string {
   const leading = buildLeadingRules(profileRules, options);
-  const rules = [...leading, ...profileRules];
+  const rules = [...leading, ...(injection?.rules ?? []), ...profileRules];
   return stringifyYamlBlocks({
     dns: resolveDnsTemplate(options.dnsTemplate),
     proxies,
     // No `rules` key at all when there is nothing to emit (e.g. the profile
     // already blocks QUIC and has no other rules).
     ...(rules.length > 0 ? { rules } : {}),
+    ...(injection?.group ? { 'proxy-groups': [injection.group] } : {}),
   }, options);
 }
