@@ -553,11 +553,11 @@ describe('empty-group pruning on the export path', () => {
 
     const nodes = [
       ...liveNodes().slice(0, 2),
-      { type: 'vless', name: '🇺🇸 vless-ads 01', server: 'ads.example.com', port: 443, uuid: 'x', tls: true } as ProxyNode,
+      { type: 'vless', name: '🇺🇸 vless-ads 01', server: 'ads.example.com', port: 443, uuid: 'x', tls: true, network: 'kcp' } as ProxyNode,
     ];
     const loaded = await loadUserProfile(db, surgeUserId, 'surge', nodes, async () => ini);
     expect(loaded).not.toBeNull();
-    // Surge cannot emit the VLESS node, so 广告节点 (its only match) dies and
+    // Surge cannot emit the mKCP VLESS node, so 广告节点 (its only match) dies and
     // the relay that chained on it dies too.
     expect(loaded!.profile.proxyGroups.map((entry) => entry.name)).toEqual(['🚀 节点选择']);
     const body = renderTargetBody('surge', loaded!.nodes, {}, loaded!.profile);

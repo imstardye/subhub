@@ -120,6 +120,11 @@ describe('VLESS field fidelity', () => {
       expect(build([encrypted]).skipped[0]?.reason).toContain('encryption');
     }
     expect(buildShadowrocketSubscription([encrypted]).lines[0]).toContain(`encryption=${encryption}`);
-    expect(buildSurgeProxies([encrypted, masked, mlkem]).skipped).toHaveLength(3);
+    const surge = buildSurgeProxies([encrypted, masked, mlkem]);
+    expect(surge.lines[0]).toContain(`encryption=${encryption}`);
+    expect(surge.skipped).toEqual([
+      { name: 'Masked', reason: expect.stringContaining('FinalMask') },
+      { name: 'ML-KEM', reason: expect.stringContaining(flag) },
+    ]);
   });
 });

@@ -222,12 +222,11 @@ describe('GET /s/:token valid export', () => {
     const surge = await call(TOKEN, 'surge');
     const surgeLines = surge.body.split('\n');
     expect(surgeLines[0]).toContain('fixture-ss = ss,');
-    // Surge has no VLESS: the node is skipped, its group disappears, the
-    // catch-all group keeps only the emitted node, and there are no rules.
-    expect(surge.body).not.toContain('fixture-vless');
-    expect(surge.body).toContain('🚀 节点选择 = select,fixture-ss');
-    expect(surge.body).toContain('auto = url-test,fixture-ss,url=https://example.com/generate_204,interval=300');
-    expect(surge.body).not.toContain('vless-only');
+    // Native VLESS participates in profile groups; rules remain client-owned.
+    expect(surge.body).toContain('fixture-vless = vless,');
+    expect(surge.body).toContain('🚀 节点选择 = select,fixture-ss,fixture-vless');
+    expect(surge.body).toContain('auto = url-test,fixture-ss,fixture-vless,url=https://example.com/generate_204,interval=300');
+    expect(surge.body).toContain('vless-only = select,fixture-vless');
     expect(surge.body).not.toContain('MATCH,');
 
     resetExportRateLimiter();
@@ -351,7 +350,8 @@ describe('GET /s/:token valid export', () => {
     expect(surge.headers['content-type']).toBe('text/plain; charset=utf-8');
     expect(surge.headers['content-disposition']).toContain('-surge.conf');
     expect(surge.body).toBe(
-      'fixture-ss = ss, example.com, 8388, encrypt-method=aes-128-gcm, password=fake, udp-relay=true\n',
+      'fixture-ss = ss, example.com, 8388, encrypt-method=aes-128-gcm, password=fake, udp-relay=true\n' +
+      'fixture-vless = vless, vless.example.com, 443, username=11111111-2222-3333-4444-555555555555, tls=true, sni=vless.example.com\n',
     );
     // No YAML structure of any kind (no `proxies:` list, no `- name:` items).
     expect(surge.body).not.toContain('proxies:');

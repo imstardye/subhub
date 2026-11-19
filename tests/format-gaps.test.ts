@@ -60,10 +60,11 @@ describe('format gaps: per-target emitted counts on the mixed fixture', () => {
     expect(parseSubscription(body).map((entry) => entry.name)).toEqual(names);
   });
 
-  it('surge emits ss/anytls/tuic/all hy2 and Snell v6, and still skips vless/ssr', () => {
+  it('surge emits ss/vless/anytls/tuic/all hy2 and Snell v6, and skips ssr', () => {
     const proxies = buildSurgeProxies(FIXTURE);
     expect(proxies.names).toEqual([
       'ss-01',
+      'vless-01',
       'anytls-01',
       'tuic-01',
       'hy2-01',
@@ -72,7 +73,7 @@ describe('format gaps: per-target emitted counts on the mixed fixture', () => {
       'hy2-bandwidth',
       'snell-01',
     ]);
-    expect(proxies.skipped.map((entry) => entry.name)).toEqual(['ssr-01', 'vless-01']);
+    expect(proxies.skipped.map((entry) => entry.name)).toEqual(['ssr-01']);
   });
 
   it('uri still carries all hy2 variants', () => {
@@ -102,9 +103,9 @@ describe('format gaps: Surge document for the mixed fixture', () => {
     expect(body).not.toContain('port-hopping=443');
 
     expect(body).toContain(
-      '🚀 节点选择 = select,ss-01,anytls-01,tuic-01,hy2-01,hy2-hop-range,hy2-hop-list,hy2-bandwidth,snell-01,DIRECT',
+      '🚀 节点选择 = select,ss-01,vless-01,anytls-01,tuic-01,hy2-01,hy2-hop-range,hy2-hop-list,hy2-bandwidth,snell-01,DIRECT',
     );
-    expect(body).not.toContain('vless-01');
+    expect(body).toContain('vless-01 = vless,');
     expect(body).not.toContain('ssr-01');
   });
 });

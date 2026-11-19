@@ -8,6 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ClashProxyGroup, ProxyNode } from '../core/types';
+import { parseUri } from '../core/parsers/uri';
 import {
   buildSurgeGroups,
   buildSurgeProxies,
@@ -246,9 +247,87 @@ describe('Surge producer: [Proxy] golden lines', () => {
   });
 });
 
+describe('Surge native VLESS (manual.nssurge.com/policies/vless.html)', () => {
+  const encryption = 'mlkem768x25519plus.native.0rtt.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  const security = {
+    none: {}, tls: { tls: true },
+    reality: { tls: true, 'reality-opts': { 'public-key': 'public-key', 'short-id': 'abcd' } },
+  };
+  for (const network of ['raw', 'tcp', 'ws', 'httpupgrade', 'grpc', 'xhttp']) {
+    for (const [mode, fields] of Object.entries(security)) {
+      const supported = !(['ws', 'httpupgrade'].includes(network) && mode === 'reality') && !(network === 'grpc' && mode === 'none');
+      it(`${network} + ${mode}: ${supported ? 'native line' : 'diagnostic'}`, () => {
+        const base = `test = vless, example.com, 8388, username=${UUID}`;
+        const tls = mode === 'tls' ? ', tls=true' : mode === 'reality' ? ', reality-public-key=public-key, reality-short-id=abcd' : '';
+        const transport = network === 'ws' ? ', ws=true, ws-path=/' : network === 'httpupgrade' ? ', ws=true, ws-http-upgrade=true, ws-path=/' : network === 'grpc' ? ', grpc=true' : network === 'xhttp' ? ', xhttp=true, xhttp-path=/' : '';
+        const proxy = node({ type: 'vless', uuid: UUID, network, ...fields });
+        expect(surgeProxyLine(proxy)).toEqual(supported ? { line: base + tls + transport } : { skipped: 'missing or unrepresentable protocol options' });
+        for (const flow of ['xtls-rprx-vision', 'xtls-rprx-vision-udp443']) {
+          const vision = surgeProxyLine({ ...proxy, flow });
+          const allowed = supported && ['raw', 'tcp'].includes(network) && mode !== 'none';
+          expect(vision).toHaveProperty(allowed ? 'line' : 'skipped');
+          const encrypted = surgeProxyLine({ ...proxy, flow, encryption });
+          expect(encrypted).toHaveProperty(supported && network !== 'grpc' ? 'line' : 'skipped');
+          if ('line' in encrypted) expect(encrypted.line).toContain(`encryption=${encryption}, flow=${flow}`);
+        }
+        const encrypted = surgeProxyLine({ ...proxy, encryption });
+        expect(encrypted).toHaveProperty(supported ? 'line' : 'skipped');
+      });
+    }
+  }
+
+  it.each(['auto', 'stream-one', 'stream-up', 'packet-up'])('emits XHTTP mode %s, host, headers and quoted ALPN', (mode) => {
+    expect(surgeProxyLine(node({ type: 'vless', uuid: UUID, network: 'xhttp', tls: true,
+      sni: 'sni.example', alpn: ['h2', 'http/1.1'], 'skip-cert-verify': false,
+      'xhttp-opts': { path: '/x?key=value', host: 'cdn.example', mode, headers: { 'X-Token': 'abc' } },
+    }))).toEqual({ line: `test = vless, example.com, 8388, username=${UUID}, tls=true, skip-cert-verify=false, sni=sni.example, alpn="h2,http/1.1", xhttp=true, xhttp-path=/x?key=value, xhttp-host=cdn.example, xhttp-mode=${mode}, xhttp-headers=X-Token:abc` });
+  });
+
+  it.each([['chrome', 'chromium-155'], ['safari', 'apple-26'], ['firefox', 'auto'], ['none', 'none']])('maps fingerprint %s using Surge share-link documentation', (input, output) => {
+    expect(surgeProxyLine(node({ type: 'vless', uuid: UUID, tls: true, 'client-fingerprint': input }))).toEqual({
+      line: `test = vless, example.com, 8388, username=${UUID}, tls=true, client-fingerprint=${output}`,
+    });
+  });
+
+  it('writes the documented RAW + Encryption + Vision line without TLS', () => {
+    expect(surgeProxyLine(node({ type: 'vless', uuid: UUID, encryption, flow: 'xtls-rprx-vision' }))).toEqual({
+      line: `test = vless, example.com, 8388, username=${UUID}, encryption=${encryption}, flow=xtls-rprx-vision`,
+    });
+  });
+
+  it('imports existing type=httpupgrade links without losing upgrade or headers', () => {
+    const parsed = parseUri(`vless://${UUID}@example.com:443?type=httpupgrade&security=tls&path=%2Fup&host=cdn.example#Upgrade`)!;
+    expect(surgeProxyLine(parsed)).toEqual({ line: `Upgrade = vless, example.com, 443, username=${UUID}, tls=true, ws=true, ws-http-upgrade=true, ws-path=/up, ws-headers=Host:cdn.example` });
+  });
+
+  it('retains URI gRPC mode and authority despite internal metadata cleanup', () => {
+    const parsed = parseUri(`vless://${UUID}@example.com:443?type=grpc&security=tls&serviceName=svc&authority=grpc.example&mode=multi#GRPC`)!;
+    expect(surgeProxyLine(parsed)).toEqual({ line: `GRPC = vless, example.com, 443, username=${UUID}, tls=true, grpc=true, grpc-service-name=svc, grpc-mode=multi, grpc-authority=grpc.example` });
+  });
+
+  it.each([
+    {}, { network: 'kcp' }, { network: 'h2' }, { network: 'http' },
+    { network: 'xhttp', 'xhttp-opts': { 'download-settings': { server: 'download.example' } } },
+    { network: 'xhttp', 'xhttp-opts': { 'reuse-settings': { max: 3 } } },
+    { network: 'xhttp', 'xhttp-opts': { mode: 'future' } },
+    { network: 'ws', 'ws-opts': { 'max-early-data': 2048 } },
+    { 'packet-encoding': 'packetaddr' }, { flow: 'future' }, { 'reality-opts': {} },
+    { finalmask: '{}' }, { 'reality-opts': { 'public-key': 'pk', 'support-x25519mlkem768': true } },
+    { 'reality-opts': { 'public-key': 'pk', 'support-x25519mlkem768': false } },
+    { encryption: 'evil, tls=true' }, { uuid: 'evil\n[Rule]' },
+  ])('diagnoses unsupported options %j and prunes their group references', (options) => {
+    const proxy = node({ type: 'vless', uuid: UUID, ...options });
+    if (Object.keys(options).length === 0) delete proxy.uuid;
+    const result = buildSurgeProxies([proxy]);
+    expect(result.lines).toEqual([]);
+    expect(result.skipped[0]?.reason).toBeTruthy();
+    expect(produceSurge([proxy], [group({ proxies: ['test'] })])).toBe('');
+  });
+});
+
 describe('Surge producer: skipped types', () => {
   it.each([
-    ['vless', { uuid: UUID, tls: true }],
+    ['wireguard', {}],
     ['ssr', { cipher: 'aes-256-cfb', password: 'fake', protocol: 'origin', obfs: 'plain' }],
   ])('skips %s (no Surge support) and counts it', (type, fields) => {
     const result = buildSurgeProxies([
@@ -276,7 +355,7 @@ describe('Surge producer: skipped types', () => {
   });
 
   it('never emits a mihomo-YAML body, even when everything is skipped', () => {
-    const body = produceSurge([node({ type: 'vless', name: 'only-vless', uuid: UUID })]);
+    const body = produceSurge([node({ type: 'vless', name: 'only-vless', uuid: UUID, network: 'kcp' })]);
     expect(body).not.toContain('proxies:');
     expect(body).not.toContain('- name:');
     // Empty but valid: Surge loads a config with no proxies.
@@ -287,7 +366,7 @@ describe('Surge producer: skipped types', () => {
 describe('Surge producer: [Proxy Group]', () => {
   const nodes = [
     node({ name: 'hk-01', cipher: 'aes-128-gcm', password: 'p' }),
-    node({ type: 'vless', name: 'vless-01', uuid: UUID }),
+    node({ type: 'vless', name: 'vless-01', uuid: UUID, network: 'kcp' }),
     node({ type: 'trojan', name: 'us-01', password: 'p' }),
   ];
 
@@ -298,19 +377,18 @@ describe('Surge producer: [Proxy Group]', () => {
       node({ type: 'vless', name: 'vless-01', uuid: UUID }),
     ];
     const proxies = buildSurgeProxies(nodes);
-    expect(proxies.names).toEqual(['at-01', 'ss-01']);
+    expect(proxies.names).toEqual(['at-01', 'ss-01', 'vless-01']);
     expect(proxies.lines[0]).toBe(
       'at-01 = anytls, example.com, 443, password=p, sni=at.example.com',
     );
-    // VLESS is still skipped: only the anytls node is counted as emitted here.
-    expect(proxies.skipped.map((entry) => entry.name)).toEqual(['vless-01']);
+    expect(proxies.skipped).toEqual([]);
 
     const body = produceSurge(nodes, [
       group({ name: 'nodes', type: 'select', proxies: ['at-01', 'vless-01', 'ss-01'] }),
     ]);
     expect(body).toContain('at-01 = anytls,');
-    expect(body).toContain('nodes = select,at-01,ss-01');
-    expect(body).not.toContain('vless-01');
+    expect(body).toContain('nodes = select,at-01,vless-01,ss-01');
+    expect(body).toContain('vless-01 = vless,');
   });
 
   it('maps select/url-test/fallback/load-balance to Surge keywords', () => {
