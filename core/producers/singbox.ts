@@ -34,6 +34,7 @@
  */
 import type { ProxyNode } from '../types';
 import { isTruthyFlag, parseAlpn } from '../utils';
+import { hasAmneziaOptions } from '../wireguard';
 import { normalizeCommonTransport, prepareNode } from './common';
 import { hasVlessEncryption, parseRealityMlkem, realityMlkem, REALITY_MLKEM } from '../vless';
 import { snellObfs, snellPsk, snellVersion } from './snell';
@@ -494,6 +495,7 @@ function stringList(value: unknown): string[] {
  * `local-address`/`address` or mihomo's `ip`/`ipv6` pair.
  */
 function wireguardEndpoint(node: ProxyNode): SingboxEndpoint | null {
+  if (hasAmneziaOptions(node)) return null;
   if (!node.server || !Number.isInteger(node.port) || node.port < 1 || node.port > 65535) {
     return null;
   }
@@ -763,6 +765,13 @@ export function buildSingboxOutboundResult(nodes: ProxyNode[]): {
   const outbounds: SingboxOutbound[] = [];
   const skipped: Array<{ name: string; reason: string }> = [];
   for (const raw of nodes) {
+    if (raw.type === 'easytier' || hasAmneziaOptions(raw)) {
+      skipped.push({
+        name: raw.name,
+        reason: `sing-box has no documented ${raw.type === 'easytier' ? 'EasyTier' : 'AmneziaWG'} schema`,
+      });
+      continue;
+    }
     // WireGuard is handled separately by buildSingboxEndpoints.
     if (ENDPOINT_TYPES.has(raw.type)) {
       if (!endpointFor(prepareNode(raw))) skipped.push({ name: raw.name, reason: 'unsupported or unrepresentable sing-box endpoint' });

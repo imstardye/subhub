@@ -396,6 +396,7 @@ export function surgeProxyLine(node: ProxyNode):
   | { skipped: string } {
   const marked = nodeSkipReason(node);
   if (marked) return { reason: marked };
+  if (node.type === 'easytier') return { skipped: 'unsupported protocol: easytier' };
 
   const proxy = prepareNode(node);
   const name = String(proxy.name ?? '').trim();

@@ -671,7 +671,7 @@ export function renderTargetBody(
     );
   }
   if (target === 'surge') return produceSurge(nodes, profile?.proxyGroups ?? []);
-  if (target === 'loon') return produceLoon(nodes, profile?.proxyGroups ?? []);
+  if (target === 'loon') return produceLoon(nodes, profile?.proxyGroups ?? [], options);
 
   // A future target without a producer yet falls back to mihomo YAML; it must
   // stay exactly what it produced before the DNS template existed.

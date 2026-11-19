@@ -10,6 +10,7 @@
 import type { ClashProxyGroup, ProduceOptions, ProxyNode } from '../types';
 import { resolveDnsTemplate } from '../dns';
 import { buildTailscaleInjection } from '../tailscale';
+import { flatAmneziaFields } from '../wireguard';
 import { parseRealityMlkem, realityMlkem, REALITY_MLKEM } from '../vless';
 import { stringify as stringifyYaml } from 'yaml';
 import {
@@ -125,6 +126,10 @@ export function buildMihomoProxyResult(nodes: ProxyNode[]): {
   const proxies: ProxyNode[] = [];
   const skipped: Array<{ name: string; reason: string }> = [];
   for (const node of nodes) {
+    if (node.type === 'sudoku' && node['sudoku-link-options'] != null) {
+      skipped.push({ name: node.name, reason: 'upstream Sudoku short links are not native mihomo YAML' });
+      continue;
+    }
     if (node.type === 'openconnect') {
       skipped.push({ name: node.name, reason: 'no documented mihomo OpenConnect grammar' });
       continue;
@@ -133,7 +138,25 @@ export function buildMihomoProxyResult(nodes: ProxyNode[]): {
       skipped.push({ name: node.name, reason: 'VLESS FinalMask is not supported by mihomo' });
       continue;
     }
+    const amnezia = node['amnezia-wg-option'];
+    const flatFields = node.type === 'wireguard' ? flatAmneziaFields(node) : [];
+    if (node.type === 'wireguard') {
+      if (amnezia != null && (typeof amnezia !== 'object' || Array.isArray(amnezia))) {
+        skipped.push({ name: node.name, reason: 'amnezia-wg-option must be a mapping' });
+        continue;
+      }
+      if (amnezia == null && flatFields.length > 0) {
+        skipped.push({ name: node.name, reason: 'mihomo requires nested amnezia-wg-option fields' });
+        continue;
+      }
+    }
     const proxy = transform(node);
+    for (const field of flatFields) delete proxy[field];
+    if (proxy.type === 'easytier' || (proxy.type === 'wireguard' && Array.isArray(proxy.peers) && proxy.port === 0)) {
+      // These native shapes don't use the internal server/port placeholders.
+      delete (proxy as Partial<ProxyNode>).server;
+      delete (proxy as Partial<ProxyNode>).port;
+    }
     const mlkem = node.type === 'vless' ? realityMlkem(node) : undefined;
     if (mlkem != null) {
       const reality = proxy['reality-opts'] as Record<string, unknown> | undefined;

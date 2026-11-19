@@ -8,7 +8,7 @@
  * the round-trip contract, and `tests/uri-producer.test.ts` enforces it.
  *
  * The supported type set is exactly `URI_PARSERS` in the parser module:
- * ss, ssr, vmess, vless, trojan, hysteria2, tuic, anytls, mieru. Everything
+ * ss, ssr, vmess, vless, trojan, hysteria2, tuic, anytls, mieru, sudoku. Everything
  * else (socks/http/snell/wireguard/…) is skipped rather than faked. Snell has
  * no documented per-node share-link scheme.
  *
@@ -17,6 +17,7 @@
  * missing padding / URL-safe alphabet).
  */
 import type { ProxyNode } from '../types';
+import { buildSudokuLink } from '../sudoku';
 import { realityMlkem, REALITY_MLKEM } from '../vless';
 import { encodeBase64, isTruthyFlag, parseAlpn } from '../utils';
 import { isShareLink, parseUri } from '../parsers/uri';
@@ -33,6 +34,7 @@ export const URI_SUPPORTED_TYPES = [
   'tuic',
   'anytls',
   'mieru',
+  'sudoku',
 ] as const;
 
 const URI_TYPES = new Set<string>(URI_SUPPORTED_TYPES);
@@ -536,6 +538,8 @@ export function toShareLink(node: ProxyNode): string | null {
       return node.password !== undefined ? anytlsLink(node) : null;
     case 'mieru':
       return buildMieruLink(node) || null;
+    case 'sudoku':
+      return buildSudokuLink(node);
     default:
       return null;
   }

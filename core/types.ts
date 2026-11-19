@@ -56,10 +56,9 @@ export interface ProduceOptions {
    */
   leadingRules?: string[] | false;
   /**
-   * Opt-in built-in Tailscale outbound (mihomo/clash only, via `?tailscale=1`).
-   * `hostname` is always emitted; `authKey` carries the user's stored
-   * `tskey-auth-…` credential when one is bound. Consumed by the mihomo
-   * producer alone — every other producer ignores it.
+   * Opt-in built-in Tailscale outbound (`?tailscale=1`). Mihomo/Clash can
+   * render without an `authKey`; Loon requires one. `dialerProxy` is
+   * mihomo/Clash-only.
    */
   tailscale?: { hostname: string; authKey?: string; dialerProxy?: string };
 }

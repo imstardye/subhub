@@ -187,7 +187,7 @@ const currentMainLink = computed(() =>
  * chips switch it (the QR follows).
  */
 const selectedTarget = ref('');
-/** Opt-in built-in Tailscale outbound for the mihomo/clash links only. */
+/** Opt-in built-in Tailscale outbound for supported links. */
 const tailscaleEnabled = ref(false);
 const tailscaleAvailable = computed(() => supportsTailscale(selectedTarget.value || null));
 const activeLink = computed(() =>
@@ -1399,7 +1399,7 @@ useHead({ title: '我的订阅 · subhub' });
             </n-button>
           </div>
           <p class="hint tiny">
-            Auth Key 写入后不可查看（写-only），仅用于导出附带 ?tailscale=1 的 Mihomo / Clash 配置。
+            Auth Key 写入后不可查看，仅用于附带 ?tailscale=1 的 Mihomo / Clash / Loon 导出。Loon 需要先绑定密钥。
           </p>
           <div class="tailscale-dialer">
             <span class="account-label">经代理连接</span>
@@ -1414,7 +1414,7 @@ useHead({ title: '我的订阅 · subhub' });
             />
           </div>
           <p class="hint tiny">
-            控制服务器的连接走所选策略组（直连不通时用）；连通后 P2P 流量仍是直连。
+            仅适用于 Mihomo / Clash：控制服务器的连接走所选策略组（直连不通时用）；连通后 P2P 流量仍是直连。
           </p>
           <p v-if="!dialerSelectable" class="hint tiny">
             你的规则档暂无可选策略组。

@@ -12,6 +12,7 @@
  */
 
 import type { ProxyNode } from '../types';
+import { parseSudokuLink } from '../sudoku';
 import { parseRealityMlkem, REALITY_MLKEM } from '../vless';
 import {
   decodeBase64,
@@ -910,6 +911,7 @@ const URI_PARSERS: Array<{
   { test: (line) => /^tuic:\/\//i.test(line), parse: parseTuic },
   { test: (line) => /^anytls:\/\//i.test(line), parse: parseAnyTLS },
   { test: (line) => /^mierus:\/\//i.test(line), parse: parseMieru },
+  { test: (line) => line.startsWith('sudoku://'), parse: parseSudokuLink },
 ];
 
 export function isShareLink(line: string): boolean {

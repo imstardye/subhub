@@ -317,6 +317,7 @@ export function shadowrocketConfProxyLine(node: ProxyNode):
   | { skipped: string } {
   const marked = nodeSkipReason(node);
   if (marked) return { reason: marked };
+  if (node.type === 'easytier') return { skipped: 'unsupported protocol: easytier' };
   const reason = unverifiedVlessOptions(node);
   if (reason) return { skipped: reason };
   if (node.type === 'vless' && hasVlessEncryption(node)) {

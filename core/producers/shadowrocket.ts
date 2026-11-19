@@ -393,6 +393,8 @@ function socksHttpLink(node: ProxyNode, scheme: 'socks' | 'http' | 'https'): str
 
 /** Build the share link for one node, or the reason it is skipped. */
 export function shadowrocketLink(node: ProxyNode): { line: string } | { skipped: string } {
+  if (node.type === 'easytier') return { skipped: 'unsupported protocol: easytier' };
+  if (node.type === 'sudoku') return { skipped: 'no verified Shadowrocket Sudoku share-link grammar' };
   const reason = unverifiedVlessOptions(node);
   if (reason) return { skipped: reason };
   const proxy = prepareNode(node);
