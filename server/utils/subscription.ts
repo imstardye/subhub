@@ -121,9 +121,8 @@ export interface ExportRequest {
   userAgent?: string | null;
   ip?: string | null;
   /**
-   * Opt-in built-in Tailscale outbound (`?tailscale=1`). Only the mihomo and
-   * clash targets render it; every other target ignores the flag and stays
-   * byte-identical.
+   * Opt-in built-in Tailscale outbound (`?tailscale=1`). Loon renders it
+   * only with a bound key; mihomo and clash also support keyless login.
    */
   tailscale?: boolean;
 }
@@ -350,17 +349,16 @@ export async function handleSubscriptionExport(
       deps.resolveProfileIni,
       overrideProfileId,
     );
-    // Built-in Tailscale outbound: only the mihomo/clash renderer reads the
-    // option. The auth key is decrypted at render time and never logged or
-    // serialised on its own; a missing/failed decrypt just yields an
-    // unauthenticated outbound (an export must never fail over it).
+    // Decrypt only for a supported, opted-in export. A missing/failed decrypt
+    // omits the Loon node and preserves keyless login in mihomo/Clash.
     const produceOptions: ProduceOptions = {};
-    if (request.tailscale && (target === 'mihomo' || target === 'clash')) {
+    const mihomoTailscale = target === 'mihomo' || target === 'clash';
+    if (request.tailscale && (mihomoTailscale || target === 'loon')) {
       const authKey = readUserTailscaleKey(user);
       // `dialerProxy` is the stored policy-group name; the core emits it only
       // when the group survived this render's pruning (an export must never
       // reference a group that is not in the file).
-      const dialerProxy = readUserTailscaleDialerProxy(user);
+      const dialerProxy = mihomoTailscale ? readUserTailscaleDialerProxy(user) : null;
       produceOptions.tailscale = {
         hostname: buildTailscaleHostname(user.name),
         ...(authKey ? { authKey } : {}),

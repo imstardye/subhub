@@ -10,7 +10,7 @@
  *   center and the admin console only ever expose `tailscaleKeySet`;
  * - the /my form always starts empty; saving an empty string clears the binding
  *   (the page's 清除绑定 button sends the same empty body);
- * - it is only used to render the opt-in `?tailscale=1` mihomo/clash export.
+ * - it is only used to render opt-in `?tailscale=1` mihomo/Clash or Loon exports.
  *
  * One save path (`setUserTailscaleKey` / `clearUserTailscaleKey`) is shared by
  * the user API and the admin clear-only surface, like operators/source-order.

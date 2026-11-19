@@ -8,14 +8,17 @@
  * the round-trip contract, and `tests/uri-producer.test.ts` enforces it.
  *
  * The supported type set is exactly `URI_PARSERS` in the parser module:
- * ss, ssr, vmess, vless, trojan, hysteria2, tuic, anytls, mieru. Everything
- * else (socks/http/snell/wireguard/…) is skipped rather than faked.
+ * ss, ssr, vmess, vless, trojan, hysteria2, tuic, anytls, mieru, sudoku. Everything
+ * else (socks/http/snell/wireguard/…) is skipped rather than faked. Snell has
+ * no documented per-node share-link scheme.
  *
  * Body: standard base64 (with padding) of the newline-joined links, which is
  * what the repo's `parseSubscription` accepts (`decodeBase64` also tolerates
  * missing padding / URL-safe alphabet).
  */
 import type { ProxyNode } from '../types';
+import { buildSudokuLink } from '../sudoku';
+import { realityMlkem, REALITY_MLKEM } from '../vless';
 import { encodeBase64, isTruthyFlag, parseAlpn } from '../utils';
 import { isShareLink, parseUri } from '../parsers/uri';
 import { normalizeAlpn, normalizeCommonTransport, prepareNode } from './common';
@@ -31,6 +34,7 @@ export const URI_SUPPORTED_TYPES = [
   'tuic',
   'anytls',
   'mieru',
+  'sudoku',
 ] as const;
 
 const URI_TYPES = new Set<string>(URI_SUPPORTED_TYPES);
@@ -370,11 +374,17 @@ function vmessLink(node: ProxyNode): string {
 function vlessLink(node: ProxyNode): string {
   const flow = toStringOrUndefined(node.flow);
   const params: Array<[string, string]> = [
-    ['encryption', toStringOrUndefined(node.encryption) ?? 'none'],
+    ['encryption', typeof node.encryption === 'string' ? node.encryption : 'none'],
     ...tlsParams(node),
     ...(flow ? [['flow', flow] as [string, string]] : []),
     ...transportParams(node),
   ];
+  const mlkem = realityMlkem(node);
+  if (mlkem != null) params.push([REALITY_MLKEM, String(mlkem)]);
+  if (node.finalmask != null) {
+    const fm = typeof node.finalmask === 'string' ? node.finalmask : JSON.stringify(node.finalmask);
+    params.push(['fm', fm]);
+  }
   if (node.network === 'xhttp') {
     const extra = buildXhttpExtra(node);
     if (extra) params.push(['extra', extra]);
@@ -528,14 +538,17 @@ export function toShareLink(node: ProxyNode): string | null {
       return node.password !== undefined ? anytlsLink(node) : null;
     case 'mieru':
       return buildMieruLink(node) || null;
+    case 'sudoku':
+      return buildSudokuLink(node);
     default:
       return null;
   }
 }
 
 /** Links for the nodes that have a share-link form, in input order. */
-export function buildShareLinks(nodes: ProxyNode[]): string[] {
+export function buildShareLinkResult(nodes: ProxyNode[]): { lines: string[]; skipped: Array<{ name: string; reason: string }> } {
   const links: string[] = [];
+  const skipped: Array<{ name: string; reason: string }> = [];
   for (const raw of nodes) {
     const node = prepareNode(raw);
     normalizeCommonTransport(node);
@@ -546,14 +559,21 @@ export function buildShareLinks(nodes: ProxyNode[]): string[] {
     if (node.type === 'tuic' || node.type === 'hysteria2' || node.type === 'anytls') normalizeAlpn(node);
     const link = toShareLink(node);
     // Safety net: never emit a link our own parser would drop or reject.
-    if (!link || !isShareLink(link)) continue;
+    if (!link || !isShareLink(link)) {
+      skipped.push({ name: raw.name, reason: `unsupported or unrepresentable share link: ${raw.type}` });
+      continue;
+    }
     try {
       if (parseUri(link)) links.push(link);
     } catch {
       // Unrepresentable in share-link form after all; skip instead of faking.
     }
   }
-  return links;
+  return { lines: links, skipped };
+}
+
+export function buildShareLinks(nodes: ProxyNode[]): string[] {
+  return buildShareLinkResult(nodes).lines;
 }
 
 /**

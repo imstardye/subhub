@@ -10,6 +10,8 @@
 import type { ClashProxyGroup, ProduceOptions, ProxyNode } from '../types';
 import { resolveDnsTemplate } from '../dns';
 import { buildTailscaleInjection } from '../tailscale';
+import { flatAmneziaFields } from '../wireguard';
+import { parseRealityMlkem, realityMlkem, REALITY_MLKEM } from '../vless';
 import { stringify as stringifyYaml } from 'yaml';
 import {
   normalizeAlpn,
@@ -75,6 +77,15 @@ function transform(node: ProxyNode): ProxyNode {
   normalizeCommonTransport(proxy);
 
   if (proxy.type === 'anytls') {
+    // mihomo uses fingerprint; Stash's Clash-format reader uses
+    // server-cert-fingerprint. Emit both aliases of the same certificate
+    // SHA-256 pin so either consumer retains pinning. Native nodes passed
+    // directly to the producer need the same bridge as parsed subscriptions.
+    const pin = proxy['tls-fingerprint'] ?? proxy.fingerprint ?? proxy['server-cert-fingerprint'];
+    if (pin !== undefined) {
+      proxy['tls-fingerprint'] = pin;
+      proxy['server-cert-fingerprint'] = pin;
+    }
     // subhub default: do not keep idle sessions around.
     if (proxy['min-idle-session'] === undefined) {
       proxy['min-idle-session'] = 0;
@@ -117,17 +128,62 @@ function transform(node: ProxyNode): ProxyNode {
   return proxy;
 }
 
-export function buildMihomoProxies(
-  nodes: ProxyNode[],
-  options: ProduceOptions = {},
-): ProxyNode[] {
-  return nodes.map((node) => {
-    const proxy = transform(node);
-    if (!options.includeUnsupported) {
-      // mihomo supports every protocol handled by P1, so nothing is filtered.
+export function buildMihomoProxyResult(nodes: ProxyNode[]): {
+  proxies: ProxyNode[];
+  skipped: Array<{ name: string; reason: string }>;
+} {
+  const proxies: ProxyNode[] = [];
+  const skipped: Array<{ name: string; reason: string }> = [];
+  for (const node of nodes) {
+    if (node.type === 'sudoku' && node['sudoku-link-options'] != null) {
+      skipped.push({ name: node.name, reason: 'upstream Sudoku short links are not native mihomo YAML' });
+      continue;
     }
-    return proxy;
-  });
+    if (node.type === 'openconnect') {
+      skipped.push({ name: node.name, reason: 'no documented mihomo OpenConnect grammar' });
+      continue;
+    }
+    if (node.type === 'vless' && node.finalmask != null) {
+      skipped.push({ name: node.name, reason: 'VLESS FinalMask is not supported by mihomo' });
+      continue;
+    }
+    const amnezia = node['amnezia-wg-option'];
+    const flatFields = node.type === 'wireguard' ? flatAmneziaFields(node) : [];
+    if (node.type === 'wireguard') {
+      if (amnezia != null && (typeof amnezia !== 'object' || Array.isArray(amnezia))) {
+        skipped.push({ name: node.name, reason: 'amnezia-wg-option must be a mapping' });
+        continue;
+      }
+      if (amnezia == null && flatFields.length > 0) {
+        skipped.push({ name: node.name, reason: 'mihomo requires nested amnezia-wg-option fields' });
+        continue;
+      }
+    }
+    const proxy = transform(node);
+    for (const field of flatFields) delete proxy[field];
+    if (proxy.type === 'easytier' || (proxy.type === 'wireguard' && Array.isArray(proxy.peers) && proxy.port === 0)) {
+      // These native shapes don't use the internal server/port placeholders.
+      delete (proxy as Partial<ProxyNode>).server;
+      delete (proxy as Partial<ProxyNode>).port;
+    }
+    const mlkem = node.type === 'vless' ? realityMlkem(node) : undefined;
+    if (mlkem != null) {
+      const reality = proxy['reality-opts'] as Record<string, unknown> | undefined;
+      const enabled = parseRealityMlkem(mlkem);
+      if (!reality?.['public-key'] || enabled === undefined) {
+        skipped.push({ name: node.name, reason: `VLESS ${REALITY_MLKEM} requires a boolean and a REALITY public key` });
+        continue;
+      }
+      reality[REALITY_MLKEM] = enabled;
+      delete proxy[REALITY_MLKEM];
+    }
+    proxies.push(proxy);
+  }
+  return { proxies, skipped };
+}
+
+export function buildMihomoProxies(nodes: ProxyNode[], _options: ProduceOptions = {}): ProxyNode[] {
+  return buildMihomoProxyResult(nodes).proxies;
 }
 
 /**

@@ -215,11 +215,14 @@ describe('links', () => {
     expect(tailscaleDialerSelectable(['🚀 节点选择'])).toBe(true);
   });
 
-  it('appends ?tailscale=1 only for mihomo/clash and only when enabled', () => {
+  it('appends ?tailscale=1 only for supported targets and only when enabled', () => {
     const mihomo = `https://hub.example.com/s/${TOKEN}/mihomo`;
     const clash = `https://hub.example.com/s/${TOKEN}/clash`;
     expect(supportsTailscale('mihomo')).toBe(true);
     expect(supportsTailscale('clash')).toBe(true);
+    const loon = `https://hub.example.com/s/${TOKEN}/loon`;
+    expect(supportsTailscale('loon')).toBe(true);
+    expect(tailscaleLink(loon, 'loon', true)).toBe(`${loon}?tailscale=1`);
     for (const target of ['surge', 'uri', 'singbox', null, undefined, '']) {
       expect(supportsTailscale(target as string | null | undefined)).toBe(false);
     }

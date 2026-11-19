@@ -353,7 +353,9 @@ describe('Shadowrocket producer: document', () => {
   });
 
   it('returns an empty (valid) document when nothing is representable', () => {
-    const body = produceShadowrocket([node({ type: 'snell', name: 'snell', password: 'p' })]);
+    const snell = node({ type: 'snell', name: 'snell', version: 6, psk: 'fixture-snell-psk' });
+    expect(shadowrocketLink(snell)).toEqual({ skipped: 'no documented Shadowrocket Snell share link' });
+    const body = produceShadowrocket([snell]);
     expect(body).toBe('');
     expect(linksOf(body)).toEqual([]);
   });

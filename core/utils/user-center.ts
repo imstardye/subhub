@@ -132,11 +132,11 @@ export function mainLink(options: {
 }
 
 /** Export targets whose renderer supports the built-in Tailscale outbound. */
-export const TAILSCALE_TARGETS: readonly string[] = ['mihomo', 'clash'];
+export const TAILSCALE_TARGETS: readonly string[] = ['mihomo', 'clash', 'loon'];
 
 /** Whether the `?tailscale=1` toggle applies to this target. */
 export function supportsTailscale(target: string | null | undefined): boolean {
-  return target === 'mihomo' || target === 'clash';
+  return typeof target === 'string' && TAILSCALE_TARGETS.includes(target);
 }
 
 /**
@@ -185,8 +185,7 @@ export function tailscaleDialerSelectable(groups: readonly string[] | null | und
 
 /**
  * The link a target row should display/QR: the plain URL, or its Tailscale
- * variant when the toggle is on and the target supports it. A non-mihomo/clash
- * target is always plain (the page hides the toggle there).
+ * variant when the toggle is on and the target supports it.
  */
 export function tailscaleLink(
   url: string,

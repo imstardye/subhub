@@ -334,8 +334,8 @@ export function exportProfileCapability(target: ExportTarget): ProfileCapability
 }
 
 /**
- * Nodes exactly as the target's producer will emit them (transformed; nothing
- * is filtered). Profile group members are expanded against *these* names — the
+ * Target-prepared nodes. Profile groups expand against `targetProxyNames`,
+ * which also applies any filtering deferred to a line-based producer. The
  * raw parsed names differ (e.g. `tls-fingerprint` -> `fingerprint`) — so the
  * export and the profile groups always agree.
  *
@@ -671,7 +671,7 @@ export function renderTargetBody(
     );
   }
   if (target === 'surge') return produceSurge(nodes, profile?.proxyGroups ?? []);
-  if (target === 'loon') return produceLoon(nodes, profile?.proxyGroups ?? []);
+  if (target === 'loon') return produceLoon(nodes, profile?.proxyGroups ?? [], options);
 
   // A future target without a producer yet falls back to mihomo YAML; it must
   // stay exactly what it produced before the DNS template existed.

@@ -374,8 +374,9 @@ describe('export handler ?tailscale=1', () => {
     expect(document.proxies[1]!['auth-key']).toBe(AUTH_KEY);
   });
 
-  it('ignores the parameter for non-mihomo/clash targets', async () => {
-    for (const target of ['surge', 'uri', 'singbox', 'loon', 'shadowrocket']) {
+  it('ignores the parameter for unsupported targets, even with a bound key', async () => {
+    setUserTailscaleKey(db, userId, AUTH_KEY);
+    for (const target of ['surge', 'uri', 'singbox', 'shadowrocket', 'shadowrocket-conf']) {
       const ua = target === 'uri' ? 'curl/8' : 'clash-verge/v2.0';
       const plain = await exportPath(`/s/${TOKEN}/${target}`, ua);
       const flagged = await exportPath(`/s/${TOKEN}/${target}?tailscale=1`, ua);
@@ -383,6 +384,21 @@ describe('export handler ?tailscale=1', () => {
       expect(flagged.body).toBe(plain.body);
       expect(flagged.body).not.toContain(TAILSCALE_GROUP_NAME);
     }
+  });
+
+  it('adds a native Loon node only when opted in with a readable bound key', async () => {
+    const url = `/s/${TOKEN}/loon`;
+    const plain = await exportPath(url);
+    expect(plain.status).toBe(200);
+    expect((await exportPath(`${url}?tailscale=1`)).body).toBe(plain.body);
+    setUserTailscaleKey(db, userId, AUTH_KEY);
+    expect((await exportPath(url)).body).toBe(plain.body);
+    expect((await exportPath(`${url}?tailscale=yes`)).body).toBe(plain.body);
+    const line = `Tailscale = tailscale,auth-key="${AUTH_KEY}",hostname=subhub-alice-wong\n`;
+    expect((await exportPath(`${url}?tailscale=1`)).body).toBe(plain.body + line);
+    expect((await exportPath(`/s/${TOKEN}?tailscale=true`, 'Loon/3.5.4')).body).toBe(plain.body + line);
+    db.update(users).set({ tailscaleAuthKey: 'v1:not-real-ciphertext' }).where(eq(users.id, userId)).run();
+    expect((await exportPath(`${url}?tailscale=1`)).body).toBe(plain.body);
   });
 
   it('applies the profile render with the injection ordered correctly', async () => {

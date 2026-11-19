@@ -12,6 +12,8 @@
  */
 
 import type { ProxyNode } from '../types';
+import { parseSudokuLink } from '../sudoku';
+import { parseRealityMlkem, REALITY_MLKEM } from '../vless';
 import {
   decodeBase64,
   decodeComponent,
@@ -552,12 +554,20 @@ export function parseVless(line: string, protocol: 'vless' | 'vmess' = 'vless'):
   if (protocol === 'vmess') {
     node.cipher = normalizeVmessSecurity(params.encryption);
     node.alterId = 0;
-  } else if (params.encryption) {
-    node.encryption = params.encryption;
+  } else {
+    if (params.encryption !== undefined) node.encryption = params.encryption;
+    // Keep the decoded JSON text opaque, including unknown mask settings.
+    if (params.fm !== undefined) node.finalmask = params.fm;
   }
 
   if (!node.tls && params.pbk) node.tls = true;
   if (params.security === 'reality' || params.pbk) applyReality(node, params);
+  if (protocol === 'vless' && params[REALITY_MLKEM] !== undefined) {
+    const value = parseRealityMlkem(params[REALITY_MLKEM]) ?? params[REALITY_MLKEM];
+    const reality = objectValue(node['reality-opts']);
+    if (reality) reality[REALITY_MLKEM] = value;
+    else node[REALITY_MLKEM] = value;
+  }
   if (params.flow) node.flow = params.flow;
   const sni = params.sni || params.peer || params.servername;
   if (sni) node.sni = sni;
@@ -901,6 +911,7 @@ const URI_PARSERS: Array<{
   { test: (line) => /^tuic:\/\//i.test(line), parse: parseTuic },
   { test: (line) => /^anytls:\/\//i.test(line), parse: parseAnyTLS },
   { test: (line) => /^mierus:\/\//i.test(line), parse: parseMieru },
+  { test: (line) => line.startsWith('sudoku://'), parse: parseSudokuLink },
 ];
 
 export function isShareLink(line: string): boolean {

@@ -30,6 +30,13 @@ const SUPPORTED_NODE_TYPES = new Set([
   'http',
   'snell',
   'wireguard',
+  'easytier',
+  // Native mihomo YAML (not the upstream Sudoku CLI short-link envelope).
+  'sudoku',
+  'openvpn',
+  // OpenConnect has no documented mihomo grammar. Retain the documented
+  // sing-box endpoint fields in a subscription envelope for that target only.
+  'openconnect',
   'direct',
 ]);
 
@@ -39,25 +46,57 @@ function normalizeNode(raw: unknown): ProxyNode | null {
   if (typeof record.type !== 'string' || !SUPPORTED_NODE_TYPES.has(record.type)) {
     return null;
   }
-  if (typeof record.server !== 'string' || !record.server.trim()) return null;
-  if (!('port' in record)) return null;
+  if (record.type === 'easytier') {
+    // No top-level TCP destination: peers/listeners are URI lists.
+    // https://wiki.metacubex.one/config/proxies/easytier/
+    const { name, 'network-name': networkName } = record;
+    if (typeof name !== 'string' || !name.trim() || typeof networkName !== 'string' || !networkName.trim()) {
+      return null;
+    }
+    return { ...record, type: 'easytier', name, server: '', port: 0 };
+  }
+  if (record.type === 'sudoku' && (typeof record.key !== 'string' || !record.key.trim())) return null;
+  // mihomo ignores the top-level peer's fields when using the full peers form.
+  if (record.type === 'wireguard' && record['amnezia-wg-option'] != null
+      && Array.isArray(record.peers) && record.peers.length > 0
+      && (!record.server || record.port == null)) {
+    const name = typeof record.name === 'string' && record.name.trim() ? record.name : '';
+    return name ? { ...record, type: 'wireguard', name, server: '', port: 0 } : null;
+  }
+  const realm = record.type === 'hysteria2'
+    ? record['realm-opts'] as Record<string, unknown> | undefined : undefined;
+  const realmEnabled = realm?.enable === true;
+  if (!('port' in record) && record.type !== 'openconnect' && !realmEnabled) return null;
 
   let port: number;
   try {
-    port = parsePort(record.port as string | number | undefined, 0);
+    port = parsePort(record.port as string | number | undefined,
+      record.type === 'openconnect' ? 443 : realmEnabled ? 443 : 0);
   } catch {
     return null;
   }
   if (!port) return null;
+  if (!realmEnabled && (typeof record.server !== 'string' || !record.server.trim())) return null;
+  const server = typeof record.server === 'string' ? record.server : '';
 
+  // Stash names the SHA-256 certificate pin differently from mihomo. Keep
+  // both native spellings, but bridge them through the producer's internal
+  // pin field (never client-fingerprint, which selects a uTLS ClientHello).
+  const anytlsPin = record.type === 'anytls'
+    ? record['tls-fingerprint'] ?? record.fingerprint ?? record['server-cert-fingerprint']
+    : undefined;
+
+  // Keep protocol options verbatim, including nested AmneziaWG and REALITY
+  // options. Producers decide which fields their target supports.
   return {
     ...record,
+    ...(anytlsPin !== undefined ? { 'tls-fingerprint': anytlsPin } : {}),
     name:
       typeof record.name === 'string' && record.name.trim()
         ? record.name
-        : `${record.type} ${record.server}:${port}`,
+        : `${record.type} ${server || realm?.['realm-id']}:${port}`,
     type: record.type,
-    server: record.server,
+    server,
     port,
   } as ProxyNode;
 }

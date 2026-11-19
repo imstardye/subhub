@@ -232,13 +232,13 @@ describe('Shadowrocket conf producer: skipped nodes', () => {
   it('skips WireGuard and unknown protocols with a diagnostic', () => {
     const result = buildShadowrocketConfProxies([
       node({ type: 'wireguard', name: 'WG' }),
-      node({ type: 'snell', name: 'SNELL' }),
+      node({ type: 'snell', name: 'SNELL', version: 6, psk: 'fixture-snell-psk' }),
       node({ name: 'kept', cipher: 'aes-128-gcm', password: 'p' }),
     ]);
     expect(result.names).toEqual(['kept']);
     expect(result.skipped).toEqual([
       { name: 'WG', reason: 'WireGuard conf syntax is out of scope' },
-      { name: 'SNELL', reason: 'unsupported protocol: snell' },
+      { name: 'SNELL', reason: 'no documented Shadowrocket Snell config grammar' },
     ]);
   });
 

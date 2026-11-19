@@ -99,6 +99,7 @@ describe('uri producer: skipped types', () => {
       'tuic',
       'anytls',
       'mieru',
+      'sudoku',
     ]);
   });
 

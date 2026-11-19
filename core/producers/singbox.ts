@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 /**
- * sing-box producer: `{ "outbounds": [...] }` (sing-box >= 1.11/1.12 JSON).
+ * sing-box producer: outbounds + optional endpoints (sing-box >= 1.14 JSON).
  *
  * Only what sing-box actually accepts is emitted; unknown node types and
  * features sing-box has no field for are skipped, never approximated. Field
@@ -17,6 +17,7 @@
  *   hysteria            hysteria (auth_str/up/down, obfs)
  *   hysteria2           hysteria2 (password, obfs, up/down, port ranges)
  *   anytls              anytls (password, idle_session_*, tls)
+ *   snell                snell (version 4/6, psk, userkey, obfs/mode)
  *   socks / http        local dialer outbounds carry no credentials, so
  *                       authenticated proxies are skipped (see below)
  *
@@ -26,14 +27,17 @@
  * server"), so wireguard nodes land in `buildSingboxEndpoints` and the
  * document gains an `endpoints` array only when one is present.
  *
- * Skipped: ssr/snell/direct and every other type (no sing-box outbound),
+ * Skipped: ssr/direct and every other type (no sing-box outbound),
  * a non-empty HTTP/SOCKS username (sing-box rejects credentials there),
  * wireguard nodes without a key or a local address, and transports sing-box
  * has no JSON field for in the given outbound (e.g. `httpupgrade` on trojan).
  */
 import type { ProxyNode } from '../types';
-import { parseAlpn } from '../utils';
+import { isTruthyFlag, parseAlpn } from '../utils';
+import { hasAmneziaOptions } from '../wireguard';
 import { normalizeCommonTransport, prepareNode } from './common';
+import { hasVlessEncryption, parseRealityMlkem, realityMlkem, REALITY_MLKEM } from '../vless';
+import { snellObfs, snellPsk, snellVersion } from './snell';
 
 /** sing-box outbound types this producer can emit. */
 export const SINGBOX_SUPPORTED_TYPES = [
@@ -45,7 +49,10 @@ export const SINGBOX_SUPPORTED_TYPES = [
   'hysteria',
   'hysteria2',
   'anytls',
+  'snell',
   'wireguard',
+  'openvpn',
+  'openconnect',
   'socks',
   'http',
 ] as const;
@@ -54,12 +61,12 @@ export const SINGBOX_SUPPORTED_TYPES = [
 export interface SingboxOutbound {
   type: string;
   tag: string;
-  server: string;
+  server?: string;
   server_port?: number;
   [key: string]: unknown;
 }
 
-/** A sing-box endpoint (wireguard lives here in sing-box >= 1.11). */
+/** A sing-box endpoint (WireGuard, OpenVPN client, OpenConnect). */
 export interface SingboxEndpoint {
   type: string;
   tag: string;
@@ -406,7 +413,37 @@ function hysteria2(node: ProxyNode): SingboxOutbound | null {
   if (down !== undefined) outbound.down_mbps = down;
   const hopInterval = text(node['hop-interval']);
   if (hopInterval) {
-    outbound.hop_interval = /^\d+$/.test(hopInterval) ? `${hopInterval}s` : hopInterval;
+    // mihomo expresses randomized hopping as one seconds range, not a
+    // separate hop-interval-max field.
+    const range = /^(\d+)-(\d+)$/.exec(hopInterval);
+    outbound.hop_interval = range ? `${range[1]}s` : seconds(hopInterval);
+    if (range) outbound.hop_interval_max = `${range[2]}s`;
+  }
+  const profile = text(node['bbr-profile']);
+  if (profile && ['conservative', 'standard', 'aggressive'].includes(profile)) outbound.bbr_profile = profile;
+  if (obfs === 'gecko') {
+    const block = outbound.obfs as Opts;
+    for (const side of ['min', 'max']) {
+      const size = positiveInt(node[`obfs-${side}-packet-size`]);
+      if (size !== undefined) block[`${side}_packet_size`] = size;
+    }
+  }
+  const realm = node['realm-opts'] as Opts | undefined;
+  if (realm?.enable === true) {
+    if (!text(realm['server-url']) || !text(realm['realm-id']) || !stringList(realm['stun-servers']).length) return null;
+    // Realm TLS options apply to the rendezvous HTTP client, not the HY2
+    // server. Until mapped, fail closed instead of silently weakening TLS.
+    const supported = new Set(['enable', 'server-url', 'token', 'realm-id', 'stun-servers']);
+    if (Object.keys(realm).some((key) => !supported.has(key))) return null;
+    outbound.realm = {
+      server_url: realm['server-url'], realm_id: realm['realm-id'],
+      ...(text(realm.token) ? { token: realm.token } : {}),
+      stun_servers: stringList(realm['stun-servers']),
+    };
+    delete outbound.server;
+    delete outbound.server_port;
+    if (tls) outbound.tls = tls;
+    return outbound;
   }
   if (tls) outbound.tls = tls;
   // sing-box's hysteria2 outbound replaces `server`/`server_port` with
@@ -458,6 +495,7 @@ function stringList(value: unknown): string[] {
  * `local-address`/`address` or mihomo's `ip`/`ipv6` pair.
  */
 function wireguardEndpoint(node: ProxyNode): SingboxEndpoint | null {
+  if (hasAmneziaOptions(node)) return null;
   if (!node.server || !Number.isInteger(node.port) || node.port < 1 || node.port > 65535) {
     return null;
   }
@@ -509,24 +547,139 @@ function wireguardEndpoint(node: ProxyNode): SingboxEndpoint | null {
   return endpoint;
 }
 
-/** Endpoints for the wireguard nodes, in input order. */
+const ENDPOINT_TYPES = new Set(['wireguard', 'openvpn', 'openconnect']);
+
+function seconds(value: unknown): string | undefined {
+  const rendered = text(value);
+  return rendered && (/^\d+$/.test(rendered) ? `${rendered}s` : rendered);
+}
+
+/** mihomo OpenVPN -> sing-box 1.14 OpenVPN client endpoint. */
+function openvpnEndpoint(node: ProxyNode): SingboxEndpoint | null {
+  if (!node.server || !node.port || !text(node.ca)) return null;
+  if (!(text(node.username) && text(node.password)) && !(text(node.cert) && text(node.key))) return null;
+  // No equivalent for mihomo's peer-info or old-key retention timer.
+  if (node['peer-info'] != null || node['tran-window'] != null || node['remote-dns-resolve'] === true
+      || node['dialer-proxy'] != null || node['ip-stack'] != null || (node.dev != null && node.dev !== 'tun')) return null;
+  const wraps = ['tls-auth', 'tls-crypt', 'tls-crypt-v2'].filter((key) => text(node[key]));
+  if (wraps.length > 1) return null;
+  const tls: Opts = { certificate: [node.ca] };
+  if (text(node.cert)) tls.client_certificate = [node.cert];
+  if (text(node.key)) tls.client_key = [node.key];
+  if (wraps.length) {
+    const key = wraps[0]!;
+    const direction = text(node['key-direction']);
+    if (key === 'tls-auth' && direction && !['0', '1'].includes(direction)) return null;
+    tls.control_wrap = {
+      type: key.replaceAll('-', '_'), key: [node[key]],
+      ...(key === 'tls-auth' && direction ? { direction: direction === '1' ? 'client' : 'server' } : {}),
+    };
+  }
+  const network = text(node.proto) ?? (node.udp === false ? 'tcp' : 'udp');
+  if (!['udp', 'tcp'].includes(network)) return null;
+  const endpoint: SingboxEndpoint = {
+    type: 'openvpn-client', tag: node.name, server: node.server, server_port: node.port,
+    network, tls,
+    // Preserve mihomo defaults, which differ from sing-box defaults.
+    data_ciphers: node['data-ciphers'] ?? [text(node.cipher) ?? 'AES-128-GCM'],
+    auth: text(node.auth) ?? 'SHA256',
+    // mihomo defaults to no receive timeout; sing-box defaults to 120s.
+    ...(node['ping-restart'] == null ? { ping_restart_disabled: true } : {}),
+  };
+  for (const key of ['username', 'password', 'mtu']) if (node[key] != null) endpoint[key] = node[key];
+  if (node['data-ciphers-fallback'] != null) endpoint.data_ciphers_fallback = node['data-ciphers-fallback'];
+  if (node['comp-lzo'] != null) {
+    endpoint.compression_lzo = node['comp-lzo'];
+    if (['yes', 'adaptive'].includes(String(node['comp-lzo']))) endpoint.allow_compression = 'asym';
+  }
+  for (const [source, target] of [['ping', 'ping_interval'], ['ping-restart', 'ping_restart'], ['handshake-timeout', 'handshake_window']]) {
+    if (node[source!] != null) endpoint[target!] = seconds(node[source!]);
+  }
+  if (Number(node['ping-restart']) === 0) {
+    delete endpoint.ping_restart;
+    endpoint.ping_restart_disabled = true;
+  }
+  return endpoint;
+}
+
+/** No mihomo OpenConnect grammar exists: accept only documented native fields
+ * in the lossless subscription envelope, never invent hyphenated aliases. */
+function openconnectEndpoint(node: ProxyNode): SingboxEndpoint | null {
+  if (!text(node.server)) return null;
+  const endpoint: SingboxEndpoint = { type: 'openconnect', tag: node.name, server: node.server };
+  for (const key of ['flavor', 'username', 'password', 'auth_group', 'cookie', 'token',
+    'reported_os', 'user_agent', 'version', 'local_hostname', 'mobile', 'csd', 'hip', 'tncc',
+    'fortinet_host_check', 'no_udp', 'dtls_local_port', 'compression_disabled', 'compression_mode',
+    'ipv6_disabled', 'http_keepalive_disabled', 'xml_post_disabled', 'external_auth_disabled',
+    'password_authentication_disabled', 'tcp_keep_alive_enabled', 'pfs', 'mtu', 'base_mtu',
+    'dpd_interval', 'reconnect_timeout', 'trojan_interval', 'queue_length', 'allow_insecure_crypto',
+    'form_entries', 'tls']) {
+    if (node[key] != null) endpoint[key] = node[key];
+  }
+  // Native server is an HTTPS URL (including its port), never server_port.
+  try {
+    const url = new URL(node.server.includes('://') ? node.server : `https://${node.server}`);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return null;
+    if (!node.server.includes('://') && !url.port && node.port !== 443) url.port = String(node.port);
+    endpoint.server = url.toString();
+  } catch { return null; }
+  return endpoint;
+}
+
+function endpointFor(node: ProxyNode): SingboxEndpoint | null {
+  if (node.type === 'openvpn') return openvpnEndpoint(node);
+  if (node.type === 'openconnect') return openconnectEndpoint(node);
+  return wireguardEndpoint(node);
+}
+
+/** Endpoints in input order. */
 export function buildSingboxEndpoints(nodes: ProxyNode[]): SingboxEndpoint[] {
   const endpoints: SingboxEndpoint[] = [];
   for (const raw of nodes) {
-    if (raw.type !== 'wireguard') continue;
+    if (!ENDPOINT_TYPES.has(raw.type)) continue;
     const node = prepareNode(raw);
     normalizeCommonTransport(node);
-    const endpoint = wireguardEndpoint(node);
+    const endpoint = endpointFor(node);
     if (endpoint) endpoints.push(endpoint);
   }
   return endpoints;
 }
 
+/** https://sing-box.sagernet.org/configuration/outbound/snell/ */
+function snell(node: ProxyNode): SingboxOutbound | null {
+  // sing-box currently accepts the native Snell outbound for v4 and v6.
+  // Older mihomo-style versions (1/2/3/5) are deliberately not guessed.
+  const version = snellVersion(node.version);
+  if ((version !== 4 && version !== 6) || node.plugin) return null;
+  const psk = snellPsk(node, version);
+  if (!psk) return null;
+  const obfs = snellObfs(node);
+  if (obfs.mode && obfs.mode !== 'none' && obfs.mode !== 'http'
+      && !(version === 6 && obfs.mode === 'tls')) return null;
+  const outbound = base(node, 'snell');
+  outbound.version = version;
+  outbound.psk = psk;
+  const userkey = text(node.userkey);
+  if (userkey) outbound.userkey = userkey;
+  if (node.reuse !== undefined) outbound.reuse = isTruthyFlag(node.reuse);
+  if (node.udp !== undefined && !isTruthyFlag(node.udp)) outbound.network = 'tcp';
+  if (version === 6) {
+    const mode = text(node.mode);
+    if (mode) {
+      if (mode !== 'default' && mode !== 'unshaped' && mode !== 'unsafe-raw') return null;
+      outbound.mode = mode;
+    }
+  } else {
+    if (obfs.mode) outbound.obfs_mode = obfs.mode;
+    const host = text(obfs.host);
+    if (obfs.mode === 'http' && host) outbound.obfs_host = host;
+  }
+  return outbound;
+}
+
 /**
- * SOCKS/HTTP proxies. sing-box's `socks`/`http` outbounds are unauthenticated
- * dialers (there is no username/password field), so a credentialed proxy is
- * not representable and `null` is returned instead of leaking the node
- * without its credentials.
+ * SOCKS/HTTP dialer outbounds cannot represent credentials; skip authenticated
+ * nodes rather than emitting them without their credentials.
  */
 function socksLike(node: ProxyNode): SingboxOutbound | null {
   const username = text(node.username);
@@ -540,11 +693,28 @@ function socksLike(node: ProxyNode): SingboxOutbound | null {
   return outbound;
 }
 
+function vlessSkipReason(node: ProxyNode): string | undefined {
+  if (node.type !== 'vless') return undefined;
+  if (node.finalmask != null) return 'VLESS FinalMask is not supported by sing-box';
+  if (hasVlessEncryption(node)) return 'VLESS encryption is not supported by sing-box';
+  const mlkem = realityMlkem(node);
+  // sing-box 1.14.4 removes the hybrid key share in its REALITY client even
+  // when configured with a TLS curve preference. Explicit false is satisfied.
+  if (mlkem != null && parseRealityMlkem(mlkem) !== false) {
+    return `VLESS REALITY ${REALITY_MLKEM} is not supported by sing-box`;
+  }
+  return undefined;
+}
+
 /** Map one node to a sing-box outbound, or `null` when sing-box cannot express it. */
 export function toSingboxOutbound(node: ProxyNode): SingboxOutbound | null {
-  if (!node.server || !Number.isInteger(node.port) || node.port < 1 || node.port > 65535) {
-    return null;
-  }
+  if (vlessSkipReason(node)) return null;
+  return mapOutbound(node);
+}
+
+function mapOutbound(node: ProxyNode): SingboxOutbound | null {
+  const realm = node.type === 'hysteria2' && (node['realm-opts'] as Opts | undefined)?.enable === true;
+  if (!realm && (!node.server || !Number.isInteger(node.port) || node.port < 1 || node.port > 65535)) return null;
   if (typeof node.name !== 'string' || node.name === '') return null;
 
   switch (node.type) {
@@ -564,6 +734,8 @@ export function toSingboxOutbound(node: ProxyNode): SingboxOutbound | null {
       return hysteria2(node);
     case 'anytls':
       return anytls(node);
+    case 'snell':
+      return snell(node);
     case 'wireguard':
       // Not an outbound in sing-box >= 1.11 — see buildSingboxEndpoints.
       return null;
@@ -572,7 +744,7 @@ export function toSingboxOutbound(node: ProxyNode): SingboxOutbound | null {
     case 'http':
       return socksLike(node);
     default:
-      // ssr, snell, direct, jsons, …: no sing-box outbound type.
+      // ssr, direct, jsons, …: no sing-box outbound type.
       return null;
   }
 }
@@ -586,21 +758,47 @@ function compact(outbound: SingboxOutbound): SingboxOutbound {
   return output as unknown as SingboxOutbound;
 }
 
-/** Outbounds for the nodes sing-box can express, in input order. */
-export function buildSingboxOutbounds(nodes: ProxyNode[]): SingboxOutbound[] {
+export function buildSingboxOutboundResult(nodes: ProxyNode[]): {
+  outbounds: SingboxOutbound[];
+  skipped: Array<{ name: string; reason: string }>;
+} {
   const outbounds: SingboxOutbound[] = [];
+  const skipped: Array<{ name: string; reason: string }> = [];
   for (const raw of nodes) {
+    if (raw.type === 'easytier' || hasAmneziaOptions(raw)) {
+      skipped.push({
+        name: raw.name,
+        reason: `sing-box has no documented ${raw.type === 'easytier' ? 'EasyTier' : 'AmneziaWG'} schema`,
+      });
+      continue;
+    }
+    // WireGuard is handled separately by buildSingboxEndpoints.
+    if (ENDPOINT_TYPES.has(raw.type)) {
+      if (!endpointFor(prepareNode(raw))) skipped.push({ name: raw.name, reason: 'unsupported or unrepresentable sing-box endpoint' });
+      continue;
+    }
+    const reason = vlessSkipReason(raw);
+    if (reason) {
+      skipped.push({ name: raw.name, reason });
+      continue;
+    }
     const node = prepareNode(raw);
     normalizeCommonTransport(node);
-    const outbound = toSingboxOutbound(node);
+    const outbound = mapOutbound(node);
     if (outbound) outbounds.push(compact(outbound));
+    else skipped.push({ name: raw.name, reason: 'unsupported or unrepresentable sing-box outbound' });
   }
-  return outbounds;
+  return { outbounds, skipped };
+}
+
+/** Outbounds for the nodes sing-box can express, in input order. */
+export function buildSingboxOutbounds(nodes: ProxyNode[]): SingboxOutbound[] {
+  return buildSingboxOutboundResult(nodes).outbounds;
 }
 
 /**
  * The `singbox` export body: `{ "outbounds": [...] }` (plus `endpoints`
- * when a wireguard node is present), two-space indented, trailing newline.
+ * when a representable endpoint is present), two-space indented, trailing newline.
  * No representable node yields `{ "outbounds": [] }`.
  */
 export function produceSingbox(nodes: ProxyNode[]): string {

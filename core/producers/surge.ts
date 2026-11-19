@@ -3,8 +3,8 @@
  * Surge producer (`[Proxy]` + `[Proxy Group]`).
  *
  * Line syntax (`name = type, server, port, key=value, ...`) follows Surge's
- * config format. Only protocols Surge itself can dial are emitted; VLESS and
- * SSR do not exist in Surge and are skipped instead of being faked (the point
+ * config format. Only protocols Surge itself can dial are emitted; unsupported
+ * combinations are skipped instead of being faked (the point
  * of a real producer is that the client can load the result).
  *
  * No `[Rule]` section: rules are owned by the client/its own template. Surge
@@ -22,18 +22,22 @@
  *              (uuid and password are joined with `:`)*
  * - `hysteria2` `hysteria2, server, port, password=, sni=, skip-cert-verify=`,
  *              plus port hopping (`port-hopping=`, `port-hopping-interval=`)
+ * - `snell`    `snell, server, port, psk=, version=` (v1–v6)
  * - `socks5`/`http` (with `, tls=true` for https proxies)
  *
- * Skipped on purpose: VLESS (not in Surge's protocol table) and SSR (no Surge
- * support), shadowsocks plugins (obfs / v2ray-plugin — Surge has neither),
+ * Native VLESS: RAW/WS/HTTPUpgrade/gRPC/XHTTP, with the security/flow limits
+ * documented at https://manual.nssurge.com/policies/vless.html.
+ * Skipped on purpose: SSR (no Surge support), shadowsocks plugins (obfs / v2ray-plugin — Surge has neither),
  * WireGuard, and any node whose required credentials are missing.
  */
 
 import type { ClashProxyGroup, ProxyNode } from '../types';
 import { isTruthyFlag } from '../utils';
+import { hasVlessEncryption, unverifiedVlessOptions } from '../vless';
 import { nodeSkipReason, prepareNode } from './common';
 import { isWritableName, markUnemitted } from './groups';
 import { buildLineGroups, joinSections, lineGroup, type LineGroup } from './groups';
+import { isSnellLineValue, snellObfs, snellPsk, snellVersion } from './snell';
 
 /** Surge's own policy names that a profile group may reference. */
 export const SURGE_BUILTINS = ['DIRECT', 'REJECT'] as const;
@@ -126,6 +130,92 @@ function vmessLine(node: ProxyNode): string | null {
     parts.push(`skip-cert-verify=${bool(node['skip-cert-verify'])}`);
   }
   parts.push('ws=false');
+  return parts.join(', ');
+}
+
+/**
+ * Native VLESS (iOS 6 / Mac 6.12+). Source of truth:
+ * https://manual.nssurge.com/policies/vless.html (including its combination table).
+ * REALITY's ML-KEM negotiation is automatic; no explicit mihomo toggle exists.
+ */
+function vlessLine(node: ProxyNode): string | null {
+  const network = String(node.network || 'tcp');
+  if (!node.uuid || !['tcp', 'raw', 'ws', 'httpupgrade', 'grpc', 'xhttp'].includes(network)) return null;
+  const reality = node['reality-opts'] as Record<string, unknown> | undefined;
+  const tls = isTruthyFlag(node.tls) || !!reality;
+  const encrypted = hasVlessEncryption(node);
+  if (reality && !reality['public-key']) return null;
+  if (reality && ['ws', 'httpupgrade'].includes(network)) return null;
+  if (network === 'grpc' && (!tls || node.flow)) return null;
+  if (node.flow && !['xtls-rprx-vision', 'xtls-rprx-vision-udp443'].includes(String(node.flow))) return null;
+  if (node.flow && !encrypted && (!tls || !['tcp', 'raw'].includes(network))) return null;
+  // Surge always uses XUDP; do not silently substitute another packet format.
+  if (node['packet-encoding'] && node['packet-encoding'] !== 'xudp') return null;
+  const parts = [`vless, ${node.server}, ${node.port}`, `username=${node.uuid}`];
+  const add = (key: string, value: unknown) => {
+    if (value !== undefined && value !== null && value !== '') parts.push(`${key}=${value}`);
+  };
+  add('encryption', node.encryption);
+  add('flow', node.flow);
+  if (reality) {
+    add('reality-public-key', reality['public-key']);
+    add('reality-short-id', reality['short-id']);
+  } else if (tls) {
+    parts.push('tls=true');
+    if (node['skip-cert-verify'] !== undefined) add('skip-cert-verify', bool(node['skip-cert-verify']));
+  }
+  add('sni', sniOf(node));
+  const fingerprint = node['client-fingerprint'];
+  // Official share-link mapping (policies/overview.html#importing-from-share-links).
+  // These are Surge's documented approximations, not invented uTLS parameters.
+  const fingerprints: Record<string, string> = {
+    chrome: 'chromium-155', edge: 'chromium-155', android: 'chromium-155',
+    '360': 'chromium-155', qq: 'chromium-155', safari: 'apple-26', ios: 'apple-26',
+    firefox: 'auto', golang: 'auto', random: 'auto', randomized: 'auto',
+    randomizedalpn: 'auto', randomizednoalpn: 'auto',
+  };
+  if (fingerprint) {
+    const value = String(fingerprint).toLowerCase();
+    const mapped = fingerprints[value] ?? (['auto', 'none', 'apple-26', 'chromium-155'].includes(value) ? value : undefined);
+    if (!mapped) return null;
+    add('client-fingerprint', mapped);
+  }
+  // Surge's ALPN is a comma-separated list inside a quoted config value.
+  const alpn = alpnOf(node);
+  if (alpn) add('alpn', alpn.includes(',') ? `"${alpn}"` : alpn);
+  const headers = (value: unknown): string | undefined => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    return Object.entries(value).map(([key, val]) => `${key}:${val}`).join('|') || undefined;
+  };
+  if (network === 'ws' || network === 'httpupgrade') {
+    const opts = (node['ws-opts'] ?? node['httpupgrade-opts'] ?? {}) as Record<string, unknown>;
+    if (opts['max-early-data']) return null;
+    parts.push('ws=true');
+    if (network === 'httpupgrade' || isTruthyFlag(opts['v2ray-http-upgrade'])) parts.push('ws-http-upgrade=true');
+    add('ws-path', opts.path || '/');
+    add('ws-headers', headers(opts.headers));
+  } else if (network === 'grpc') {
+    const opts = (node['grpc-opts'] ?? {}) as Record<string, unknown>;
+    const mode = opts['_grpc-type'] ?? opts['grpc-mode'];
+    if (mode && mode !== 'gun' && mode !== 'multi') return null;
+    parts.push('grpc=true');
+    add('grpc-service-name', opts['grpc-service-name']);
+    add('grpc-mode', mode);
+    add('grpc-authority', opts['_grpc-authority'] ?? opts['grpc-authority']);
+  } else if (network === 'xhttp') {
+    const opts = (node['xhttp-opts'] ?? {}) as Record<string, unknown>;
+    // Separate download servers have no Surge grammar. Reuse settings have no
+    // verified mihomo -> Surge mapping either; never silently discard them.
+    if (Object.keys(opts).some((key) => !['path', 'host', 'mode', 'headers'].includes(key))) return null;
+    if (opts.mode && !['auto', 'stream-one', 'stream-up', 'packet-up'].includes(String(opts.mode))) return null;
+    parts.push('xhttp=true');
+    add('xhttp-path', opts.path || '/');
+    add('xhttp-host', opts.host);
+    add('xhttp-mode', opts.mode);
+    add('xhttp-headers', headers(opts.headers));
+  }
+  // A value must not escape its comma-separated declaration or start a line.
+  if (parts.slice(1).some((part) => /[\r\n]/.test(part) || (part.includes(',') && !/^alpn="[^"\r\n]+"$/.test(part)))) return null;
   return parts.join(', ');
 }
 
@@ -234,6 +324,44 @@ function anytlsLine(node: ProxyNode): string | null {
   return parts.join(', ');
 }
 
+/** https://manual.nssurge.com/policies/snell.html */
+function snellLine(node: ProxyNode): string | null {
+  const version = snellVersion(node.version ?? 1);
+  if (!version || node.userkey || node.plugin) return null;
+  const psk = snellPsk(node, version);
+  if (!isSnellLineValue(psk)) return null;
+  const parts = ['snell', node.server, node.port, `psk=${psk}`, `version=${version}`];
+  const { mode, host, uri } = snellObfs(node);
+  if (mode && mode !== 'none' && mode !== 'http' && mode !== 'tls') return null;
+  if (version === 6) {
+    // v6 uses native traffic shaping, not the legacy HTTP/TLS obfs fields.
+    if (node.mode) {
+      if (node.mode !== 'default' && node.mode !== 'unshaped' && node.mode !== 'unsafe-raw') return null;
+      parts.push(`mode=${node.mode}`);
+    }
+  } else if (mode && mode !== 'none') {
+    if (mode === 'tls' && version >= 4) return null;
+    parts.push(`obfs=${mode}`);
+    if (host) {
+      if (!isSnellLineValue(host)) return null;
+      parts.push(`obfs-host=${host}`);
+    }
+    if (mode === 'http' && uri) {
+      if (!isSnellLineValue(uri)) return null;
+      parts.push(`obfs-uri=${uri}`);
+    }
+  }
+  if (version >= 4 && node.reuse !== undefined) parts.push(`reuse=${bool(node.reuse)}`);
+  // Unlike Shadowsocks, Snell's UDP relay is automatic from v3 onward;
+  // udp-relay is not a Snell parameter. Only a UDP port override is available.
+  if (version >= 3 && node['udp-port'] !== undefined) {
+    const port = Number(node['udp-port']);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    parts.push(`udp-port=${port}`);
+  }
+  return parts.join(', ');
+}
+
 /** `socks5` and `http` (both plaintext and TLS proxies). */
 function socksHttpLine(node: ProxyNode, type: 'socks5' | 'http'): string | null {
   const parts = [`${type}, ${node.server}, ${node.port}`];
@@ -257,7 +385,7 @@ function socksHttpLine(node: ProxyNode, type: 'socks5' | 'http'): string | null 
  * An *unemitted* node (`markUnemitted`) arrives as a marker carrying the skip
  * reason. Return that as-is instead of re-deriving it: a node with neither a
  * usable name nor credentials would otherwise be reported as "missing name",
- * hiding that the real reason was e.g. "Surge has no VLESS support".
+ * hiding the original protocol-options diagnostic.
  *
  * The reason is *not* derived from `prepareNode`'s output: `cleanupValue`
  * strips every `_`-prefixed key, so it would never be visible there.
@@ -268,6 +396,7 @@ export function surgeProxyLine(node: ProxyNode):
   | { skipped: string } {
   const marked = nodeSkipReason(node);
   if (marked) return { reason: marked };
+  if (node.type === 'easytier') return { skipped: 'unsupported protocol: easytier' };
 
   const proxy = prepareNode(node);
   const name = String(proxy.name ?? '').trim();
@@ -307,8 +436,16 @@ export function surgeProxyLine(node: ProxyNode):
     case 'anytls':
       body = anytlsLine(proxy);
       break;
-    case 'vless':
-      return { skipped: 'Surge has no VLESS support' };
+    case 'snell':
+      body = snellLine(proxy);
+      break;
+    case 'vless': {
+      const reason = unverifiedVlessOptions(node);
+      if (reason) return { skipped: reason };
+      // URI gRPC mode/authority are internal metadata stripped by prepareNode.
+      body = vlessLine(node);
+      break;
+    }
     case 'ssr':
       return { skipped: 'Surge has no ShadowsocksR support' };
     default:

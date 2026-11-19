@@ -38,6 +38,7 @@ import type { ClashProxyGroup, ProxyNode } from '../types';
 import { isTruthyFlag, normalizeVmessSecurity } from '../utils';
 import { rulePolicy } from '../rules/prune-groups';
 import { nodeSkipReason, prepareNode } from './common';
+import { hasVlessEncryption, unverifiedVlessOptions } from '../vless';
 import { buildLineGroups, joinSections, markUnemitted, type LineGroup } from './groups';
 
 /** Shadowrocket's own policy names that a profile group may reference. */
@@ -316,6 +317,12 @@ export function shadowrocketConfProxyLine(node: ProxyNode):
   | { skipped: string } {
   const marked = nodeSkipReason(node);
   if (marked) return { reason: marked };
+  if (node.type === 'easytier') return { skipped: 'unsupported protocol: easytier' };
+  const reason = unverifiedVlessOptions(node);
+  if (reason) return { skipped: reason };
+  if (node.type === 'vless' && hasVlessEncryption(node)) {
+    return { skipped: 'VLESS encryption is not supported in Shadowrocket conf output' };
+  }
 
   const proxy = prepareNode(node);
   const name = sanitizeShadowrocketConfName(proxy.name);
@@ -355,6 +362,9 @@ export function shadowrocketConfProxyLine(node: ProxyNode):
     case 'http':
       body = socksHttpLine(proxy, isTruthyFlag(proxy.tls) ? 'https' : 'http');
       break;
+    case 'snell':
+      // App-level support does not document a [Proxy] declaration for Snell.
+      return { skipped: 'no documented Shadowrocket Snell config grammar' };
     case 'wireguard':
       return { skipped: 'WireGuard conf syntax is out of scope' };
     default:

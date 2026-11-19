@@ -151,6 +151,7 @@ export function stringifyYamlBlocks(
     return Object.entries(blocks)
       .map(([key, value]) => {
         if (Array.isArray(value)) {
+          if (value.length === 0) return `${key}: []\n`;
           return (
             `${key}:\n` +
             value.map((entry) => `  - ${JSON.stringify(entry)}\n`).join('')
