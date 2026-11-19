@@ -68,6 +68,8 @@ describe('singbox producer: document', () => {
       'anytls',
       'snell',
       'wireguard',
+      'openvpn',
+      'openconnect',
       'socks',
       'http',
     ]);

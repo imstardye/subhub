@@ -125,6 +125,10 @@ export function buildMihomoProxyResult(nodes: ProxyNode[]): {
   const proxies: ProxyNode[] = [];
   const skipped: Array<{ name: string; reason: string }> = [];
   for (const node of nodes) {
+    if (node.type === 'openconnect') {
+      skipped.push({ name: node.name, reason: 'no documented mihomo OpenConnect grammar' });
+      continue;
+    }
     if (node.type === 'vless' && node.finalmask != null) {
       skipped.push({ name: node.name, reason: 'VLESS FinalMask is not supported by mihomo' });
       continue;

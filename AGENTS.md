@@ -11,6 +11,7 @@ Add an entry whenever you work something out worth keeping, for example:
 It starts empty and is meant to grow slowly. Don't pad it; a short, accurate file beats a long, stale one.
 
 ## subhub-specific notes
+- sing-box 1.14 additions: `openvpn` Clash nodes emit `openvpn-client` **endpoints**, not outbounds; OpenConnect has no documented mihomo grammar, so only native sing-box endpoint fields in a subscription envelope are mapped. HY2 randomized `hop-interval: 15-30` maps to min/max durations, `realm-opts.enable` removes all static server fields, and Gecko packet sizes are nested in `obfs`. See `docs/singbox-114-audit.md` for mappings and fail-closed boundaries. The sing-box export has no DNS/routing template to migrate.
 - `pnpm test` / `pnpm typecheck` (`tsc --noEmit`) / `pnpm build` are the gate. Root `tsconfig.json` covers `tests/` but not `pages/`; the build is what type-checks the Vue SFCs.
 - No DOM test environment (no jsdom/happy-dom) is installed: keep page logic in pure helpers under `core/utils/` and unit-test those instead of mounting components.
 - Admin page error banners must go through `core/utils/api-error.ts` (`apiErrorMessage`). The old per-page `err.data?.error ?? fallback` pattern returns `''` for non-API exceptions, which renders a *blank* red banner (the item-3 silent-failure symptom).

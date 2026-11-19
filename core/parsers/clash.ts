@@ -30,6 +30,10 @@ const SUPPORTED_NODE_TYPES = new Set([
   'http',
   'snell',
   'wireguard',
+  'openvpn',
+  // OpenConnect has no documented mihomo grammar. Retain the documented
+  // sing-box endpoint fields in a subscription envelope for that target only.
+  'openconnect',
   'direct',
 ]);
 
@@ -39,16 +43,21 @@ function normalizeNode(raw: unknown): ProxyNode | null {
   if (typeof record.type !== 'string' || !SUPPORTED_NODE_TYPES.has(record.type)) {
     return null;
   }
-  if (typeof record.server !== 'string' || !record.server.trim()) return null;
-  if (!('port' in record)) return null;
+  const realm = record.type === 'hysteria2'
+    ? record['realm-opts'] as Record<string, unknown> | undefined : undefined;
+  const realmEnabled = realm?.enable === true;
+  if (!('port' in record) && record.type !== 'openconnect' && !realmEnabled) return null;
 
   let port: number;
   try {
-    port = parsePort(record.port as string | number | undefined, 0);
+    port = parsePort(record.port as string | number | undefined,
+      record.type === 'openconnect' ? 443 : realmEnabled ? 443 : 0);
   } catch {
     return null;
   }
   if (!port) return null;
+  if (!realmEnabled && (typeof record.server !== 'string' || !record.server.trim())) return null;
+  const server = typeof record.server === 'string' ? record.server : '';
 
   // Keep protocol options verbatim, including VLESS encryption and nested
   // REALITY ML-KEM options. Producers decide which fields their target supports.
@@ -57,9 +66,9 @@ function normalizeNode(raw: unknown): ProxyNode | null {
     name:
       typeof record.name === 'string' && record.name.trim()
         ? record.name
-        : `${record.type} ${record.server}:${port}`,
+        : `${record.type} ${server || realm?.['realm-id']}:${port}`,
     type: record.type,
-    server: record.server,
+    server,
     port,
   } as ProxyNode;
 }

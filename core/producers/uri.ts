@@ -542,8 +542,9 @@ export function toShareLink(node: ProxyNode): string | null {
 }
 
 /** Links for the nodes that have a share-link form, in input order. */
-export function buildShareLinks(nodes: ProxyNode[]): string[] {
+export function buildShareLinkResult(nodes: ProxyNode[]): { lines: string[]; skipped: Array<{ name: string; reason: string }> } {
   const links: string[] = [];
+  const skipped: Array<{ name: string; reason: string }> = [];
   for (const raw of nodes) {
     const node = prepareNode(raw);
     normalizeCommonTransport(node);
@@ -554,14 +555,21 @@ export function buildShareLinks(nodes: ProxyNode[]): string[] {
     if (node.type === 'tuic' || node.type === 'hysteria2' || node.type === 'anytls') normalizeAlpn(node);
     const link = toShareLink(node);
     // Safety net: never emit a link our own parser would drop or reject.
-    if (!link || !isShareLink(link)) continue;
+    if (!link || !isShareLink(link)) {
+      skipped.push({ name: raw.name, reason: `unsupported or unrepresentable share link: ${raw.type}` });
+      continue;
+    }
     try {
       if (parseUri(link)) links.push(link);
     } catch {
       // Unrepresentable in share-link form after all; skip instead of faking.
     }
   }
-  return links;
+  return { lines: links, skipped };
+}
+
+export function buildShareLinks(nodes: ProxyNode[]): string[] {
+  return buildShareLinkResult(nodes).lines;
 }
 
 /**
