@@ -155,7 +155,7 @@ onMounted(loadUsers);
       </template>
       <template #header-extra>
         <div class="actions">
-          <span class="meta">{{ result.target }} · {{ result.status }}</span>
+          <span class="meta mono">{{ result.target }} · {{ result.status }}</span>
           <n-tag v-if="shown.decoded" size="small" round>已解码分享链接</n-tag>
           <n-button size="small" secondary @click="copyResult">
             {{ copied ? '已复制' : '复制结果' }}

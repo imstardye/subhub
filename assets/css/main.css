@@ -46,6 +46,7 @@
   --shadow-md: 0 8px 20px -12px rgba(15, 23, 42, 0.12);
   --shadow-lg: 0 24px 48px -24px rgba(15, 23, 42, 0.18);
   --glow-accent: 0 0 0 1px rgba(37, 99, 235, 0.25), 0 8px 20px -12px rgba(37, 99, 235, 0.35);
+  --sidebar-active: #eff6ff;
 
   /* Typography */
   --font-sans:
@@ -195,6 +196,11 @@ pre {
   box-shadow: var(--shadow-sm);
 }
 
+/* Naive cards inherit the same compact panel language as the layout cards. */
+.n-card {
+  box-shadow: var(--shadow-sm);
+}
+
 .card > h2 {
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--border);
@@ -263,6 +269,22 @@ pre {
 
 .topbar-title .sub {
   display: block;
+}
+
+.topbar-admin {
+  min-height: 4rem;
+  border-bottom-color: color-mix(in srgb, var(--primary) 12%, var(--border));
+}
+
+.rows > .n-card,
+.card-grid > .n-card {
+  transition: box-shadow var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.rows > .n-card:hover,
+.card-grid > .n-card:hover {
+  border-color: color-mix(in srgb, var(--primary) 24%, var(--border));
+  box-shadow: var(--shadow-md);
 }
 
 /* --------------------------------------------------------------- cards -- */
@@ -344,7 +366,7 @@ pre {
 /* --------------------------------------------------------- scrollbars -- */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #cbd5e1 transparent;
+  scrollbar-color: var(--border) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -353,13 +375,13 @@ pre {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: var(--border);
   border: 2px solid var(--background);
   border-radius: var(--radius-pill);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: var(--muted-foreground);
 }
 
 /* ----------------------------------------------------- reduced motion -- */

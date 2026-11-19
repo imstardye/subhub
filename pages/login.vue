@@ -97,7 +97,7 @@ async function handleSubmit() {
   padding: var(--space-4);
   background:
     radial-gradient(60rem 30rem at 50% -10%, rgba(37, 99, 235, 0.07), transparent 70%),
-    linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+    linear-gradient(180deg, var(--background) 0%, var(--muted) 100%);
   font-family: var(--font-sans);
   color: var(--foreground);
 }
@@ -107,6 +107,7 @@ async function handleSubmit() {
   gap: var(--space-2);
   width: min(23rem, 100%);
   padding: var(--space-8);
+  border-radius: var(--radius-panel);
   box-shadow: var(--shadow-lg);
 }
 .brand {
@@ -121,7 +122,7 @@ async function handleSubmit() {
   justify-content: center;
   width: 2.1rem;
   height: 2.1rem;
-  border: 1px solid rgba(37, 99, 235, 0.18);
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, transparent);
   border-radius: var(--radius);
   background: var(--accent-soft);
   color: var(--primary);
