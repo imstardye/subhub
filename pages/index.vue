@@ -217,7 +217,7 @@ onMounted(async () => {
         <template #header>
           <div class="panel-title">
             <span>源健康</span>
-            <n-tag size="small" :type="health.state === 'unhealthy' ? 'error' : 'default'">
+            <n-tag size="small" class="mono" :type="health.state === 'unhealthy' ? 'error' : 'default'">
               {{ health.count }}
             </n-tag>
           </div>
@@ -258,7 +258,7 @@ onMounted(async () => {
         <p v-else-if="recent.length === 0" class="muted sub">暂无访问记录。</p>
         <ul v-else class="visit-list">
           <li v-for="log in recent" :key="log.id">
-            <n-tag size="small" round :type="logType(log.status)">{{ log.status ?? '—' }}</n-tag>
+            <n-tag size="small" round class="mono" :type="logType(log.status)">{{ log.status ?? '—' }}</n-tag>
             <span class="visit-user" :title="logUserName(log)">{{ logUserName(log) }}</span>
             <span class="sub visit-target">{{ log.target ?? '—' }}</span>
             <span class="sub visit-time" :title="formatDateTime(log.createdAt)">
@@ -305,7 +305,7 @@ onMounted(async () => {
   justify-content: center;
   width: 1.9rem;
   height: 1.9rem;
-  border: 1px solid rgba(37, 99, 235, 0.18);
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, transparent);
   border-radius: var(--radius);
   background: var(--accent-soft);
   color: var(--primary);

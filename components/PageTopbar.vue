@@ -15,7 +15,7 @@ defineProps<{
 </script>
 
 <template>
-  <header class="topbar">
+  <header class="topbar topbar-admin">
     <div class="topbar-title">
       <h1>{{ title }}</h1>
       <span v-if="subtitle" class="sub">{{ subtitle }}</span>

@@ -90,12 +90,14 @@ export const naiveThemeOverrides: GlobalThemeOverrides = {
     modalColor: '#FFFFFF',
     popoverColor: '#FFFFFF',
     tableColor: '#FFFFFF',
+    /* Naive `common` colours must stay literal hex: seemly computes with
+       them (rgba derivation) and throws on var() references at runtime. */
     tableHeaderColor: '#F1F5F9',
     inputColor: '#FFFFFF',
     borderColor: '#E2E8F0',
     dividerColor: '#E2E8F0',
     hoverColor: '#F1F5F9',
-    tableColorHover: '#F1F5F9',
+    tableColorHover: '#F8FBFF',
     borderRadius: '8px',
     borderRadiusSmall: '4px',
     fontFamily: FONT_SANS,
@@ -131,9 +133,16 @@ export const naiveThemeOverrides: GlobalThemeOverrides = {
     railHeight: '6px',
   },
   DataTable: {
-    borderRadius: '14px',
+    borderRadius: 'var(--radius-lg)',
+    thPaddingSmall: '12px 16px',
+    tdPaddingSmall: '12px 16px',
+    thFontWeight: '600',
   },
   Menu: {
-    itemBorderRadius: '8px',
+    itemBorderRadius: 'var(--radius)',
+    itemColorActive: 'var(--sidebar-active)',
+    itemTextColorActive: 'var(--primary)',
+    itemIconColorActive: 'var(--primary)',
+    itemColorHover: 'var(--hover-surface)',
   },
 };

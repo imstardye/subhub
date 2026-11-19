@@ -138,7 +138,7 @@ async function handleLogout() {
   flex-direction: column;
   width: 14rem;
   flex-shrink: 0;
-  padding: var(--space-5) var(--space-3);
+  padding: var(--space-6) var(--space-3);
   background: var(--sidebar);
   border-right: 1px solid var(--border);
   position: sticky;
@@ -151,7 +151,7 @@ async function handleLogout() {
   align-items: center;
   gap: var(--space-2);
   padding: 0 var(--space-2) var(--space-5);
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-3);
   border-bottom: 1px solid var(--border);
 }
 
@@ -163,13 +163,13 @@ async function handleLogout() {
   height: 1.85rem;
   border-radius: var(--radius);
   background: var(--accent-soft);
-  border: 1px solid rgba(37, 99, 235, 0.18);
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, transparent);
   color: var(--primary);
 }
 
 .brand-mark svg {
-  width: 1rem;
-  height: 1rem;
+  width: 1.05rem;
+  height: 1.05rem;
   stroke: currentColor;
   fill: none;
   stroke-linecap: round;
@@ -189,8 +189,9 @@ async function handleLogout() {
 }
 
 .logout {
-  margin-top: var(--space-4);
+  margin-top: var(--space-5);
   justify-content: flex-start;
+  color: var(--muted-foreground);
 }
 
 .main {

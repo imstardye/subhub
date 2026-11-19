@@ -406,7 +406,7 @@ async function saveOidc() {
   flex: 1;
   padding: 6px 10px;
   border-radius: 8px;
-  background: var(--muted, #f1f5f9);
+  background: var(--muted);
   font-size: var(--text-xs);
   overflow-wrap: anywhere;
 }
