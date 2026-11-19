@@ -9,6 +9,49 @@
  */
 import type { GlobalThemeOverrides } from 'naive-ui';
 
+type ThemePart<K extends keyof GlobalThemeOverrides> = NonNullable<GlobalThemeOverrides[K]>;
+
+/** User-center surfaces and controls, scoped to /my so admin density stays the same. */
+export const userCenterCardTheme: ThemePart<'Card'> = {
+  borderRadius: 'var(--radius-panel)',
+  borderColor: 'var(--border)',
+  boxShadow: 'var(--shadow-lg)',
+  paddingSmall: '12px 16px 16px',
+  paddingMedium: '20px 20px 20px',
+  titleFontSizeMedium: '16px',
+  titleFontWeight: '700',
+};
+
+export const userCenterTargetTheme: ThemePart<'Radio'> = {
+  buttonBorderRadius: 'var(--radius-pill)',
+  buttonBorderColor: 'transparent',
+  buttonBorderColorActive: 'transparent',
+  buttonColor: 'transparent',
+  buttonColorActive: 'linear-gradient(110deg, var(--primary-hover), #0369a1)',
+  buttonTextColor: 'var(--foreground)',
+  buttonTextColorActive: 'var(--primary-foreground)',
+  buttonTextColorHover: 'var(--primary-hover)',
+  buttonBoxShadowHover: 'inset 0 0 0 1px var(--border)',
+  buttonBoxShadowFocus: 'inset 0 0 0 2px var(--card), 0 0 0 2px var(--primary)',
+};
+
+export const userCenterButtonTheme: ThemePart<'Button'> = {
+  colorPressedPrimary: '#1e40af',
+  colorSecondaryPressed: '#dbeafe',
+  colorOpacitySecondaryPressed: '0.32',
+  textColorTextPressed: 'var(--primary-hover)',
+};
+
+export const userCenterEmptyTheme: ThemePart<'Empty'> = {
+  iconColor: 'var(--primary)',
+  textColor: 'var(--muted-foreground)',
+};
+
+export const userCenterSkeletonTheme: ThemePart<'Skeleton'> = {
+  color: 'var(--accent-soft)',
+  colorEnd: 'var(--border)',
+};
+
 const FONT_SANS =
   "'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif";
 const FONT_MONO =
