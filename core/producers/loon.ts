@@ -29,6 +29,7 @@
 import type { ClashProxyGroup, ProxyNode } from '../types';
 import { isTruthyFlag } from '../utils';
 import { nodeSkipReason, prepareNode } from './common';
+import { hasVlessEncryption, unverifiedVlessOptions } from '../vless';
 import { isSnellLineValue, snellObfs, snellPsk, snellVersion } from './snell';
 import {
   buildLineGroups,
@@ -281,6 +282,11 @@ export function loonProxyLine(node: ProxyNode):
   | { skipped: string } {
   const marked = nodeSkipReason(node);
   if (marked) return { reason: marked };
+  const reason = unverifiedVlessOptions(node);
+  if (reason) return { skipped: reason };
+  if (node.type === 'vless' && hasVlessEncryption(node)) {
+    return { skipped: 'VLESS encryption is not supported by this Loon producer' };
+  }
 
   const proxy = prepareNode(node);
   const name = String(proxy.name ?? '').trim();

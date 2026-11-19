@@ -17,6 +17,7 @@
  * missing padding / URL-safe alphabet).
  */
 import type { ProxyNode } from '../types';
+import { realityMlkem, REALITY_MLKEM } from '../vless';
 import { encodeBase64, isTruthyFlag, parseAlpn } from '../utils';
 import { isShareLink, parseUri } from '../parsers/uri';
 import { normalizeAlpn, normalizeCommonTransport, prepareNode } from './common';
@@ -371,11 +372,17 @@ function vmessLink(node: ProxyNode): string {
 function vlessLink(node: ProxyNode): string {
   const flow = toStringOrUndefined(node.flow);
   const params: Array<[string, string]> = [
-    ['encryption', toStringOrUndefined(node.encryption) ?? 'none'],
+    ['encryption', typeof node.encryption === 'string' ? node.encryption : 'none'],
     ...tlsParams(node),
     ...(flow ? [['flow', flow] as [string, string]] : []),
     ...transportParams(node),
   ];
+  const mlkem = realityMlkem(node);
+  if (mlkem != null) params.push([REALITY_MLKEM, String(mlkem)]);
+  if (node.finalmask != null) {
+    const fm = typeof node.finalmask === 'string' ? node.finalmask : JSON.stringify(node.finalmask);
+    params.push(['fm', fm]);
+  }
   if (node.network === 'xhttp') {
     const extra = buildXhttpExtra(node);
     if (extra) params.push(['extra', extra]);

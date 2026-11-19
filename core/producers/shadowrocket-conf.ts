@@ -38,6 +38,7 @@ import type { ClashProxyGroup, ProxyNode } from '../types';
 import { isTruthyFlag, normalizeVmessSecurity } from '../utils';
 import { rulePolicy } from '../rules/prune-groups';
 import { nodeSkipReason, prepareNode } from './common';
+import { hasVlessEncryption, unverifiedVlessOptions } from '../vless';
 import { buildLineGroups, joinSections, markUnemitted, type LineGroup } from './groups';
 
 /** Shadowrocket's own policy names that a profile group may reference. */
@@ -316,6 +317,11 @@ export function shadowrocketConfProxyLine(node: ProxyNode):
   | { skipped: string } {
   const marked = nodeSkipReason(node);
   if (marked) return { reason: marked };
+  const reason = unverifiedVlessOptions(node);
+  if (reason) return { skipped: reason };
+  if (node.type === 'vless' && hasVlessEncryption(node)) {
+    return { skipped: 'VLESS encryption is not supported in Shadowrocket conf output' };
+  }
 
   const proxy = prepareNode(node);
   const name = sanitizeShadowrocketConfName(proxy.name);

@@ -35,6 +35,7 @@
 import type { ProxyNode } from '../types';
 import { isTruthyFlag, parseAlpn } from '../utils';
 import { normalizeCommonTransport, prepareNode } from './common';
+import { hasVlessEncryption, parseRealityMlkem, realityMlkem, REALITY_MLKEM } from '../vless';
 import { snellObfs, snellPsk, snellVersion } from './snell';
 
 /** sing-box outbound types this producer can emit. */
@@ -573,8 +574,26 @@ function socksLike(node: ProxyNode): SingboxOutbound | null {
   return outbound;
 }
 
+function vlessSkipReason(node: ProxyNode): string | undefined {
+  if (node.type !== 'vless') return undefined;
+  if (node.finalmask != null) return 'VLESS FinalMask is not supported by sing-box';
+  if (hasVlessEncryption(node)) return 'VLESS encryption is not supported by sing-box';
+  const mlkem = realityMlkem(node);
+  // sing-box 1.14.4 removes the hybrid key share in its REALITY client even
+  // when configured with a TLS curve preference. Explicit false is satisfied.
+  if (mlkem != null && parseRealityMlkem(mlkem) !== false) {
+    return `VLESS REALITY ${REALITY_MLKEM} is not supported by sing-box`;
+  }
+  return undefined;
+}
+
 /** Map one node to a sing-box outbound, or `null` when sing-box cannot express it. */
 export function toSingboxOutbound(node: ProxyNode): SingboxOutbound | null {
+  if (vlessSkipReason(node)) return null;
+  return mapOutbound(node);
+}
+
+function mapOutbound(node: ProxyNode): SingboxOutbound | null {
   if (!node.server || !Number.isInteger(node.port) || node.port < 1 || node.port > 65535) {
     return null;
   }
@@ -621,16 +640,32 @@ function compact(outbound: SingboxOutbound): SingboxOutbound {
   return output as unknown as SingboxOutbound;
 }
 
-/** Outbounds for the nodes sing-box can express, in input order. */
-export function buildSingboxOutbounds(nodes: ProxyNode[]): SingboxOutbound[] {
+export function buildSingboxOutboundResult(nodes: ProxyNode[]): {
+  outbounds: SingboxOutbound[];
+  skipped: Array<{ name: string; reason: string }>;
+} {
   const outbounds: SingboxOutbound[] = [];
+  const skipped: Array<{ name: string; reason: string }> = [];
   for (const raw of nodes) {
+    // WireGuard is handled separately by buildSingboxEndpoints.
+    if (raw.type === 'wireguard') continue;
+    const reason = vlessSkipReason(raw);
+    if (reason) {
+      skipped.push({ name: raw.name, reason });
+      continue;
+    }
     const node = prepareNode(raw);
     normalizeCommonTransport(node);
-    const outbound = toSingboxOutbound(node);
+    const outbound = mapOutbound(node);
     if (outbound) outbounds.push(compact(outbound));
+    else skipped.push({ name: raw.name, reason: 'unsupported or unrepresentable sing-box outbound' });
   }
-  return outbounds;
+  return { outbounds, skipped };
+}
+
+/** Outbounds for the nodes sing-box can express, in input order. */
+export function buildSingboxOutbounds(nodes: ProxyNode[]): SingboxOutbound[] {
+  return buildSingboxOutboundResult(nodes).outbounds;
 }
 
 /**

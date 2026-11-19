@@ -10,6 +10,7 @@
 import type { ClashProxyGroup, ProduceOptions, ProxyNode } from '../types';
 import { resolveDnsTemplate } from '../dns';
 import { buildTailscaleInjection } from '../tailscale';
+import { parseRealityMlkem, realityMlkem, REALITY_MLKEM } from '../vless';
 import { stringify as stringifyYaml } from 'yaml';
 import {
   normalizeAlpn,
@@ -117,17 +118,36 @@ function transform(node: ProxyNode): ProxyNode {
   return proxy;
 }
 
-export function buildMihomoProxies(
-  nodes: ProxyNode[],
-  options: ProduceOptions = {},
-): ProxyNode[] {
-  return nodes.map((node) => {
-    const proxy = transform(node);
-    if (!options.includeUnsupported) {
-      // mihomo supports every protocol handled by P1, so nothing is filtered.
+export function buildMihomoProxyResult(nodes: ProxyNode[]): {
+  proxies: ProxyNode[];
+  skipped: Array<{ name: string; reason: string }>;
+} {
+  const proxies: ProxyNode[] = [];
+  const skipped: Array<{ name: string; reason: string }> = [];
+  for (const node of nodes) {
+    if (node.type === 'vless' && node.finalmask != null) {
+      skipped.push({ name: node.name, reason: 'VLESS FinalMask is not supported by mihomo' });
+      continue;
     }
-    return proxy;
-  });
+    const proxy = transform(node);
+    const mlkem = node.type === 'vless' ? realityMlkem(node) : undefined;
+    if (mlkem != null) {
+      const reality = proxy['reality-opts'] as Record<string, unknown> | undefined;
+      const enabled = parseRealityMlkem(mlkem);
+      if (!reality?.['public-key'] || enabled === undefined) {
+        skipped.push({ name: node.name, reason: `VLESS ${REALITY_MLKEM} requires a boolean and a REALITY public key` });
+        continue;
+      }
+      reality[REALITY_MLKEM] = enabled;
+      delete proxy[REALITY_MLKEM];
+    }
+    proxies.push(proxy);
+  }
+  return { proxies, skipped };
+}
+
+export function buildMihomoProxies(nodes: ProxyNode[], _options: ProduceOptions = {}): ProxyNode[] {
+  return buildMihomoProxyResult(nodes).proxies;
 }
 
 /**

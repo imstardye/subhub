@@ -10,6 +10,7 @@
 export {
   buildLeadingRules,
   buildMihomoProxies,
+  buildMihomoProxyResult,
   isQuicBlockRule,
   produceMihomo,
   produceMihomoProxiesOnly,
@@ -34,6 +35,7 @@ export {
 } from './uri';
 export {
   buildSingboxEndpoints,
+  buildSingboxOutboundResult,
   buildSingboxOutbounds,
   produceSingbox,
   singboxServerPorts,

@@ -28,6 +28,7 @@ import {
   stripIpv6Brackets,
 } from '../utils';
 import { prepareNode } from './common';
+import { unverifiedVlessOptions } from '../vless';
 import { buildMieruLink, buildXhttpExtra } from './uri';
 
 export interface PrefixNodeResult {
@@ -392,6 +393,8 @@ function socksHttpLink(node: ProxyNode, scheme: 'socks' | 'http' | 'https'): str
 
 /** Build the share link for one node, or the reason it is skipped. */
 export function shadowrocketLink(node: ProxyNode): { line: string } | { skipped: string } {
+  const reason = unverifiedVlessOptions(node);
+  if (reason) return { skipped: reason };
   const proxy = prepareNode(node);
   const name = String(proxy.name ?? '').trim();
   // mieru carries its name in the link's `profile` and has a server:port fallback.

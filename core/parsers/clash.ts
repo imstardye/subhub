@@ -50,6 +50,8 @@ function normalizeNode(raw: unknown): ProxyNode | null {
   }
   if (!port) return null;
 
+  // Keep protocol options verbatim, including VLESS encryption and nested
+  // REALITY ML-KEM options. Producers decide which fields their target supports.
   return {
     ...record,
     name:
