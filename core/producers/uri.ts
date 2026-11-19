@@ -9,7 +9,8 @@
  *
  * The supported type set is exactly `URI_PARSERS` in the parser module:
  * ss, ssr, vmess, vless, trojan, hysteria2, tuic, anytls, mieru. Everything
- * else (socks/http/snell/wireguard/…) is skipped rather than faked.
+ * else (socks/http/snell/wireguard/…) is skipped rather than faked. Snell has
+ * no documented per-node share-link scheme.
  *
  * Body: standard base64 (with padding) of the newline-joined links, which is
  * what the repo's `parseSubscription` accepts (`decodeBase64` also tolerates

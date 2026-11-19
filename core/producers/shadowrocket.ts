@@ -440,8 +440,8 @@ export function shadowrocketLink(node: ProxyNode): { line: string } | { skipped:
       line = socksHttpLink(proxy, isTruthyFlag(proxy.tls) ? 'https' : 'http');
       break;
     case 'snell':
-      // Shadowrocket has no published share-link scheme for Snell.
-      return { skipped: 'Shadowrocket has no Snell share link' };
+      // Shadowrocket lists Snell support, but does not document a share-link scheme.
+      return { skipped: 'no documented Shadowrocket Snell share link' };
     default:
       return { skipped: `unsupported protocol: ${String(proxy.type)}` };
   }

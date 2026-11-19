@@ -66,6 +66,7 @@ describe('singbox producer: document', () => {
       'hysteria',
       'hysteria2',
       'anytls',
+      'snell',
       'wireguard',
       'socks',
       'http',
@@ -74,6 +75,27 @@ describe('singbox producer: document', () => {
 });
 
 describe('singbox producer: golden outbounds', () => {
+  it('emits Snell v4 with documented HTTP obfs, reuse and TCP-only fields', () => {
+    expect(outboundOf(node({
+      type: 'snell', version: '4', psk: 'fixture', reuse: true, udp: false,
+      'obfs-opts': { mode: 'http', host: 'cover.example.com' },
+    }))).toEqual({
+      type: 'snell', tag: 'fixture', server: 'example.com', server_port: 8388,
+      version: 4, psk: 'fixture', reuse: true, network: 'tcp',
+      obfs_mode: 'http', obfs_host: 'cover.example.com',
+    });
+  });
+
+  it('emits Snell v6 mode and userkey without legacy obfs or UDP flags', () => {
+    expect(outboundOf(node({
+      type: 'snell', version: 6, psk: '密'.repeat(4), userkey: 'fixture-id', mode: 'unshaped', udp: true,
+      'obfs-opts': { mode: 'http', host: 'cover.example.com' },
+    }))).toEqual({
+      type: 'snell', tag: 'fixture', server: 'example.com', server_port: 8388,
+      version: 6, psk: '密'.repeat(4), userkey: 'fixture-id', mode: 'unshaped',
+    });
+  });
+
   it('shadowsocks (method/password only)', () => {
     expect(
       outboundOf(
@@ -549,11 +571,23 @@ describe('singbox producer: golden outbounds', () => {
 describe('singbox producer: skipped nodes', () => {
   it.each([
     ['ssr', { type: 'ssr', cipher: 'aes-128-cfb', password: 'fake', protocol: 'origin', obfs: 'plain' }],
-    ['snell', { type: 'snell', psk: 'fake' }],
     ['direct', {}],
     ['unknown type', { type: 'jsons' }],
   ])('skips %s (no sing-box outbound type)', (_label, overrides) => {
     expect(buildSingboxOutbounds([node(overrides)])).toEqual([]);
+  });
+
+  it.each([undefined, 1, 2, 3, 5, '6.5'])('skips Snell version %s rather than changing it', (version) => {
+    expect(buildSingboxOutbounds([node({ type: 'snell', version, psk: 'fixture-snell-psk' })])).toEqual([]);
+  });
+
+  it.each([
+    { version: 6, psk: '密'.repeat(3) },
+    { version: 6, psk: '密'.repeat(86) },
+    { version: 4, psk: '' },
+    { version: 4, psk: 'fixture', 'obfs-opts': { mode: 'tls' } },
+  ])('skips invalid Snell options %j', (options) => {
+    expect(buildSingboxOutbounds([node({ type: 'snell', ...options })])).toEqual([]);
   });
 
   it('skips authenticated socks/http proxies instead of dropping the credentials', () => {

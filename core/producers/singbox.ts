@@ -17,6 +17,7 @@
  *   hysteria            hysteria (auth_str/up/down, obfs)
  *   hysteria2           hysteria2 (password, obfs, up/down, port ranges)
  *   anytls              anytls (password, idle_session_*, tls)
+ *   snell                snell (version 4/6, psk, userkey, obfs/mode)
  *   socks / http        local dialer outbounds carry no credentials, so
  *                       authenticated proxies are skipped (see below)
  *
@@ -26,14 +27,15 @@
  * server"), so wireguard nodes land in `buildSingboxEndpoints` and the
  * document gains an `endpoints` array only when one is present.
  *
- * Skipped: ssr/snell/direct and every other type (no sing-box outbound),
+ * Skipped: ssr/direct and every other type (no sing-box outbound),
  * a non-empty HTTP/SOCKS username (sing-box rejects credentials there),
  * wireguard nodes without a key or a local address, and transports sing-box
  * has no JSON field for in the given outbound (e.g. `httpupgrade` on trojan).
  */
 import type { ProxyNode } from '../types';
-import { parseAlpn } from '../utils';
+import { isTruthyFlag, parseAlpn } from '../utils';
 import { normalizeCommonTransport, prepareNode } from './common';
+import { snellObfs, snellPsk, snellVersion } from './snell';
 
 /** sing-box outbound types this producer can emit. */
 export const SINGBOX_SUPPORTED_TYPES = [
@@ -45,6 +47,7 @@ export const SINGBOX_SUPPORTED_TYPES = [
   'hysteria',
   'hysteria2',
   'anytls',
+  'snell',
   'wireguard',
   'socks',
   'http',
@@ -522,11 +525,41 @@ export function buildSingboxEndpoints(nodes: ProxyNode[]): SingboxEndpoint[] {
   return endpoints;
 }
 
+/** https://sing-box.sagernet.org/configuration/outbound/snell/ */
+function snell(node: ProxyNode): SingboxOutbound | null {
+  // sing-box currently accepts the native Snell outbound for v4 and v6.
+  // Older mihomo-style versions (1/2/3/5) are deliberately not guessed.
+  const version = snellVersion(node.version);
+  if ((version !== 4 && version !== 6) || node.plugin) return null;
+  const psk = snellPsk(node, version);
+  if (!psk) return null;
+  const obfs = snellObfs(node);
+  if (obfs.mode && obfs.mode !== 'none' && obfs.mode !== 'http'
+      && !(version === 6 && obfs.mode === 'tls')) return null;
+  const outbound = base(node, 'snell');
+  outbound.version = version;
+  outbound.psk = psk;
+  const userkey = text(node.userkey);
+  if (userkey) outbound.userkey = userkey;
+  if (node.reuse !== undefined) outbound.reuse = isTruthyFlag(node.reuse);
+  if (node.udp !== undefined && !isTruthyFlag(node.udp)) outbound.network = 'tcp';
+  if (version === 6) {
+    const mode = text(node.mode);
+    if (mode) {
+      if (mode !== 'default' && mode !== 'unshaped' && mode !== 'unsafe-raw') return null;
+      outbound.mode = mode;
+    }
+  } else {
+    if (obfs.mode) outbound.obfs_mode = obfs.mode;
+    const host = text(obfs.host);
+    if (obfs.mode === 'http' && host) outbound.obfs_host = host;
+  }
+  return outbound;
+}
+
 /**
- * SOCKS/HTTP proxies. sing-box's `socks`/`http` outbounds are unauthenticated
- * dialers (there is no username/password field), so a credentialed proxy is
- * not representable and `null` is returned instead of leaking the node
- * without its credentials.
+ * SOCKS/HTTP dialer outbounds cannot represent credentials; skip authenticated
+ * nodes rather than emitting them without their credentials.
  */
 function socksLike(node: ProxyNode): SingboxOutbound | null {
   const username = text(node.username);
@@ -564,6 +597,8 @@ export function toSingboxOutbound(node: ProxyNode): SingboxOutbound | null {
       return hysteria2(node);
     case 'anytls':
       return anytls(node);
+    case 'snell':
+      return snell(node);
     case 'wireguard':
       // Not an outbound in sing-box >= 1.11 — see buildSingboxEndpoints.
       return null;
@@ -572,7 +607,7 @@ export function toSingboxOutbound(node: ProxyNode): SingboxOutbound | null {
     case 'http':
       return socksLike(node);
     default:
-      // ssr, snell, direct, jsons, …: no sing-box outbound type.
+      // ssr, direct, jsons, …: no sing-box outbound type.
       return null;
   }
 }

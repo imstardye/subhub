@@ -32,6 +32,28 @@ function proxyNames(body: string): string[] {
 }
 
 describe('Loon producer: [Proxy] golden lines', () => {
+  it('emits documented v4 and v5 Snell lines with quoted positional PSKs', () => {
+    expect(loonProxyLine(node({ type: 'snell', version: 4, psk: 'fixture' }))).toEqual({
+      line: 'test = Snell,example.com,8388,"fixture",version=4',
+    });
+    expect(loonProxyLine(node({
+      type: 'snell', version: '5', psk: 'fixture,psk', udp: true, 'block-quic': false,
+      'obfs-opts': { mode: 'http', host: 'cover.example.com', path: '/' },
+    }))).toEqual({
+      line: 'test = Snell,example.com,8388,"fixture,psk",version=5,obfs=http,obfs-host=cover.example.com,obfs-uri=/,udp=true,block-quic=false',
+    });
+  });
+
+  it.each([
+    { version: 6, psk: 'fixture-snell-psk' },
+    { version: 3, psk: 'fixture' },
+    { psk: 'fixture' },
+    { version: 4 },
+    { version: 4, psk: 'fixture', 'obfs-opts': { mode: 'tls' } },
+  ])('skips unrepresentable Snell options %j', (options) => {
+    expect(loonProxyLine(node({ type: 'snell', ...options }))).toHaveProperty('skipped');
+  });
+
   it('emits positional Shadowsocks (Shadowsocks,server,port,method,password)', () => {
     expect(
       loonProxyLine(node({ type: 'ss', name: 'SS', cipher: 'aes-256-gcm', password: 'fake-password' })),

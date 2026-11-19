@@ -34,7 +34,7 @@ const FIXTURE: ProxyNode[] = [
   { type: 'hysteria2', name: 'hy2-hop-range', server: 'h2.example.com', port: 443, password: 'fake', ports: '60000-62000', sni: 'h2.example.com' },
   { type: 'hysteria2', name: 'hy2-hop-list', server: 'h3.example.com', port: 443, password: 'fake', ports: '60000,61000-62000', 'hop-interval': 30 },
   { type: 'hysteria2', name: 'hy2-bandwidth', server: 'h4.example.com', port: 443, password: 'fake', up: 50, down: 200 },
-  { type: 'snell', name: 'snell-01', server: 'sn.example.com', port: 8388, psk: 'fake' },
+  { type: 'snell', name: 'snell-01', server: 'sn.example.com', port: 8388, version: 6, psk: 'fixture-snell-psk' },
 ] as ProxyNode[];
 
 const NODE_NAMES = FIXTURE.map((entry) => entry.name);
@@ -60,7 +60,7 @@ describe('format gaps: per-target emitted counts on the mixed fixture', () => {
     expect(parseSubscription(body).map((entry) => entry.name)).toEqual(names);
   });
 
-  it('surge emits ss/anytls/tuic/all hy2 and still skips vless/ssr/snell', () => {
+  it('surge emits ss/anytls/tuic/all hy2 and Snell v6, and still skips vless/ssr', () => {
     const proxies = buildSurgeProxies(FIXTURE);
     expect(proxies.names).toEqual([
       'ss-01',
@@ -70,8 +70,9 @@ describe('format gaps: per-target emitted counts on the mixed fixture', () => {
       'hy2-hop-range',
       'hy2-hop-list',
       'hy2-bandwidth',
+      'snell-01',
     ]);
-    expect(proxies.skipped.map((entry) => entry.name)).toEqual(['ssr-01', 'vless-01', 'snell-01']);
+    expect(proxies.skipped.map((entry) => entry.name)).toEqual(['ssr-01', 'vless-01']);
   });
 
   it('uri still carries all hy2 variants', () => {
@@ -101,7 +102,7 @@ describe('format gaps: Surge document for the mixed fixture', () => {
     expect(body).not.toContain('port-hopping=443');
 
     expect(body).toContain(
-      '🚀 节点选择 = select,ss-01,anytls-01,tuic-01,hy2-01,hy2-hop-range,hy2-hop-list,hy2-bandwidth,DIRECT',
+      '🚀 节点选择 = select,ss-01,anytls-01,tuic-01,hy2-01,hy2-hop-range,hy2-hop-list,hy2-bandwidth,snell-01,DIRECT',
     );
     expect(body).not.toContain('vless-01');
     expect(body).not.toContain('ssr-01');

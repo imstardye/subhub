@@ -355,6 +355,9 @@ export function shadowrocketConfProxyLine(node: ProxyNode):
     case 'http':
       body = socksHttpLine(proxy, isTruthyFlag(proxy.tls) ? 'https' : 'http');
       break;
+    case 'snell':
+      // App-level support does not document a [Proxy] declaration for Snell.
+      return { skipped: 'no documented Shadowrocket Snell config grammar' };
     case 'wireguard':
       return { skipped: 'WireGuard conf syntax is out of scope' };
     default:

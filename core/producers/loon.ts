@@ -15,6 +15,7 @@
  *   hysteria2 Hysteria2, server, port, password(, sni=, skip-cert-verify=, alpn=)
  *   tuic      TUIC, server, port, token(, alpn=, sni=, skip-cert-verify=)
  *   anytls    AnyTLS, server, port, password(, sni=, skip-cert-verify=)
+ *   snell     Snell, server, port, "PSK", version=4|5(, obfs=, obfs-host=, udp=)
  *   socks5/http Socks5|HTTP, server, port, username, password
  *
  * Transport keywords: `tcp`, `ws`, `http`, `grpc`, `h2`, `http2`,
@@ -28,6 +29,7 @@
 import type { ClashProxyGroup, ProxyNode } from '../types';
 import { isTruthyFlag } from '../utils';
 import { nodeSkipReason, prepareNode } from './common';
+import { isSnellLineValue, snellObfs, snellPsk, snellVersion } from './snell';
 import {
   buildLineGroups,
   isWritableName,
@@ -199,6 +201,32 @@ function tuicLine(node: ProxyNode): string | null {
   return parts.join(',');
 }
 
+/** https://loon0x00.github.io/en/docs/Node/#snell */
+function snellLine(node: ProxyNode): string | null {
+  // The input is mihomo-shaped (an omitted version denotes v1, not Loon's v4).
+  const version = snellVersion(node.version);
+  if ((version !== 4 && version !== 5) || node.userkey || node.plugin) return null;
+  const psk = snellPsk(node, version);
+  if (!psk || /["\r\n\0]/.test(psk)) return null;
+  const { mode, host, uri } = snellObfs(node);
+  if (mode && mode !== 'none' && mode !== 'http') return null;
+  const parts = ['Snell', node.server, node.port, `"${psk}"`, `version=${version}`];
+  if (mode === 'http') {
+    parts.push('obfs=http');
+    if (host) {
+      if (!isSnellLineValue(host)) return null;
+      parts.push(`obfs-host=${host}`);
+    }
+    if (uri) {
+      if (!isSnellLineValue(uri) || !uri.startsWith('/')) return null;
+      parts.push(`obfs-uri=${uri}`);
+    }
+  }
+  if (node.udp !== undefined) parts.push(`udp=${bool(node.udp)}`);
+  if (node['block-quic'] !== undefined) parts.push(`block-quic=${bool(node['block-quic'])}`);
+  return parts.join(',');
+}
+
 function shadowsocksLine(node: ProxyNode): string | null {
   if (!node.cipher || !node.password) return null;
   // Loon has no Shadowsocks plugin line; a plugin-less line would connect to a
@@ -290,6 +318,9 @@ export function loonProxyLine(node: ProxyNode):
       break;
     case 'anytls':
       body = anytlsLine(proxy);
+      break;
+    case 'snell':
+      body = snellLine(proxy);
       break;
     case 'socks5':
     case 'socks':

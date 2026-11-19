@@ -22,6 +22,7 @@
  *              (uuid and password are joined with `:`)*
  * - `hysteria2` `hysteria2, server, port, password=, sni=, skip-cert-verify=`,
  *              plus port hopping (`port-hopping=`, `port-hopping-interval=`)
+ * - `snell`    `snell, server, port, psk=, version=` (v1–v6)
  * - `socks5`/`http` (with `, tls=true` for https proxies)
  *
  * Skipped on purpose: VLESS (not in Surge's protocol table) and SSR (no Surge
@@ -34,6 +35,7 @@ import { isTruthyFlag } from '../utils';
 import { nodeSkipReason, prepareNode } from './common';
 import { isWritableName, markUnemitted } from './groups';
 import { buildLineGroups, joinSections, lineGroup, type LineGroup } from './groups';
+import { isSnellLineValue, snellObfs, snellPsk, snellVersion } from './snell';
 
 /** Surge's own policy names that a profile group may reference. */
 export const SURGE_BUILTINS = ['DIRECT', 'REJECT'] as const;
@@ -234,6 +236,44 @@ function anytlsLine(node: ProxyNode): string | null {
   return parts.join(', ');
 }
 
+/** https://manual.nssurge.com/policies/snell.html */
+function snellLine(node: ProxyNode): string | null {
+  const version = snellVersion(node.version ?? 1);
+  if (!version || node.userkey || node.plugin) return null;
+  const psk = snellPsk(node, version);
+  if (!isSnellLineValue(psk)) return null;
+  const parts = ['snell', node.server, node.port, `psk=${psk}`, `version=${version}`];
+  const { mode, host, uri } = snellObfs(node);
+  if (mode && mode !== 'none' && mode !== 'http' && mode !== 'tls') return null;
+  if (version === 6) {
+    // v6 uses native traffic shaping, not the legacy HTTP/TLS obfs fields.
+    if (node.mode) {
+      if (node.mode !== 'default' && node.mode !== 'unshaped' && node.mode !== 'unsafe-raw') return null;
+      parts.push(`mode=${node.mode}`);
+    }
+  } else if (mode && mode !== 'none') {
+    if (mode === 'tls' && version >= 4) return null;
+    parts.push(`obfs=${mode}`);
+    if (host) {
+      if (!isSnellLineValue(host)) return null;
+      parts.push(`obfs-host=${host}`);
+    }
+    if (mode === 'http' && uri) {
+      if (!isSnellLineValue(uri)) return null;
+      parts.push(`obfs-uri=${uri}`);
+    }
+  }
+  if (version >= 4 && node.reuse !== undefined) parts.push(`reuse=${bool(node.reuse)}`);
+  // Unlike Shadowsocks, Snell's UDP relay is automatic from v3 onward;
+  // udp-relay is not a Snell parameter. Only a UDP port override is available.
+  if (version >= 3 && node['udp-port'] !== undefined) {
+    const port = Number(node['udp-port']);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    parts.push(`udp-port=${port}`);
+  }
+  return parts.join(', ');
+}
+
 /** `socks5` and `http` (both plaintext and TLS proxies). */
 function socksHttpLine(node: ProxyNode, type: 'socks5' | 'http'): string | null {
   const parts = [`${type}, ${node.server}, ${node.port}`];
@@ -306,6 +346,9 @@ export function surgeProxyLine(node: ProxyNode):
       break;
     case 'anytls':
       body = anytlsLine(proxy);
+      break;
+    case 'snell':
+      body = snellLine(proxy);
       break;
     case 'vless':
       return { skipped: 'Surge has no VLESS support' };

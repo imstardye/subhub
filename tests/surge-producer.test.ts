@@ -41,6 +41,42 @@ function proxyNames(body: string): string[] {
 }
 
 describe('Surge producer: [Proxy] golden lines', () => {
+  it.each([1, 2, 3, 4, 5, 6, undefined])('emits Snell version %s with automatic UDP', (version) => {
+    expect(surgeProxyLine(node({ type: 'snell', version, psk: 'fixture-snell-psk', udp: true }))).toEqual({
+      line: `test = snell, example.com, 8388, psk=fixture-snell-psk, version=${version ?? 1}`,
+    });
+  });
+
+  it('maps Snell obfs, reuse and UDP port only where supported', () => {
+    expect(surgeProxyLine(node({
+      type: 'snell', version: 5, psk: 'fixture', reuse: true, 'udp-port': 443,
+      'obfs-opts': { mode: 'http', host: 'cover.example.com', path: '/' },
+    }))).toEqual({
+      line: 'test = snell, example.com, 8388, psk=fixture, version=5, obfs=http, obfs-host=cover.example.com, obfs-uri=/, reuse=true, udp-port=443',
+    });
+    expect(surgeProxyLine(node({
+      type: 'snell', version: 3, psk: 'fixture', 'obfs-opts': { mode: 'tls', host: 'cover.example.com' },
+    }))).toEqual({
+      line: 'test = snell, example.com, 8388, psk=fixture, version=3, obfs=tls, obfs-host=cover.example.com',
+    });
+    expect(surgeProxyLine(node({
+      type: 'snell', version: 6, psk: 'fixture-snell-psk', mode: 'unshaped',
+      'obfs-opts': { mode: 'http', host: 'cover.example.com' },
+    }))).toEqual({
+      line: 'test = snell, example.com, 8388, psk=fixture-snell-psk, version=6, mode=unshaped',
+    });
+  });
+
+  it.each([
+    { version: 7, psk: 'fixture' },
+    { version: 4 },
+    { version: 6, psk: 'short' },
+    { version: 6, psk: 'fixture-snell-psk', userkey: 'client-id' },
+    { version: 4, psk: 'fixture', 'obfs-opts': { mode: 'tls' } },
+  ])('skips unrepresentable Snell options %j', (options) => {
+    expect(surgeProxyLine(node({ type: 'snell', ...options }))).toHaveProperty('skipped');
+  });
+
   it('emits Shadowsocks with encrypt-method/password', () => {
     expect(
       surgeProxyLine(
