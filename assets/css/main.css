@@ -14,6 +14,8 @@
   --primary: #2563eb;
   --primary-hover: #1d4ed8;
   --primary-foreground: #ffffff;
+  --accent-sky: #38bdf8;
+  --gradient-accent: linear-gradient(110deg, var(--primary), var(--accent-sky));
   --secondary: #f1f5f9;
   --accent: #2563eb;
   --accent-foreground: #ffffff;
@@ -77,6 +79,7 @@
   --radius: 8px;
   --radius-md: 10px;
   --radius-lg: 14px;
+  --radius-panel: 20px;
   --radius-pill: 999px;
 
   /* Motion */

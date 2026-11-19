@@ -21,7 +21,16 @@
  */
 definePageMeta({ layout: false });
 
-import { NAlert, NButton, NCard, NEmpty, NForm, NFormItem, NIcon, NInput, NModal, NProgress, NSelect, NSpin, NSwitch, NTag, useDialog, useMessage } from 'naive-ui';
+import {
+  NAlert, NButton, NCard, NConfigProvider, NEmpty, NForm, NFormItem, NInput, NModal,
+  NRadioButton, NRadioGroup, NSelect, NSkeleton, NSwitch, NTag, useDialog, useMessage,
+  type GlobalThemeOverrides,
+} from 'naive-ui';
+import {
+  userCenterButtonTheme, userCenterCardTheme, userCenterEmptyTheme,
+  userCenterSkeletonTheme, userCenterTargetTheme,
+} from '~/assets/naive-theme';
+import NavIcon from '~/components/NavIcon.vue';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import { qrSvgPath } from '~/core/utils/qr';
 import {
@@ -525,10 +534,10 @@ async function saveTailscaleKey() {
 const tailscaleDialerBusy = ref(false);
 const tailscaleDialerProxy = computed(() => center.value?.tailscaleDialerProxy ?? null);
 const tailscaleDialerOptions = computed(() => center.value?.tailscaleDialerOptions ?? []);
-const tailscaleDialerSelectOptions = computed(() =>
+const dialerSelectOptions = computed(() =>
   tailscaleDialerSelectOptions(tailscaleDialerOptions.value),
 );
-const tailscaleDialerSelectable = computed(() =>
+const dialerSelectable = computed(() =>
   tailscaleDialerSelectable(tailscaleDialerOptions.value),
 );
 
@@ -914,14 +923,37 @@ function healthType(state: 'ok' | 'failed' | 'never'): 'success' | 'error' | 'wa
   return 'warning';
 }
 
+const themeOverrides: GlobalThemeOverrides = {
+  Button: userCenterButtonTheme,
+  Card: userCenterCardTheme,
+  Empty: userCenterEmptyTheme,
+  Skeleton: userCenterSkeletonTheme,
+};
+
 useHead({ title: '我的订阅 · subhub' });
 </script>
 <template>
-  <main class="my">
+  <n-config-provider tag="main" class="my" :theme-overrides="themeOverrides">
     <!-- ---------------------------------------------------------- states -- -->
-    <div v-if="view.kind === 'loading'" class="state">
-      <n-spin size="medium" />
-      <span>正在加载…</span>
+    <div v-if="view.kind === 'loading'" class="loading" role="status">
+      <span class="hint">正在加载…</span>
+      <div aria-hidden="true">
+        <div class="hero skeleton-hero">
+          <div>
+            <n-skeleton text width="5rem" />
+            <n-skeleton text height="clamp(2rem, 5vw, 3.5rem)" width="min(100%, 16rem)" />
+            <n-skeleton text width="min(100%, 20rem)" />
+          </div>
+          <div class="ring-wrap"><n-skeleton circle width="100%" height="100%" /></div>
+        </div>
+        <div class="tiles">
+          <n-card v-for="index in 3" :key="index" class="panel">
+            <n-skeleton text width="40%" />
+            <n-skeleton text height="1.5rem" width="65%" />
+          </n-card>
+        </div>
+        <n-card class="panel"><n-skeleton text :repeat="3" /></n-card>
+      </div>
     </div>
 
     <section v-else-if="view.kind === 'locked'" class="auth-wrap">
@@ -1012,7 +1044,7 @@ useHead({ title: '我的订阅 · subhub' });
       <header class="topbar">
         <div class="brand">
           <span class="avatar" aria-hidden="true">{{ userInitial }}</span>
-          <div>
+          <div class="brand-text">
             <h1>你好，{{ center.user.name }}</h1>
             <p class="sub">规则档 {{ center.profile.assignedProfile || '未分配' }} · 我的订阅</p>
           </div>
@@ -1031,9 +1063,6 @@ useHead({ title: '我的订阅 · subhub' });
               <span class="sep" aria-hidden="true" />
               <span>总量 <b>{{ summary.totalLabel }}</b></span>
             </div>
-            <div class="hero-bar" aria-hidden="true">
-              <div class="hero-bar-fill" :style="{ width: `${summary.percent ?? 0}%` }" />
-            </div>
           </template>
           <p class="hero-note">
             仅统计专属订阅源（{{ center.traffic.summary.sourcesWithUserinfo }}/{{ center.traffic.summary.dedicatedCount }} 个有数据）
@@ -1042,9 +1071,17 @@ useHead({ title: '我的订阅 · subhub' });
         <div class="hero-side">
           <div class="ring-wrap">
             <svg class="ring" viewBox="0 0 160 160" role="img" :aria-label="`已用 ${summary.percent === null ? '—' : Math.round(summary.percent) + '%'}`">
+              <defs>
+                <linearGradient id="my-traffic-arc" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" class="ring-blue" />
+                  <stop offset="100%" class="ring-sky" />
+                </linearGradient>
+              </defs>
               <circle class="ring-track" cx="80" cy="80" r="64" />
               <circle
+                v-if="summary.percent"
                 class="ring-value"
+                stroke="url(#my-traffic-arc)"
                 cx="80"
                 cy="80"
                 r="64"
@@ -1063,19 +1100,22 @@ useHead({ title: '我的订阅 · subhub' });
 
       <section class="tiles">
         <div class="tile">
+          <span class="tile-icon"><NavIcon name="layers" /></span>
           <span class="tile-label">节点总数</span>
           <span class="tile-value">{{ ownStats.nodes }}</span>
           <span class="tile-hint">专属订阅源合计 · 已扣除信息节点</span>
         </div>
         <div class="tile">
+          <span class="tile-icon tile-icon-sky"><NavIcon name="rss" /></span>
           <span class="tile-label">订阅源状态</span>
           <span class="tile-value tile-status">
-            <span class="dot ok" aria-hidden="true" />{{ ownStats.healthy }} 正常
-            <span class="dot bad" aria-hidden="true" />{{ ownStats.failing }} 异常
+            <span><i class="dot ok" aria-hidden="true" /><b>{{ ownStats.healthy }}</b> 正常</span>
+            <span><i class="dot bad" aria-hidden="true" /><b>{{ ownStats.failing }}</b> 异常</span>
           </span>
           <span class="tile-hint">共 {{ ownStats.total }} 个专属订阅源</span>
         </div>
         <div class="tile">
+          <span class="tile-icon tile-icon-slate"><NavIcon name="list" /></span>
           <span class="tile-label">当前规则档</span>
           <span class="tile-value">{{ center.profile.assignedProfile || '未分配' }}</span>
           <span class="tile-hint">切换规则档只影响链接，不改账号默认</span>
@@ -1083,66 +1123,64 @@ useHead({ title: '我的订阅 · subhub' });
       </section>
 
       <!-- --------------------------------------------------------- links -- -->
-      <n-card class="panel panel-links" title="订阅链接">
-        <div class="links-layout">
+      <n-card class="panel panel-links">
+        <template #header>
+          <h2 class="panel-heading"><span class="panel-icon"><NavIcon name="logout" /></span>订阅链接</h2>
+        </template>
+        <div v-if="profileOptions.length > 1" class="field profile-field">
+          <span class="field-label">规则档</span>
+          <n-select v-model:value="selectedProfileValue" :options="profileSelectOptions" />
+        </div>
+
+        <n-radio-group
+          v-model:value="selectedTarget"
+          class="target-segments"
+          name="client-target"
+          role="radiogroup"
+          aria-label="选择客户端类型"
+          size="small"
+          :theme-overrides="userCenterTargetTheme"
+        >
+          <n-radio-button value="">主链接</n-radio-button>
+          <n-radio-button v-for="link in links" :key="link.target" :value="link.target">
+            {{ link.label }}
+          </n-radio-button>
+        </n-radio-group>
+
+        <div class="link-export">
           <div class="links-main">
-          <div v-if="profileOptions.length > 1" class="field">
-            <span class="field-label">规则档</span>
-            <n-select v-model:value="selectedProfileValue" :options="profileSelectOptions" />
+            <div v-if="tailscaleAvailable" class="tailscale-toggle">
+              <n-switch v-model:value="tailscaleEnabled" size="small" aria-label="Tailscale 版" />
+              <span>Tailscale 版</span>
+              <span class="hint tiny">当前链接附带 ?tailscale=1</span>
+            </div>
+            <div class="main-link">
+              <code>{{ activeLink }}</code>
+              <n-button type="primary" size="small" @click="copy(activeLink, 'active')">
+                {{ copied === 'active' ? '已复制' : '复制' }}
+              </n-button>
+            </div>
+            <p class="hint tiny link-hint">
+              切换规则档只改变上面的链接，不会修改账号默认规则档。Token：{{ maskUserToken(center.user.token) }}
+            </p>
           </div>
-
-          <div class="target-chips" role="group" aria-label="选择客户端类型">
-            <button
-              type="button"
-              class="chip"
-              :class="{ active: selectedTarget === '' }"
-              @click="selectedTarget = ''"
-            >
-              主链接
-            </button>
-            <button
-              v-for="link in links"
-              :key="link.target"
-              type="button"
-              class="chip"
-              :class="{ active: selectedTarget === link.target }"
-              @click="selectedTarget = link.target"
-            >
-              {{ link.label }}
-            </button>
-          </div>
-
-          <div v-if="tailscaleAvailable" class="tailscale-toggle">
-            <n-switch v-model:value="tailscaleEnabled" size="small" />
-            <span>Tailscale 版</span>
-            <span class="hint tiny">当前链接附带 ?tailscale=1</span>
-          </div>
-
-          <div class="main-link">
-            <code>{{ activeLink }}</code>
-            <n-button type="primary" size="small" @click="copy(activeLink, 'active')">
-              {{ copied === 'active' ? '已复制' : '复制' }}
-            </n-button>
-          </div>
-          <p class="hint tiny link-hint">
-            切换规则档只改变上面的链接，不会修改账号默认规则档。Token：{{ maskUserToken(center.user.token) }}
-          </p>
-          </div>
-          <div v-if="qrSvg" class="links-qr">
-            <div class="qr" :aria-label="`${activeTargetLabel || '主'}链接二维码`">
-              <div class="qr-image" v-html="qrSvg" />
+          <n-card v-if="qrSvg" size="small" class="qr-card">
+            <div class="qr">
+              <div class="qr-image" role="img" :aria-label="`${activeTargetLabel || '主'}链接二维码`" v-html="qrSvg" />
               <p class="hint tiny">{{ selectedTarget ? `扫描导入 ${activeTargetLabel} 链接` : '扫描导入当前主链接' }}</p>
             </div>
-          </div>
+          </n-card>
         </div>
-        </n-card>
+      </n-card>
 
       <div class="lower-grid">
         <!-- --------------------------------------------------- own sources -- -->
         <n-card class="panel panel-sources">
-          <template #header>我的订阅源</template>
+          <template #header>
+            <h2 class="panel-heading"><span class="panel-icon"><NavIcon name="rss" /></span>我的订阅源</h2>
+          </template>
           <template #header-extra>
-            <div style="display: flex; gap: 8px">
+            <div class="row header-actions">
               <n-button
                 secondary
                 size="small"
@@ -1210,12 +1248,19 @@ useHead({ title: '我的订阅 · subhub' });
               </div>
             </article>
           </div>
-          <n-empty v-else description="还没有专属订阅源。" />
+          <n-empty v-else class="panel-empty" description="还没有专属订阅源。">
+            <template #icon><NavIcon name="rss" /></template>
+          </n-empty>
         </n-card>
 
         <!-- ----------------------------------------------- inclusion list -- -->
-        <n-card class="panel panel-shared" title="公共 / 共享订阅源">
-          <p v-if="!availableGroups.length" class="hint">暂无可选订阅源。</p>
+        <n-card class="panel panel-shared">
+          <template #header>
+            <h2 class="panel-heading"><span class="panel-icon"><NavIcon name="users" /></span>公共 / 共享订阅源</h2>
+          </template>
+          <n-empty v-if="!availableGroups.length" class="panel-empty" description="暂无可选订阅源。">
+            <template #icon><NavIcon name="users" /></template>
+          </n-empty>
           <div v-for="group in availableGroups" :key="group.kind" class="group">
             <h3>{{ group.label }}</h3>
             <div v-for="source in group.items" :key="source.id" class="toggle-row">
@@ -1232,7 +1277,10 @@ useHead({ title: '我的订阅 · subhub' });
         </n-card>
 
         <!-- -------------------------------------------------- custom rules -- -->
-        <n-card class="panel panel-rules" title="自定义规则">
+        <n-card class="panel panel-rules">
+          <template #header>
+            <h2 class="panel-heading"><span class="panel-icon"><NavIcon name="list" /></span>自定义规则</h2>
+          </template>
           <n-input
             v-model:value="rulesText"
             type="textarea"
@@ -1270,7 +1318,10 @@ useHead({ title: '我的订阅 · subhub' });
         </n-card>
 
         <!-- ------------------------------------------------------- account -- -->
-        <n-card class="panel panel-account" title="账户与安全">
+        <n-card class="panel panel-account">
+          <template #header>
+            <h2 class="panel-heading"><span class="panel-icon"><NavIcon name="eye" /></span>账户与安全</h2>
+          </template>
           <div class="account-row">
             <div class="account-text">
               <span class="account-label">订阅令牌</span>
@@ -1309,12 +1360,15 @@ useHead({ title: '我的订阅 · subhub' });
         </n-card>
 
         <!-- ---------------------------------------------------- tailscale -- -->
-        <n-card class="panel panel-tailscale" title="Tailscale 绑定">
-          <p class="hint">
+        <n-card class="panel panel-tailscale">
+          <template #header>
+            <h2 class="panel-heading"><span class="panel-icon"><NavIcon name="dashboard" /></span>Tailscale 绑定</h2>
+          </template>
+          <div class="hint">
             状态：<n-tag size="small" round :type="tailscaleKeySet ? 'success' : 'default'">
               {{ tailscaleKeySet ? '已绑定' : '未绑定' }}
             </n-tag>
-          </p>
+          </div>
           <n-input
             v-model:value="tailscaleInput"
             type="password"
@@ -1352,8 +1406,8 @@ useHead({ title: '我的订阅 · subhub' });
             <n-select
               size="small"
               :value="tailscaleDialerProxy"
-              :options="tailscaleDialerSelectOptions"
-              :disabled="!tailscaleDialerSelectable || tailscaleDialerBusy || tailscaleBusy"
+              :options="dialerSelectOptions"
+              :disabled="!dialerSelectable || tailscaleDialerBusy || tailscaleBusy"
               :loading="tailscaleDialerBusy"
               placeholder="直连"
               @update:value="changeTailscaleDialer"
@@ -1362,18 +1416,23 @@ useHead({ title: '我的订阅 · subhub' });
           <p class="hint tiny">
             控制服务器的连接走所选策略组（直连不通时用）；连通后 P2P 流量仍是直连。
           </p>
-          <p v-if="!tailscaleDialerSelectable" class="hint tiny">
+          <p v-if="!dialerSelectable" class="hint tiny">
             你的规则档暂无可选策略组。
           </p>
         </n-card>
       </div>
 
       <!-- --------------------------------------------------- source order -- -->
-      <n-card class="panel panel-source-order" title="订阅排序">
+      <n-card class="panel panel-source-order">
+        <template #header>
+          <h2 class="panel-heading"><span class="panel-icon"><NavIcon name="list" /></span>订阅排序</h2>
+        </template>
         <p class="hint tiny order-intro">
           顺序决定节点在订阅中的出现次序；新订阅源会自动排在末尾。
         </p>
-        <p v-if="orderItems.length === 0" class="hint">暂无可排序的订阅源。</p>
+        <n-empty v-if="orderItems.length === 0" class="panel-empty" description="暂无可排序的订阅源。">
+          <template #icon><NavIcon name="list" /></template>
+        </n-empty>
         <template v-else>
           <div class="order-list">
             <div v-for="(source, index) in orderItems" :key="source.id" class="order-row">
@@ -1413,12 +1472,17 @@ useHead({ title: '我的订阅 · subhub' });
       </n-card>
 
       <!-- ----------------------------------------------------- operators -- -->
-      <n-card class="panel panel-operators" title="节点处理">
+      <n-card class="panel panel-operators">
+        <template #header>
+          <h2 class="panel-heading"><span class="panel-icon"><NavIcon name="settings" /></span>节点处理</h2>
+        </template>
         <p class="hint tiny ops-intro">
           按顺序对全部节点执行（过滤 → 去重 → 改名 → 排序 → 改属性）。改名在分组匹配前生效，先「试算」看结果再保存。
         </p>
 
-        <p v-if="opsDraft.length === 0" class="hint">还没有算子，导出与原来完全一致。</p>
+        <n-empty v-if="opsDraft.length === 0" class="panel-empty" description="还没有算子，导出与原来完全一致。">
+          <template #icon><NavIcon name="settings" /></template>
+        </n-empty>
 
         <div v-for="(op, index) in opsDraft" :key="index" class="op-card">
           <div class="op-head">
@@ -1429,10 +1493,17 @@ useHead({ title: '我的订阅 · subhub' });
               :aria-label="`启用算子 ${index + 1}`"
               @update:value="(value) => { op.enabled = value; opsTouch(); }"
             />
-            <button type="button" class="op-title" @click="opsExpanded = opsExpanded === index ? null : index">
-              <span class="op-type">{{ OPERATOR_TYPE_LABELS[op.type] }}</span>
-              <span class="op-summary">{{ operatorSummary(op) }}</span>
-            </button>
+            <n-button
+              text
+              class="op-title"
+              :aria-expanded="opsExpanded === index"
+              @click="opsExpanded = opsExpanded === index ? null : index"
+            >
+              <span class="op-caption">
+                <span class="op-type">{{ OPERATOR_TYPE_LABELS[op.type] }}</span>
+                <span class="op-summary">{{ operatorSummary(op) }}</span>
+              </span>
+            </n-button>
             <div class="op-actions">
               <n-button size="tiny" secondary :disabled="index === 0 || opsBusy" @click="moveOperator(index, -1)">上移</n-button>
               <n-button size="tiny" secondary :disabled="index === opsDraft.length - 1 || opsBusy" @click="moveOperator(index, 1)">下移</n-button>
@@ -1732,20 +1803,22 @@ useHead({ title: '我的订阅 · subhub' });
         </div>
       </n-form>
     </n-modal>
-  </main>
+  </n-config-provider>
 </template>
 
 <style scoped>
 .my {
+  --panel-gap: var(--space-5);
+  --page-gutter: var(--space-6);
+  --inset-surface: #f8fbff;
   min-height: 100vh;
-  max-width: 72rem;
-  margin: 0 auto;
-  padding: 28px 20px 64px;
+  padding: var(--space-8) max(var(--page-gutter), (100% - 72rem) / 2) 64px;
   background:
-    radial-gradient(60rem 22rem at 85% -6rem, rgba(37, 99, 235, 0.13), transparent 60%),
-    linear-gradient(180deg, #e9f1fe 0, #f8fafc 19rem);
+    radial-gradient(60rem 30rem at 88% -8rem, #dbeafe, transparent 75%),
+    linear-gradient(180deg, var(--accent-soft), var(--background) 24rem);
   color: var(--foreground);
   font-family: var(--font-sans);
+  overflow-wrap: anywhere;
 }
 
 /* ------------------------------------------------------------ header */
@@ -1769,11 +1842,14 @@ useHead({ title: '我的订阅 · subhub' });
   height: 46px;
   flex: none;
   border-radius: 15px;
-  background: linear-gradient(135deg, #2563eb, #38bdf8);
+  background: var(--gradient-accent);
   color: #fff;
   font-size: 20px;
   font-weight: 700;
   box-shadow: 0 8px 18px rgba(37, 99, 235, 0.32);
+}
+.brand-text {
+  min-width: 0;
 }
 .topbar h1 {
   margin: 0;
@@ -1791,13 +1867,12 @@ useHead({ title: '我的订阅 · subhub' });
 }
 
 /* ------------------------------------------------------------ states */
-.state {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 96px 0;
-  color: var(--muted-foreground, #64748b);
+.loading > .hint {
+  display: block;
+  margin-bottom: var(--space-4);
+}
+.skeleton-hero {
+  min-height: 13rem;
 }
 .auth-wrap {
   display: flex;
@@ -1807,11 +1882,11 @@ useHead({ title: '我的订阅 · subhub' });
 .auth-card {
   width: 100%;
   max-width: 400px;
-  padding: 34px 30px 30px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 24px;
-  box-shadow: 0 24px 50px rgba(15, 40, 90, 0.12);
+  padding: clamp(20px, 6vw, 32px);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-lg);
 }
 .auth-mark {
   display: grid;
@@ -1820,7 +1895,7 @@ useHead({ title: '我的订阅 · subhub' });
   height: 54px;
   margin-bottom: 18px;
   border-radius: 17px;
-  background: linear-gradient(135deg, #2563eb, #38bdf8);
+  background: var(--gradient-accent);
   color: #fff;
   font-size: 24px;
   font-weight: 700;
@@ -1845,37 +1920,35 @@ useHead({ title: '我的订阅 · subhub' });
 .auth-submit {
   margin-top: 6px;
 }
-.state-title {
-  margin: 0 0 8px;
-  font-size: 17px;
-  font-weight: 600;
-}
 
 /* -------------------------------------------------------------- hero */
 .hero {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(10rem, 28%);
+  gap: var(--space-6);
   align-items: center;
-  padding: 28px 30px;
-  margin-bottom: 18px;
-  background: linear-gradient(120deg, #ffffff 55%, #eef5ff);
-  border: 1px solid #dbe7fd;
-  border-radius: 24px;
-  box-shadow: 0 16px 36px rgba(15, 40, 90, 0.08);
+  padding: clamp(20px, 4vw, 36px);
+  margin-bottom: var(--panel-gap);
+  background:
+    radial-gradient(ellipse at 90% 0%, #fff 0%, transparent 48%),
+    linear-gradient(118deg, #fff 8%, #eff6ff 52%, #dbeafe 83%, #c9edff);
+  border: 1px solid #dbeafe;
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-lg);
 }
 .hero-label {
-  color: #2563eb;
-  font-size: 13px;
+  color: var(--primary-hover);
+  font-size: var(--text-sm);
   font-weight: 600;
   letter-spacing: 0.14em;
 }
 .hero-number {
-  margin: 8px 0 10px;
-  font-size: 46px;
+  margin: var(--space-2) 0 var(--space-3);
+  font-family: var(--font-mono);
+  font-size: clamp(2rem, 5.5vw, 3.75rem);
   font-weight: 800;
-  line-height: 1.05;
-  letter-spacing: -0.01em;
+  line-height: 1.08;
+  letter-spacing: -0.055em;
 }
 .hero-empty {
   margin: 14px 0;
@@ -1885,33 +1958,23 @@ useHead({ title: '我的订阅 · subhub' });
 }
 .hero-facts {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-2) var(--space-3);
   color: var(--muted-foreground, #64748b);
   font-size: 14px;
 }
-.hero-facts b {
+.hero-facts b,
+.hero-expire b {
   color: var(--foreground);
-  font-weight: 600;
+  font-family: var(--font-mono);
+  font-weight: 700;
 }
 .hero-facts .sep {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: #cbd5e1;
-}
-.hero-bar {
-  height: 10px;
-  margin-top: 18px;
-  border-radius: 999px;
-  background: #e3ecfd;
-  overflow: hidden;
-}
-.hero-bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, #2563eb, #38bdf8);
-  transition: width 0.5s ease;
+  background: var(--primary);
 }
 .hero-note {
   margin: 12px 0 0;
@@ -1926,23 +1989,32 @@ useHead({ title: '我的订阅 · subhub' });
 }
 .ring-wrap {
   position: relative;
-  width: 148px;
-  height: 148px;
+  width: clamp(7.5rem, 16vw, 10rem);
+  aspect-ratio: 1;
+  flex: none;
+  border-radius: 50%;
+  background: linear-gradient(145deg, var(--card), var(--accent-soft));
+  box-shadow: var(--shadow-md), inset 0 0 0 1px var(--card);
 }
 .ring {
-  width: 148px;
-  height: 148px;
+  display: block;
+  width: 100%;
   transform: rotate(-90deg);
 }
 .ring circle {
   fill: none;
-  stroke-width: 13;
+  stroke-width: 12;
 }
 .ring-track {
-  stroke: #e3ecfd;
+  stroke: #dbeafe;
+}
+.ring-blue {
+  stop-color: var(--primary);
+}
+.ring-sky {
+  stop-color: var(--accent-sky);
 }
 .ring-value {
-  stroke: #2563eb;
   stroke-linecap: round;
   transition: stroke-dashoffset 0.5s ease;
 }
@@ -1955,7 +2027,8 @@ useHead({ title: '我的订阅 · subhub' });
   justify-content: center;
 }
 .ring-pct {
-  font-size: 27px;
+  font-family: var(--font-mono);
+  font-size: clamp(1.25rem, 3vw, 1.75rem);
   font-weight: 800;
   line-height: 1;
 }
@@ -1967,29 +2040,54 @@ useHead({ title: '我的订阅 · subhub' });
 .hero-expire {
   margin: 0;
   color: var(--muted-foreground, #64748b);
-  font-size: 13px;
+  font-size: var(--text-sm);
+  text-align: center;
 }
 .hero-expire b {
-  color: var(--foreground);
-  font-weight: 600;
+  margin-inline-start: var(--space-1);
 }
 
 /* ------------------------------------------------------------- tiles */
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 14px;
-  margin-bottom: 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--panel-gap);
+  margin-bottom: var(--panel-gap);
 }
 .tile {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding: 17px 20px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 18px;
-  box-shadow: 0 6px 16px rgba(15, 40, 90, 0.045);
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-5);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-md);
+}
+.tile-icon,
+.panel-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  flex: none;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--primary);
+}
+.tile-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  margin-bottom: var(--space-2);
+}
+.tile-icon-sky {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+.tile-icon-slate {
+  background: var(--subtle);
+  color: var(--foreground);
 }
 .tile-label {
   color: var(--muted-foreground, #64748b);
@@ -1998,15 +2096,25 @@ useHead({ title: '我的订阅 · subhub' });
   letter-spacing: 0.06em;
 }
 .tile-value {
-  font-size: 22px;
+  font-family: var(--font-mono);
+  font-size: clamp(1.25rem, 2.5vw, 1.75rem);
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.35;
 }
 .tile-status {
   display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 17px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 var(--space-3);
+}
+.tile-status > span {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: baseline;
+  font: 500 var(--text-sm) var(--font-sans);
+}
+.tile-status b {
+  font: 700 clamp(1.25rem, 2.5vw, 1.75rem) / 1.35 var(--font-mono);
 }
 .tile-hint {
   color: var(--muted-foreground, #64748b);
@@ -2019,59 +2127,67 @@ useHead({ title: '我的订阅 · subhub' });
   flex: none;
 }
 .dot.ok {
-  background: #16a34a;
+  background: var(--success);
 }
 .dot.bad {
-  background: #dc2626;
-  margin-left: 10px;
+  background: var(--destructive);
 }
 
 /* ------------------------------------------------------------ panels */
 .panel-links {
-  margin-bottom: 18px;
-}
-.links-layout {
-  display: flex;
-  gap: 30px;
-  align-items: stretch;
-}
-.links-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-.link-hint {
-  margin: auto 0 0;
-  padding-top: 14px;
-}
-.links-qr {
-  flex: none;
-  display: flex;
-  align-items: center;
-  padding-left: 30px;
-  border-left: 1px solid #eef2f7;
-}
-.links-qr .qr {
-  padding: 0;
+  margin-bottom: var(--panel-gap);
 }
 /* The panels below the links band flow in balanced columns instead of two
    fixed stacks: the browser evens out the column heights, so a short stack
    no longer leaves a dead blank beside a tall one, at any panel mix. */
 .lower-grid {
   columns: 2;
-  column-gap: 18px;
+  column-gap: var(--panel-gap);
 }
 .lower-grid > .panel {
   break-inside: avoid;
-  margin-bottom: 18px;
+  margin-bottom: var(--panel-gap);
 }
 .panel {
-  border-radius: 20px;
-  box-shadow: 0 10px 24px rgba(15, 40, 90, 0.055);
+  min-width: 0;
+  box-shadow: var(--shadow-md);
 }
 .panel :deep(.n-card-header) {
-  font-weight: 700;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+}
+.panel :deep(.n-card-header__main) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.panel :deep(.n-card-header__extra) {
+  margin: 0 0 0 auto;
+  max-width: 100%;
+}
+.panel-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+}
+.header-actions {
+  justify-content: flex-end;
+}
+.panel-empty {
+  padding: var(--space-5) var(--space-3);
+  border-radius: var(--radius-lg);
+  background: var(--inset-surface);
+  border: 1px dashed var(--border);
+  text-align: center;
+}
+.panel-empty :deep(.n-empty__icon) {
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
 }
 .hint {
   color: var(--muted-foreground, #64748b);
@@ -2110,69 +2226,85 @@ useHead({ title: '我的订阅 · subhub' });
 }
 
 /* ------------------------------------------------------------- links */
+.profile-field {
+  max-width: 20rem;
+}
+.target-segments.n-radio-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  height: auto;
+  max-width: 100%;
+  margin-bottom: var(--space-4);
+  padding: var(--space-1);
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.target-segments :deep(.n-radio-group__splitor) {
+  display: none;
+}
+.target-segments :deep(.n-radio-button),
+.target-segments :deep(.n-radio-button__state-border) {
+  border-radius: var(--n-button-border-radius);
+}
+.link-export {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--inset-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.links-main {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
 .main-link {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  background: #eef4fe;
-  border: 1px solid #d7e5fd;
-  border-radius: 14px;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 .main-link code {
   flex: 1;
   min-width: 0;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  word-break: break-all;
+  background: none;
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.link-hint {
+  margin: var(--space-3) 0 0;
+}
+.qr-card {
+  width: min(100%, 13rem);
+  margin-inline: auto;
+  box-shadow: var(--shadow-sm);
 }
 .qr {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 18px 0 6px;
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  text-align: center;
+}
+.qr p {
+  margin: 0;
 }
 .qr-image {
-  width: 148px;
-  height: 148px;
-  padding: 10px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
+  width: min(100%, 9.25rem);
+  aspect-ratio: 1;
+  padding: var(--space-2);
+  background: var(--card);
 }
 .qr-image :deep(svg) {
   width: 100%;
   height: 100%;
   display: block;
-}
-.target-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-.chip {
-  padding: 6px 14px;
-  border: 1px solid #d7e3f8;
-  border-radius: 999px;
-  background: #f4f8ff;
-  color: #3c5a8f;
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-.chip:hover {
-  border-color: #2563eb;
-  color: #2563eb;
-}
-.chip.active {
-  background: linear-gradient(135deg, #2563eb, #38bdf8);
-  border-color: transparent;
-  color: #fff;
-  box-shadow: 0 5px 12px rgba(37, 99, 235, 0.3);
 }
 
 /* ----------------------------------------------------------- sources */
@@ -2182,10 +2314,19 @@ useHead({ title: '我的订阅 · subhub' });
   gap: 12px;
 }
 .source-card {
-  padding: 16px 18px;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  background: #fbfdff;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--inset-surface);
+}
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  :is(.source-card, .order-row, .op-card) {
+    transition: box-shadow var(--transition), translate var(--transition);
+  }
+  :is(.source-card, .order-row, .op-card):is(:hover, :focus-within) {
+    translate: 0 -2px;
+    box-shadow: var(--shadow-md);
+  }
 }
 .source-head {
   display: flex;
@@ -2207,7 +2348,7 @@ useHead({ title: '我的订阅 · subhub' });
 .source-bar-fill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #2563eb, #38bdf8);
+  background: var(--gradient-accent);
 }
 .source-facts {
   display: flex;
@@ -2224,8 +2365,12 @@ useHead({ title: '我的订阅 · subhub' });
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  margin-top: 12px;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.source-foot .row {
+  margin-inline-start: auto;
 }
 .group h3 {
   margin: 14px 0 6px;
@@ -2262,10 +2407,7 @@ useHead({ title: '我的订阅 · subhub' });
   margin: 10px 0 0;
 }
 .panel-operators {
-  margin-top: 22px;
-}
-.panel-source-order {
-  margin-top: 22px;
+  margin-top: var(--panel-gap);
 }
 .order-intro {
   margin: 0 0 12px;
@@ -2322,16 +2464,17 @@ useHead({ title: '我的订阅 · subhub' });
 }
 .op-title {
   flex: 1;
+  min-width: 0;
+  justify-content: flex-start;
+}
+.op-title :deep(.n-button__content) {
+  min-width: 0;
+}
+.op-caption {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: var(--space-2);
   min-width: 0;
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
 }
 .op-type {
   font-weight: 600;
@@ -2369,10 +2512,11 @@ useHead({ title: '我的订阅 · subhub' });
   font-size: 12.5px;
 }
 .op-mode {
-  width: 170px;
+  width: min(100%, 12rem);
   flex: none;
 }
 .op-grow {
+  min-width: 0;
   flex: 1;
 }
 .op-check {
@@ -2453,11 +2597,11 @@ useHead({ title: '我的订阅 · subhub' });
 .tailscale-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
-  font-size: 13px;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
   font-weight: 600;
-  color: #334155;
 }
 .panel-tailscale :deep(.n-input) {
   margin-top: 10px;
@@ -2487,55 +2631,96 @@ useHead({ title: '我的订阅 · subhub' });
 
 /* ------------------------------------------------------------ modals */
 .modal-card {
-  max-width: 30rem;
-  border-radius: 20px;
+  max-width: min(30rem, calc(100% - 2 * var(--space-4)));
 }
 
 /* -------------------------------------------------------- responsive */
 @media (max-width: 960px) {
+  .my {
+    --panel-gap: var(--space-4);
+    --page-gutter: var(--space-4);
+  }
   .lower-grid {
     columns: 1;
   }
-  .links-layout {
-    flex-direction: column;
-    gap: 6px;
-  }
-  .links-qr {
-    justify-content: center;
-    padding-left: 0;
-    border-left: none;
-  }
 }
-@media (max-width: 720px) {
-  .hero {
+@media (max-width: 630px) {
+  .tiles {
     grid-template-columns: 1fr;
-    justify-items: start;
   }
-  .hero-side {
-    flex-direction: row;
-    align-items: center;
-    gap: 18px;
+  .tile {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: var(--space-3);
+    padding: var(--space-4);
   }
-  .ring-wrap,
-  .ring {
-    width: 108px;
-    height: 108px;
-  }
-  .ring circle {
-    stroke-width: 15;
-  }
-  .ring-pct {
-    font-size: 21px;
-  }
-  .hero-number {
-    font-size: 36px;
-  }
-  .topbar h1 {
-    font-size: 18px;
+  .tile-icon {
+    grid-row: span 3;
+    align-self: center;
+    margin: 0;
   }
   .account-row {
     flex-direction: column;
     align-items: flex-start;
+  }
+  .op-row {
+    flex-wrap: wrap;
+  }
+  .op-row > .op-grow {
+    flex: 1 1 14rem;
+  }
+}
+@media (max-width: 480px) {
+  .my {
+    --page-gutter: var(--space-3);
+    padding-top: var(--space-5);
+  }
+  .hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-4);
+  }
+  .hero-side {
+    flex-direction: row;
+    justify-content: flex-start;
+    padding-top: var(--space-3);
+    border-top: 1px solid #dbeafe;
+  }
+  .ring-wrap {
+    width: 6rem;
+  }
+  .hero-expire {
+    text-align: start;
+  }
+  .topbar h1 {
+    font-size: var(--text-lg);
+  }
+  .panel :deep(.n-card-header),
+  .panel :deep(.n-card-content) {
+    padding-inline: var(--space-4);
+  }
+  .link-export {
+    padding: var(--space-3);
+  }
+  .order-row,
+  .op-head {
+    gap: var(--space-2);
+  }
+  .order-name {
+    flex-wrap: wrap;
+  }
+  .op-head {
+    flex-wrap: wrap;
+  }
+  .op-title {
+    flex-basis: calc(100% - 3rem);
+  }
+  .op-actions {
+    margin-inline-start: auto;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ring-value {
+    transition: none;
   }
 }
 </style>
