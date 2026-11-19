@@ -525,10 +525,10 @@ async function saveTailscaleKey() {
 const tailscaleDialerBusy = ref(false);
 const tailscaleDialerProxy = computed(() => center.value?.tailscaleDialerProxy ?? null);
 const tailscaleDialerOptions = computed(() => center.value?.tailscaleDialerOptions ?? []);
-const tailscaleDialerSelectOptions = computed(() =>
+const dialerSelectOptions = computed(() =>
   tailscaleDialerSelectOptions(tailscaleDialerOptions.value),
 );
-const tailscaleDialerSelectable = computed(() =>
+const dialerSelectable = computed(() =>
   tailscaleDialerSelectable(tailscaleDialerOptions.value),
 );
 
@@ -1310,11 +1310,11 @@ useHead({ title: '我的订阅 · subhub' });
 
         <!-- ---------------------------------------------------- tailscale -- -->
         <n-card class="panel panel-tailscale" title="Tailscale 绑定">
-          <p class="hint">
+          <div class="hint">
             状态：<n-tag size="small" round :type="tailscaleKeySet ? 'success' : 'default'">
               {{ tailscaleKeySet ? '已绑定' : '未绑定' }}
             </n-tag>
-          </p>
+          </div>
           <n-input
             v-model:value="tailscaleInput"
             type="password"
@@ -1352,8 +1352,8 @@ useHead({ title: '我的订阅 · subhub' });
             <n-select
               size="small"
               :value="tailscaleDialerProxy"
-              :options="tailscaleDialerSelectOptions"
-              :disabled="!tailscaleDialerSelectable || tailscaleDialerBusy || tailscaleBusy"
+              :options="dialerSelectOptions"
+              :disabled="!dialerSelectable || tailscaleDialerBusy || tailscaleBusy"
               :loading="tailscaleDialerBusy"
               placeholder="直连"
               @update:value="changeTailscaleDialer"
@@ -1362,7 +1362,7 @@ useHead({ title: '我的订阅 · subhub' });
           <p class="hint tiny">
             控制服务器的连接走所选策略组（直连不通时用）；连通后 P2P 流量仍是直连。
           </p>
-          <p v-if="!tailscaleDialerSelectable" class="hint tiny">
+          <p v-if="!dialerSelectable" class="hint tiny">
             你的规则档暂无可选策略组。
           </p>
         </n-card>
