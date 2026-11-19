@@ -77,6 +77,15 @@ function transform(node: ProxyNode): ProxyNode {
   normalizeCommonTransport(proxy);
 
   if (proxy.type === 'anytls') {
+    // mihomo uses fingerprint; Stash's Clash-format reader uses
+    // server-cert-fingerprint. Emit both aliases of the same certificate
+    // SHA-256 pin so either consumer retains pinning. Native nodes passed
+    // directly to the producer need the same bridge as parsed subscriptions.
+    const pin = proxy['tls-fingerprint'] ?? proxy.fingerprint ?? proxy['server-cert-fingerprint'];
+    if (pin !== undefined) {
+      proxy['tls-fingerprint'] = pin;
+      proxy['server-cert-fingerprint'] = pin;
+    }
     // subhub default: do not keep idle sessions around.
     if (proxy['min-idle-session'] === undefined) {
       proxy['min-idle-session'] = 0;

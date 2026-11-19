@@ -79,10 +79,18 @@ function normalizeNode(raw: unknown): ProxyNode | null {
   if (!realmEnabled && (typeof record.server !== 'string' || !record.server.trim())) return null;
   const server = typeof record.server === 'string' ? record.server : '';
 
+  // Stash names the SHA-256 certificate pin differently from mihomo. Keep
+  // both native spellings, but bridge them through the producer's internal
+  // pin field (never client-fingerprint, which selects a uTLS ClientHello).
+  const anytlsPin = record.type === 'anytls'
+    ? record['tls-fingerprint'] ?? record.fingerprint ?? record['server-cert-fingerprint']
+    : undefined;
+
   // Keep protocol options verbatim, including nested AmneziaWG and REALITY
   // options. Producers decide which fields their target supports.
   return {
     ...record,
+    ...(anytlsPin !== undefined ? { 'tls-fingerprint': anytlsPin } : {}),
     name:
       typeof record.name === 'string' && record.name.trim()
         ? record.name
