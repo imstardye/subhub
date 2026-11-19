@@ -23,7 +23,8 @@ definePageMeta({ layout: 'admin' });
 import type { AdminSource } from '~/server/utils/admin-sources';
 import type { AdminUser } from '~/server/utils/admin-users';
 import type { SourceType } from '~/server/utils/admin-validation';
-import { NAlert, NButton, NCard, NCheckbox, NEmpty, NForm, NFormItem, NIcon, NInput, NRadio, NRadioGroup, NSelect, NSpin, NTag, useDialog, useMessage } from 'naive-ui';
+import { h } from 'vue';
+import { NAlert, NButton, NCard, NCheckbox, NDataTable, NDropdown, NEmpty, NForm, NFormItem, NIcon, NInput, NRadio, NRadioGroup, NSelect, NSpin, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import {
   accessSummary,
@@ -144,6 +145,88 @@ function allowlistTitle(source: AdminSource): string {
   const names = allowedUserNames(source, userName.value);
   return names.length > 0 ? names.join('、') : '允许名单为空：当前没有用户能获得此源';
 }
+
+const sourceRowKey = (source: AdminSource) => source.id;
+const sourceRowProps = (source: AdminSource) => ({ class: source.enabled ? '' : 'row-disabled' });
+
+const sourceColumns = computed<DataTableColumns<AdminSource>>(() => [
+  {
+    title: '订阅源',
+    key: 'name',
+    minWidth: 240,
+    render: (source) => h('div', { class: 'source-cell' }, [
+      h('div', { class: 'source-name-line' }, [
+        h('span', { class: 'source-name', title: source.name }, source.name),
+        h(NTag, { size: 'small', round: true, type: healthType(source) }, {
+          default: () => healthLabel(source),
+        }),
+      ]),
+      source.lastError
+        ? h('span', { class: 'source-error', title: source.lastError }, source.lastError)
+        : null,
+      h(NTag, {
+        size: 'small',
+        type: ownershipFromSource(source) === 'public' ? 'default' : 'info',
+        title: ownershipFromSource(source) === 'shared' ? allowlistTitle(source) : summary(source),
+      }, { default: () => summary(source) }),
+    ]),
+  },
+  {
+    title: '地址',
+    key: 'urlMasked',
+    minWidth: 240,
+    render: (source) => h('code', { class: 'mono source-url', title: source.urlMasked }, source.urlMasked),
+  },
+  {
+    title: '刷新',
+    key: 'refreshMinutes',
+    width: 240,
+    render: (source) => h('div', { class: 'source-cell source-meta' }, [
+      h('span', { title: `${source.type} · 每 ${source.refreshMinutes} 分钟刷新` }, [
+        `${source.type} · `,
+        h('span', { class: 'mono' }, String(source.refreshMinutes)),
+        ' 分钟',
+      ]),
+      h('span', null, [
+        '上次成功 ',
+        h('span', { class: 'mono' }, formatDateTime(source.lastOkAt)),
+      ]),
+    ]),
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 200,
+    align: 'right',
+    render: (source) => h('div', { class: 'row-actions' }, [
+      h(NButton, {
+        size: 'small',
+        secondary: true,
+        disabled: busyId.value !== null,
+        title: source.type === 'local' ? '本地订阅源没有可拉取的 URL，仅更新状态' : '立即拉取并更新缓存',
+        onClick: () => refreshOne(source),
+      }, { default: () => busyId.value === source.id ? '刷新中…' : '刷新' }),
+      h(NButton, {
+        size: 'small', secondary: true, disabled: busyId.value !== null,
+        onClick: () => openEdit(source),
+      }, { default: () => '编辑' }),
+      h(NDropdown, {
+        trigger: 'click',
+        options: [{
+          key: 'delete',
+          disabled: busyId.value !== null,
+          label: () => h('span', { style: 'color: var(--destructive)' }, '删除'),
+        }],
+        onSelect: () => askDelete(source),
+      }, {
+        default: () => h(NButton, {
+          size: 'small', tertiary: true, disabled: busyId.value !== null,
+          'aria-label': `${source.name} 的更多操作`,
+        }, { default: () => '⋯' }),
+      }),
+    ]),
+  },
+]);
 
 function validUrl(value: string): boolean {
   try {
@@ -468,7 +551,7 @@ onMounted(() => {
         <div class="card-head">
           <h2 :id="`group-${kind}`">
             {{ SOURCE_KIND_LABELS[kind as SourceKind] }}
-            <n-tag size="small">{{ groups[kind as SourceKind].length }}</n-tag>
+            <n-tag size="small" class="mono">{{ groups[kind as SourceKind].length }}</n-tag>
           </h2>
           <span class="sub kind-hint">
             <template v-if="kind === 'public'">所有用户都会获得</template>
@@ -483,66 +566,16 @@ onMounted(() => {
           class="empty-row"
         />
 
-        <div v-else class="rows">
-          <n-card
-            v-for="source in groups[kind as SourceKind]"
-            :key="source.id"
-            class="entity"
-          >
-            <div class="entity-layout">
-              <div class="entity-identity">
-                <div class="entity-name">
-                  <span :title="source.name">{{ source.name }}</span>
-                  <n-tag size="small" round :type="healthType(source)">
-                    {{ healthLabel(source) }}
-                  </n-tag>
-                </div>
-                <code class="mono url" :title="source.urlMasked">{{ source.urlMasked }}</code>
-                <span v-if="source.lastError" class="sub err" :title="source.lastError">
-                  {{ source.lastError }}
-                </span>
-              </div>
-
-              <div class="entity-body">
-                <span class="sub" :title="`${source.type} · 每 ${source.refreshMinutes} 分钟刷新`">
-                  {{ source.type }} · {{ source.refreshMinutes }} 分钟
-                </span>
-                <span class="sub">上次成功 {{ formatDateTime(source.lastOkAt) }}</span>
-                <n-tag
-                  size="small"
-                  :type="kind === 'public' ? 'default' : 'info'"
-                  :title="kind === 'shared' ? allowlistTitle(source) : summary(source)"
-                >
-                  {{ summary(source) }}
-                </n-tag>
-              </div>
-
-              <div class="entity-actions">
-                <n-button
-                  size="small"
-                  secondary
-                  :disabled="busyId !== null"
-                  :title="source.type === 'local' ? '本地订阅源没有可拉取的 URL，仅更新状态' : '立即拉取并更新缓存'"
-                  @click="refreshOne(source)"
-                >
-                  {{ busyId === source.id ? '刷新中…' : '刷新' }}
-                </n-button>
-                <n-button size="small" secondary :disabled="busyId !== null" @click="openEdit(source)">
-                  编辑
-                </n-button>
-                <n-button
-                  size="small"
-                  secondary
-                  type="error"
-                  :disabled="busyId !== null"
-                  @click="askDelete(source)"
-                >
-                  删除
-                </n-button>
-              </div>
-            </div>
-          </n-card>
-        </div>
+        <n-card v-else class="table-card" :bordered="false">
+          <n-data-table
+            :columns="sourceColumns"
+            :data="groups[kind as SourceKind]"
+            :row-key="sourceRowKey"
+            :row-props="sourceRowProps"
+            :bordered="false"
+            :scroll-x="920"
+          />
+        </n-card>
       </section>
     </template>
   </section>
@@ -567,21 +600,62 @@ onMounted(() => {
   background: var(--card);
 }
 
-.url {
+.table-card {
+  overflow: hidden;
+}
+
+.table-card :deep(.n-card__content) {
+  padding: 0;
+}
+
+.table-card :deep(.row-disabled) {
+  opacity: 0.55;
+}
+
+.table-card :deep(.source-cell) {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.table-card :deep(.source-name-line) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.table-card :deep(.source-name) {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.table-card :deep(.source-url),
+.table-card :deep(.source-error) {
   display: block;
-  max-width: 32rem;
+  max-width: 18rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--text-xs);
 }
 
-.err {
-  max-width: 32rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.table-card :deep(.source-error) {
   color: var(--destructive);
+}
+
+.table-card :deep(.source-meta) {
+  color: var(--muted-foreground);
+  font-size: var(--text-xs);
+}
+
+.table-card :deep(.row-actions) {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 .ownership-panel {
@@ -608,54 +682,6 @@ onMounted(() => {
   background: var(--card);
 }
 
-.entity-layout {
-  display: grid;
-  grid-template-columns: minmax(14rem, 1fr) minmax(0, 2fr) auto;
-  gap: var(--space-3) var(--space-5);
-  align-items: center;
-}
-
-.entity-identity {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.entity-name {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  font-size: var(--text-base);
-  font-weight: 600;
-}
-
-.entity-name > span:first-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.entity-body {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-4);
-  min-width: 0;
-  color: var(--muted-foreground);
-  font-size: var(--text-xs);
-}
-
-.entity-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-2);
-}
-
 .empty {
   display: flex;
   flex-direction: column;
@@ -663,38 +689,10 @@ onMounted(() => {
   gap: var(--space-2);
 }
 
-@media (max-width: 900px) {
-  .entity-layout {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .entity-body {
-    grid-column: 1 / -1;
-  }
-}
-
 @media (max-width: 640px) {
   .kind-hint {
     text-align: left;
   }
 
-  .url,
-  .err {
-    max-width: 100%;
-  }
-
-  .entity-layout {
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-3);
-  }
-
-  .entity-body,
-  .entity-actions {
-    justify-content: flex-start;
-  }
-
-  .entity-actions :deep(.n-button) {
-    flex: 1 1 auto;
-  }
 }
 </style>

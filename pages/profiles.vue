@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <script setup lang="ts">
 /**
- * Rule profile admin page: cards with name, variant badge, INI source summary
+ * Rule profile admin page: table with name, variant badge, INI source summary
  * (URL or 内联 N 字符), the users that reference the profile (by name) and
  * 编辑 / 删除.
  *
@@ -15,7 +15,8 @@ definePageMeta({ layout: 'admin' });
 
 import type { AdminProfile } from '~/server/utils/admin-profiles';
 import type { AdminUser } from '~/server/utils/admin-users';
-import { NAlert, NButton, NCard, NEmpty, NForm, NFormItem, NIcon, NInput, NSelect, NSpin, NTag, useDialog, useMessage } from 'naive-ui';
+import { h } from 'vue';
+import { NAlert, NButton, NCard, NDataTable, NDropdown, NEmpty, NForm, NFormItem, NIcon, NInput, NSelect, NSpin, NTag, useDialog, useMessage, type DataTableColumns } from 'naive-ui';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import { profileUsers, truncate } from '~/core/utils/admin-ui';
 import type { ProfileVariant } from '~/server/utils/admin-validation';
@@ -81,6 +82,83 @@ function optionsSummary(profile: AdminProfile): string {
   const keys = Object.keys(profile.options);
   return keys.length === 0 ? '{}' : keys.join(', ');
 }
+
+const profileRowKey = (profile: AdminProfile) => profile.id;
+
+const profileColumns = computed<DataTableColumns<AdminProfile>>(() => [
+  {
+    title: '规则档',
+    key: 'name',
+    minWidth: 260,
+    render: (profile) => h('div', { class: 'profile-cell' }, [
+      h('div', { class: 'profile-name-line' }, [
+        h('span', { class: 'profile-name', title: profile.name }, profile.name),
+        h(NTag, {
+          size: 'small', round: true, type: profile.variant === 'mihomo' ? 'info' : 'default',
+        }, { default: () => profile.variant }),
+      ]),
+      h('div', { class: 'profile-meta', title: usersLabel(profile) }, [
+        '用户 ', usersLabel(profile),
+      ]),
+    ]),
+  },
+  {
+    title: '来源',
+    key: 'iniUrl',
+    minWidth: 320,
+    render: (profile) => h('div', { class: 'profile-cell' }, [
+      h('div', { class: 'profile-source' }, [
+        h('span', { class: 'profile-meta' }, 'INI 来源 '),
+        profile.iniUrl
+          ? h('code', { class: 'mono profile-url', title: profile.iniUrl }, truncate(profile.iniUrl, 48))
+          : null,
+        profile.iniUrl && profile.iniText ? ' + ' : null,
+        profile.iniText
+          ? h('span', { class: 'profile-meta' }, [
+              '内联 ', h('span', { class: 'mono' }, String(profile.iniText.length)), ' 字符',
+            ])
+          : null,
+        !profile.iniUrl && !profile.iniText ? h('span', { class: 'profile-meta' }, '—') : null,
+      ]),
+      profile.dnsTemplate
+        ? h('div', { class: 'profile-meta', title: profile.dnsTemplate }, [
+            'DNS 模板 ', h('span', { class: 'mono' }, truncate(profile.dnsTemplate, 48)),
+          ])
+        : null,
+      profile.options
+        ? h('div', { class: 'profile-meta' }, [
+            'options ', h('span', { class: 'mono' }, optionsSummary(profile)),
+          ])
+        : null,
+    ]),
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 132,
+    align: 'right',
+    render: (profile) => h('div', { class: 'row-actions' }, [
+      h(NButton, {
+        size: 'small', secondary: true, disabled: busyId.value !== null,
+        onClick: () => openEdit(profile),
+      }, { default: () => '编辑' }),
+      h(NDropdown, {
+        trigger: 'click',
+        options: [{
+          key: 'delete',
+          disabled: busyId.value !== null,
+          label: () => h('span', { style: 'color: var(--destructive)' }, '删除'),
+        }],
+        onSelect: () => askDelete(profile),
+      }, {
+        default: () => h(NButton, {
+          size: 'small', tertiary: true, disabled: busyId.value !== null,
+          'aria-label': `${profile.name} 的更多操作`,
+        }, { default: () => '⋯' }),
+      }),
+    ]),
+  },
+]);
 
 async function loadUsers() {
   try {
@@ -326,116 +404,69 @@ onMounted(() => {
     </div>
     <n-empty v-else-if="profiles.length === 0" description="暂无规则档，点击右上角「新建规则档」开始。" class="empty" />
 
-    <div v-else class="card-grid">
-      <n-card v-for="profile in profiles" :key="profile.id" class="profile">
-        <template #header>
-          <span class="profile-name" :title="profile.name">{{ profile.name }}</span>
-        </template>
-        <template #header-extra>
-          <n-tag size="small" round :type="profile.variant === 'mihomo' ? 'success' : 'default'">
-            {{ profile.variant }}
-          </n-tag>
-        </template>
-
-        <dl class="facts">
-          <div>
-            <dt>INI 来源</dt>
-            <dd>
-              <code v-if="profile.iniUrl" class="mono" :title="profile.iniUrl">
-                {{ truncate(profile.iniUrl, 48) }}
-              </code>
-              <span v-if="profile.iniUrl && profile.iniText"> + </span>
-              <span v-if="profile.iniText" class="sub">内联 {{ profile.iniText.length }} 字符</span>
-              <span v-if="!profile.iniUrl && !profile.iniText" class="sub">—</span>
-            </dd>
-          </div>
-          <div>
-            <dt>用户</dt>
-            <dd :title="usersLabel(profile)">{{ usersLabel(profile) }}</dd>
-          </div>
-          <div v-if="profile.dnsTemplate">
-            <dt>DNS 模板</dt>
-            <dd class="sub mono" :title="profile.dnsTemplate">{{ truncate(profile.dnsTemplate, 48) }}</dd>
-          </div>
-          <div v-if="profile.options">
-            <dt>options</dt>
-            <dd class="sub mono">{{ optionsSummary(profile) }}</dd>
-          </div>
-        </dl>
-
-        <div class="entity-actions">
-          <n-button size="small" secondary :disabled="busyId !== null" @click="openEdit(profile)">
-            编辑
-          </n-button>
-          <n-button
-            size="small"
-            secondary
-            type="error"
-            :disabled="busyId !== null"
-            @click="askDelete(profile)"
-          >
-            删除
-          </n-button>
-        </div>
-      </n-card>
-    </div>
+    <n-card v-else class="table-card" :bordered="false">
+      <n-data-table
+        :columns="profileColumns"
+        :data="profiles"
+        :row-key="profileRowKey"
+        :bordered="false"
+        :scroll-x="760"
+      />
+    </n-card>
   </section>
 </template>
 
 <style scoped>
-.profile {
+.table-card {
+  overflow: hidden;
+}
+
+.table-card :deep(.n-card__content) {
+  padding: 0;
+}
+
+.table-card :deep(.profile-cell) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   min-width: 0;
 }
 
-.profile :deep(.n-card__content) {
+.table-card :deep(.profile-name-line) {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
 }
 
-.profile-name {
-  display: block;
-  max-width: 16rem;
+.table-card :deep(.profile-name) {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.table-card :deep(.profile-source) {
+  min-width: 0;
+}
+
+.table-card :deep(.profile-url) {
+  display: inline-block;
+  max-width: 24rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: var(--text-md);
-  font-weight: 600;
+  vertical-align: bottom;
 }
 
-.facts {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: 0;
-}
-
-.facts > div {
-  display: grid;
-  grid-template-columns: 5.5rem minmax(0, 1fr);
-  gap: var(--space-2);
-  align-items: baseline;
-}
-
-.facts dt {
+.table-card :deep(.profile-meta) {
   color: var(--muted-foreground);
   font-size: var(--text-xs);
-  font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
-.facts dd {
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--foreground);
-  font-size: var(--text-sm);
-  word-break: break-word;
-}
-
-.entity-actions {
+.table-card :deep(.row-actions) {
   display: flex;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
   gap: var(--space-2);
 }
 
@@ -450,10 +481,4 @@ onMounted(() => {
   gap: var(--space-2);
 }
 
-@media (max-width: 640px) {
-  .facts > div {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0;
-  }
-}
 </style>

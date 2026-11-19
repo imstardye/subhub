@@ -26,7 +26,8 @@ definePageMeta({ layout: 'admin' });
 import type { AdminUser } from '~/server/utils/admin-users';
 import type { AdminSource } from '~/server/utils/admin-sources';
 import type { AdminProfile } from '~/server/utils/admin-profiles';
-import { NAlert, NButton, NCard, NEmpty, NForm, NFormItem, NIcon, NInput, NModal, NSelect, NSpin, NSwitch, NTag, useDialog, useMessage } from 'naive-ui';
+import { NAlert, NButton, NCard, NDataTable, NDropdown, NEmpty, NForm, NFormItem, NIcon, NInput, NModal, NSelect, NSpin, NSwitch, NTag, useDialog, useMessage, type DataTableColumns, type DropdownOption } from 'naive-ui';
+import { h } from 'vue';
 import { apiErrorMessage } from '~/core/utils/api-error';
 import {
   buildUserPayload,
@@ -206,6 +207,219 @@ function linkFor(user: AdminUser, target?: string): string {
 function pathLabel(user: AdminUser): string {
   return subscriptionPathLabel(subPath.value, user.token);
 }
+
+/* ------------------------------------------------------- table redesign -- */
+/** Client-side name filter for the toolbar search (the list is fully loaded). */
+const searchQuery = ref('');
+const filteredUsers = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase();
+  if (!q) return users.value;
+  return users.value.filter((user) => user.name.toLowerCase().includes(q));
+});
+
+function userInitial(user: AdminUser): string {
+  return (user.name.trim()[0] ?? '?').toUpperCase();
+}
+
+const userRowKey = (user: AdminUser) => user.id;
+const userRowProps = (user: AdminUser) => ({ class: user.enabled ? '' : 'row-disabled' });
+
+/** Secondary row actions live in one menu; only 编辑 stays a visible button. */
+function menuOptionsFor(user: AdminUser): DropdownOption[] {
+  const busy = busyId.value !== null;
+  const options: DropdownOption[] = [
+    { label: '刷新令牌', key: 'refresh', disabled: busy },
+    { label: '自定义令牌', key: 'token', disabled: busy },
+    { label: '设置密码', key: 'password', disabled: busy },
+    { label: '重置密码', key: 'reset', disabled: busy || !user.passwordSet },
+  ];
+  if (user.oidcBound) options.push({ label: '解绑 XAuth', key: 'unbind', disabled: busy });
+  options.push(
+    { type: 'divider', key: 'divider' },
+    {
+      key: 'delete',
+      disabled: busy,
+      label: () => h('span', { style: 'color: var(--destructive)' }, '删除用户'),
+    },
+  );
+  return options;
+}
+
+function handleMenuSelect(user: AdminUser, key: string | number) {
+  const action = String(key);
+  if (action === 'refresh') refreshToken(user);
+  else if (action === 'token') openTokenDialog(user);
+  else if (action === 'password') openPasswordDialog(user);
+  else if (action === 'reset') askResetPassword(user);
+  else if (action === 'unbind') askUnbindOidc(user);
+  else if (action === 'delete') askDelete(user);
+}
+
+const userColumns = computed<DataTableColumns<AdminUser>>(() => [
+  {
+    title: '用户',
+    key: 'name',
+    minWidth: 220,
+    render: (user) =>
+      h('div', { class: 'user-cell' }, [
+        h('span', { class: 'avatar-mini', 'aria-hidden': 'true' }, userInitial(user)),
+        h('div', { class: 'user-main' }, [
+          h('div', { class: 'user-name-line' }, [
+            h('span', { class: 'user-name', title: user.name }, user.name),
+            h(
+              NTag,
+              { size: 'small', type: user.passwordSet ? 'success' : 'default', bordered: false },
+              { default: () => (user.passwordSet ? '已设密码' : '未设密码') },
+            ),
+            user.oidcBound || user.oidcEmail
+              ? h(
+                  NTag,
+                  {
+                    size: 'small',
+                    type: oidcTagType(user),
+                    bordered: false,
+                    title: user.oidcEmail ? `预绑邮箱：${user.oidcEmail}` : '',
+                  },
+                  { default: () => `XAuth · ${oidcLabel(user)}` },
+                )
+              : null,
+          ]),
+          h(
+            'div',
+            { class: 'user-sub' },
+            user.note ?? (user.createdAt ? `创建于 ${formatDateTime(user.createdAt)}` : ''),
+          ),
+        ]),
+      ]),
+  },
+  {
+    title: '状态',
+    key: 'enabled',
+    width: 96,
+    render: (user) =>
+      h(
+        NSwitch,
+        {
+          value: user.enabled,
+          size: 'small',
+          loading: busyId.value === user.id,
+          disabled: busyId.value !== null,
+          'aria-label': `${user.enabled ? '停用' : '启用'}用户 ${user.name}`,
+          onUpdateValue: () => toggleEnabled(user),
+        },
+        { checked: () => '启用', unchecked: () => '停用' },
+      ),
+  },
+  {
+    title: '规则档',
+    key: 'profile',
+    width: 148,
+    render: (user) =>
+      h(NSelect, {
+        class: 'inline-select',
+        size: 'small',
+        value: user.profileId === null ? '' : String(user.profileId),
+        options: profileInlineOptions.value,
+        disabled: busyId.value !== null,
+        'aria-label': `${user.name} 的规则档`,
+        onUpdateValue: (value: string | number) => changeProfile(user, String(value)),
+      }),
+  },
+  {
+    title: '订阅链接',
+    key: 'link',
+    minWidth: 280,
+    render: (user) =>
+      h('span', { class: 'link-row', title: linkFor(user) }, [
+        h('code', { class: 'mono' }, pathLabel(user)),
+        h(
+          NButton,
+          {
+            size: 'tiny',
+            secondary: true,
+            'aria-label': `复制 ${user.name} 的订阅链接`,
+            onClick: () => copyText(linkFor(user), user.token),
+          },
+          { default: () => (copiedToken.value === user.token ? '已复制' : '复制') },
+        ),
+        ...SUBSCRIPTION_QUICK_TARGETS.map((quick) =>
+          h(
+            NButton,
+            {
+              key: quick.target,
+              tag: 'a',
+              text: true,
+              size: 'tiny',
+              class: 'quick-target',
+              href: linkFor(user, quick.target),
+              target: '_blank',
+              rel: 'noreferrer',
+            },
+            { default: () => quick.label },
+          ),
+        ),
+      ]),
+  },
+  {
+    title: '源',
+    key: 'counts',
+    width: 172,
+    render: (user) =>
+      h(
+        'span',
+        {
+          class: 'counts',
+          title: `专属源 ${countsOf(user).dedicated} 个 · 可用共享源 ${countsOf(user).shared} 个`,
+        },
+        [
+          '专属源 ',
+          h('b', { class: 'mono' }, String(countsOf(user).dedicated)),
+          ' · 可用共享 ',
+          h('b', { class: 'mono' }, String(countsOf(user).shared)),
+        ],
+      ),
+  },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 132,
+    align: 'right',
+    render: (user) =>
+      h('div', { class: 'row-actions' }, [
+        h(
+          NButton,
+          {
+            size: 'small',
+            secondary: true,
+            disabled: busyId.value !== null,
+            onClick: () => openEdit(user),
+          },
+          { default: () => '编辑' },
+        ),
+        h(
+          NDropdown,
+          {
+            trigger: 'click',
+            options: menuOptionsFor(user),
+            onSelect: (key: string | number) => handleMenuSelect(user, key),
+          },
+          {
+            default: () =>
+              h(
+                NButton,
+                {
+                  size: 'small',
+                  tertiary: true,
+                  disabled: busyId.value !== null,
+                  'aria-label': `${user.name} 的更多操作`,
+                },
+                { default: () => '⋯' },
+              ),
+          },
+        ),
+      ]),
+  },
+]);
 
 async function loadSources() {
   try {
@@ -650,132 +864,39 @@ onMounted(() => {
       </div>
     </n-form>
 
+    <div v-if="users.length > 0" class="toolbar">
+      <n-input
+        v-model:value="searchQuery"
+        class="search"
+        clearable
+        placeholder="搜索用户名称"
+        aria-label="搜索用户名称"
+      />
+      <span class="sub">
+        共 {{ users.length }} 个用户<template v-if="filteredUsers.length !== users.length">，匹配 {{ filteredUsers.length }} 个</template>
+      </span>
+    </div>
+
     <div v-if="loading" class="empty">
       <n-spin size="small" />
       <span class="muted">加载中…</span>
     </div>
     <n-empty v-else-if="users.length === 0" description="暂无用户，点击右上角「新建用户」开始。" class="empty" />
 
-    <div v-else class="rows">
-      <n-card
-        v-for="user in users"
-        :key="user.id"
-        class="entity"
-        :class="{ 'is-disabled': !user.enabled }"
+    <n-card v-else class="table-card" :bordered="false">
+      <n-data-table
+        :columns="userColumns"
+        :data="filteredUsers"
+        :row-key="userRowKey"
+        :row-props="userRowProps"
+        :bordered="false"
+        :scroll-x="1050"
       >
-        <div class="entity-layout">
-          <div class="entity-identity">
-            <div class="entity-name">
-              <span :title="user.name">{{ user.name }}</span>
-              <n-tag size="small" :type="user.passwordSet ? 'success' : 'default'" :bordered="false">
-                {{ user.passwordSet ? '已设密码' : '未设密码' }}
-              </n-tag>
-              <n-tag
-                v-if="user.oidcBound || user.oidcEmail"
-                size="small"
-                :type="oidcTagType(user)"
-                :bordered="false"
-                :title="user.oidcEmail ? `预绑邮箱：${user.oidcEmail}` : ''"
-              >
-                XAuth · {{ oidcLabel(user) }}
-              </n-tag>
-              <n-switch
-                :value="user.enabled"
-                size="small"
-                :loading="busyId === user.id"
-                :disabled="busyId !== null"
-                :aria-label="`${user.enabled ? '停用' : '启用'}用户 ${user.name}`"
-                @update:value="toggleEnabled(user)"
-              >
-                <template #checked>启用</template>
-                <template #unchecked>停用</template>
-              </n-switch>
-            </div>
-            <span v-if="user.note" class="sub">{{ user.note }}</span>
-            <span v-else-if="user.createdAt" class="sub">创建于 {{ formatDateTime(user.createdAt) }}</span>
-          </div>
-
-          <div class="entity-body">
-            <label class="entity-field" :title="`规则档：${profileName(user)}`">
-              规则档
-              <n-select
-                class="inline-select"
-                size="small"
-                :value="user.profileId === null ? '' : String(user.profileId)"
-                :options="profileInlineOptions"
-                :disabled="busyId !== null"
-                :aria-label="`${user.name} 的规则档`"
-                @update:value="(value) => changeProfile(user, String(value))"
-              />
-            </label>
-
-            <span class="entity-field link-row" :title="linkFor(user)">
-              <code class="mono">{{ pathLabel(user) }}</code>
-              <n-button
-                size="tiny"
-                secondary
-                :aria-label="`复制 ${user.name} 的订阅链接`"
-                @click="copyText(linkFor(user), user.token)"
-              >
-                {{ copiedToken === user.token ? '已复制' : '复制' }}
-              </n-button>
-              <n-button
-                v-for="quick in SUBSCRIPTION_QUICK_TARGETS"
-                :key="quick.target"
-                tag="a"
-                text
-                size="tiny"
-                class="quick-target"
-                :href="linkFor(user, quick.target)"
-                target="_blank"
-                rel="noreferrer"
-              >{{ quick.label }}</n-button>
-            </span>
-
-            <span class="counts" :title="`专属源 ${countsOf(user).dedicated} 个 · 可用共享源 ${countsOf(user).shared} 个`">
-              专属源 <b>{{ countsOf(user).dedicated }}</b>
-              ·
-              可用共享 <b>{{ countsOf(user).shared }}</b>
-            </span>
-          </div>
-
-          <div class="entity-actions">
-            <n-button size="small" secondary :disabled="busyId !== null" @click="openEdit(user)">
-              编辑
-            </n-button>
-            <n-button size="small" secondary :disabled="busyId !== null" @click="refreshToken(user)">
-              {{ busyId === user.id ? '处理中…' : '刷新令牌' }}
-            </n-button>
-            <n-button size="small" tertiary :disabled="busyId !== null" @click="openTokenDialog(user)">
-              自定义令牌
-            </n-button>
-            <n-button size="small" secondary :disabled="busyId !== null" @click="openPasswordDialog(user)">
-              设置密码
-            </n-button>
-            <n-button
-              size="small"
-              tertiary
-              :disabled="busyId !== null || !user.passwordSet"
-              @click="askResetPassword(user)"
-            >
-              重置密码
-            </n-button>
-            <n-button
-              v-if="user.oidcBound"
-              size="small"
-              tertiary
-              :disabled="busyId !== null"
-              @click="askUnbindOidc(user)"
-            >
-              解绑 XAuth
-            </n-button>
-            <n-button size="small" secondary type="error" :disabled="busyId !== null" @click="askDelete(user)">
-              删除
-            </n-button>
-          </div>
-        </div>
-      </n-card>
-    </div>
+        <template #empty>
+          <n-empty description="没有匹配的用户，换个关键词试试。" />
+        </template>
+      </n-data-table>
+    </n-card>
 
     <n-modal
       :show="tokenEditing !== null"
@@ -858,93 +979,107 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
 }
-.entity-layout {
-  display: grid;
-  grid-template-columns: minmax(14rem, 1fr) minmax(0, 2fr) auto;
-  gap: var(--space-3) var(--space-5);
-  align-items: center;
-}
-
-.entity.is-disabled {
-  opacity: 0.72;
-}
-
-.entity-identity {
+.toolbar {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.toolbar .search {
+  max-width: 20rem;
+}
+
+.table-card {
+  overflow: hidden;
+}
+
+.table-card :deep(.n-card__content) {
+  padding: 0;
+}
+
+.table-card :deep(.row-disabled) {
+  opacity: 0.55;
+}
+
+.table-card :deep(.user-cell) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   min-width: 0;
 }
 
-.entity-name {
-  display: flex;
-  flex-wrap: wrap;
+.table-card :deep(.avatar-mini) {
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  font-size: var(--text-base);
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--gradient-accent);
+  color: #fff;
+  font-size: var(--text-sm);
   font-weight: 600;
 }
 
-.entity-name > span:first-child {
+.table-card :deep(.user-main) {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.table-card :deep(.user-name-line) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.table-card :deep(.user-name) {
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.entity-body {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-4);
-  min-width: 0;
+.table-card :deep(.user-sub) {
   color: var(--muted-foreground);
   font-size: var(--text-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.entity-actions {
+.table-card :deep(.row-actions) {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-2);
 }
 
-.entity-field {
+.table-card :deep(.inline-select) {
+  width: 8.5rem;
+}
+
+.table-card :deep(.counts) {
   display: inline-flex;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
+  gap: var(--space-1) var(--space-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
   color: var(--muted-foreground);
   font-size: var(--text-xs);
 }
 
-.inline-select {
-  width: 8.5rem;
-}
-
-.entity-field > code,
-.entity-field .mono {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 18rem;
-}
-
-.counts {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-3);
-  font-variant-numeric: tabular-nums;
-}
-
-.counts b {
+.table-card :deep(.counts b) {
   font-weight: 600;
   color: var(--foreground);
 }
 
-.link-row {
+.table-card :deep(.link-row) {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
@@ -952,13 +1087,13 @@ onMounted(() => {
   max-width: 100%;
 }
 
-.link-row code {
+.table-card :deep(.link-row code) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.quick-target {
+.table-card :deep(.quick-target) {
   font-family: var(--font-mono);
 }
 
@@ -971,41 +1106,5 @@ onMounted(() => {
 
 .dialog-card {
   width: min(30rem, calc(100vw - 2rem));
-}
-
-@media (max-width: 900px) {
-  .entity-layout {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .entity-body {
-    grid-column: 1 / -1;
-  }
-}
-
-@media (max-width: 640px) {
-  .entity-layout {
-    grid-template-columns: minmax(0, 1fr);
-    gap: var(--space-3);
-  }
-
-  .entity-body,
-  .entity-field,
-  .inline-select,
-  .entity-field > code,
-  .entity-field .mono,
-  .link-row {
-    max-width: 100%;
-    width: 100%;
-    min-width: 0;
-  }
-
-  .entity-actions {
-    justify-content: flex-start;
-  }
-
-  .entity-actions :deep(.n-button) {
-    flex: 1 1 auto;
-  }
 }
 </style>

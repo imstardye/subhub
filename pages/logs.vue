@@ -11,7 +11,7 @@
  */
 definePageMeta({ layout: 'admin' });
 
-import { NAlert, NButton, NDataTable, NEmpty, NForm, NFormItem, NIcon, NSelect, NSpin, NTag, type DataTableColumns } from 'naive-ui';
+import { NAlert, NButton, NCard, NDataTable, NEmpty, NForm, NFormItem, NIcon, NSelect, NSpin, NTag, type DataTableColumns } from 'naive-ui';
 import { h } from 'vue';
 import type { AdminAccessLog } from '~/server/utils/admin-logs';
 import { apiErrorMessage } from '~/core/utils/api-error';
@@ -204,17 +204,18 @@ onMounted(() => {
     </n-spin>
     <n-empty v-else-if="loaded && items.length === 0" description="暂无日志。" class="empty" />
 
-    <n-data-table
-      v-else-if="items.length > 0"
-      :columns="columns"
-      :data="items"
-      :loading="loading"
-      :pagination="false"
-      :bordered="false"
-      :single-line="false"
-      :scroll-x="920"
-      size="small"
-    />
+    <n-card v-else-if="items.length > 0" class="table-card" :bordered="false">
+      <n-data-table
+        :columns="columns"
+        :data="items"
+        :loading="loading"
+        :pagination="false"
+        :bordered="false"
+        :single-line="false"
+        :scroll-x="920"
+        size="medium"
+      />
+    </n-card>
 
     <div class="pager">
       <span class="muted">共 {{ total }} 条 · 第 {{ offset + 1 }}–{{ Math.min(offset + PAGE_SIZE, total) }} 条</span>
@@ -252,12 +253,20 @@ onMounted(() => {
   padding-bottom: 1px;
 }
 
-.cell-muted {
+.table-card {
+  overflow: hidden;
+}
+
+.table-card :deep(.n-card__content) {
+  padding: 0;
+}
+
+.table-card :deep(.cell-muted) {
   color: var(--muted-foreground);
   font-size: var(--text-xs);
 }
 
-.ua {
+.table-card :deep(.ua) {
   display: inline-block;
   max-width: 18rem;
   overflow: hidden;
